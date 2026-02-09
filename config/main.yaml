@@ -1,0 +1,87 @@
+# SurveyMAE Main Configuration
+# All configuration is separated from code per Document 4
+
+# General Settings
+general:
+  debug: false
+  log_level: INFO
+
+# LLM Configuration (can be overridden by environment variables)
+llm:
+  provider: openai
+  model: gpt-4o
+  temperature: 0.0
+  max_tokens: 4096
+  # api_key is loaded from OPENAI_API_KEY env var
+
+# Agent Configurations
+agents:
+  - name: verifier
+    system_prompt: config/prompts/verifier.yaml
+    tools: []
+    retry_attempts: 3
+    timeout: 120
+
+  - name: expert
+    system_prompt: config/prompts/expert.yaml
+    tools: []
+    retry_attempts: 3
+    timeout: 120
+
+  - name: reader
+    system_prompt: config/prompts/reader.yaml
+    tools: []
+    retry_attempts: 3
+    timeout: 120
+
+  - name: corrector
+    system_prompt: config/prompts/corrector.yaml
+    tools: []
+    retry_attempts: 3
+    timeout: 120
+
+# MCP Server Configurations
+mcp_servers:
+  # Local PDF Parser MCP Server
+  - name: pdf_parser
+    command: uv
+    args:
+      - run
+      - python
+      - -m
+      - src.tools.pdf_parser_server
+    env:
+      PYTHONPATH: .
+
+  # Local Citation Checker MCP Server
+  - name: citation_checker
+    command: uv
+    args:
+      - run
+      - python
+      - -m
+      - src.tools.citation_checker_server
+    env:
+      PYTHONPATH: .
+
+  # Example: Remote Tavily Search MCP (uncomment and configure to use)
+  # - name: search
+  #   url: http://localhost:8000/sse
+
+# Debate/Consensus Configuration
+debate:
+  max_rounds: 3
+  score_threshold: 2.0
+  aggregator: weighted
+  weights:
+    verifier: 1.0
+    expert: 1.2
+    reader: 1.0
+    corrector: 0.8
+
+# Report Generation Configuration
+report:
+  output_dir: ./output
+  include_evidence: true
+  include_radar: true
+  format: markdown

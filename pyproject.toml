@@ -1,0 +1,54 @@
+[project]
+name = "surveymae"
+version = "0.1.0"
+description = "Multi-Agent Dynamic Evaluation Framework for LLM-Generated Surveys"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "SurveyMAE Team"}
+]
+dependencies = [
+    # Core Framework
+    "langgraph>=0.2.0",
+    "langchain>=0.2.0",
+    "langchain-core>=0.2.0",
+    "langchain-openai>=0.1.0",
+
+    # MCP Protocol
+    "mcp>=1.1.0",
+
+    # Type Safety & Configuration
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "pyyaml>=6.0.0",
+
+    # PDF Processing
+    "pymupdf4llm>=0.0.15",
+    "pypdf>=4.3.0",
+
+    # Async & HTTP
+    "httpx>=0.27.0",
+
+    # Utilities
+    "loguru>=0.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "I", "UP", "W"]
