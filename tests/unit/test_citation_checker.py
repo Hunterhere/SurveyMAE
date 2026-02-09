@@ -1,5 +1,7 @@
 """Unit tests for citation checker."""
 
+from pathlib import Path
+
 import pytest
 from src.tools.citation_checker import CitationChecker
 
@@ -88,3 +90,40 @@ class TestCitationChecker:
         assert len(contexts) == 1
         assert "[1]" in contexts[0]
         assert "before" in contexts[0] or "This is a sentence" in contexts[0]
+
+    def test_extract_references_from_text(self, checker):
+        """Test extracting reference entries from text."""
+        text = """
+Introduction text.
+
+References
+[1] Vaswani, A. and Shazeer, N. (2017). Attention Is All You Need. NeurIPS.
+[2] Devlin, J. et al. (2019). BERT: Pre-training of Deep Bidirectional Transformers.
+"""
+        references = checker.extract_references_from_text(text)
+
+        assert len(references) == 2
+        assert references[0]["title"] == "Attention Is All You Need"
+        assert references[0]["year"] == "2017"
+        assert references[1]["title"].startswith("BERT")
+
+    def test_extract_references_from_pdf(self, checker):
+        """Test PDF reference extraction on test_paper.pdf."""
+        try:
+            import pymupdf4llm  # noqa: F401
+            pdf_ready = True
+        except Exception:
+            try:
+                import pypdf  # noqa: F401
+                pdf_ready = True
+            except Exception:
+                pdf_ready = False
+
+        if not pdf_ready:
+            pytest.skip("PDF parsing dependencies not installed")
+
+        pdf_path = Path(__file__).resolve().parents[2] / "test_paper.pdf"
+        references = checker.extract_references_from_pdf(str(pdf_path))
+        assert isinstance(references, list)
+        assert len(references) > 0
+        assert references[0]["title"]

@@ -1,0 +1,38 @@
+# BibGuard Configuration File
+
+files:
+  bib: "paper.bib"
+  tex: "paper.tex"
+  output_dir: "bibguard_output"
+
+template: ""
+
+bibliography:
+  check_metadata: true
+  check_usage: true
+  check_duplicates: true
+  check_preprint_ratio: true
+  preprint_warning_threshold: 0.50
+  check_relevance: false
+
+submission:
+  caption: true
+  reference: true
+  formatting: true
+  equation: true
+  ai_artifacts: true
+  sentence: true
+  consistency: true
+  acronym: true
+  number: true
+  citation_quality: true
+  anonymization: true
+
+llm:
+  backend: "gemini"
+  model: ""
+  api_key: ""
+
+output:
+  quiet: false
+  minimal_verified: false
