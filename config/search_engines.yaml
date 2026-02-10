@@ -1,0 +1,11 @@
+# Search engine configuration (separate from main.yaml)
+# Secrets should be provided via environment variables referenced below.
+
+semantic_scholar:
+  api_key: ${SEMANTIC_SCHOLAR_API_KEY}
+
+crossref:
+  mailto: surveymae@example.com
+
+openalex:
+  email: ${OPENALEX_EMAIL}

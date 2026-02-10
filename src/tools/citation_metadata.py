@@ -15,6 +15,7 @@ from typing import Any, Iterable, Optional
 
 import httpx
 
+from src.core.search_config import load_search_engine_config
 logger = logging.getLogger(__name__)
 
 
@@ -1205,18 +1206,29 @@ class CitationMetadataChecker:
 
     def __init__(
         self,
-        crossref_mailto: str = "surveymae@example.com",
+        crossref_mailto: Optional[str] = None,
         semantic_scholar_api_key: Optional[str] = None,
         openalex_email: Optional[str] = None,
         title_threshold: Optional[float] = None,
         author_threshold: Optional[float] = None,
+        config_path: Optional[str] = None,
     ) -> None:
+        config = load_search_engine_config(config_path)
+        if semantic_scholar_api_key is None:
+            semantic_scholar_api_key = config.semantic_scholar_api_key
+        if crossref_mailto is None:
+            crossref_mailto = config.crossref_mailto
+        if openalex_email is None:
+            openalex_email = config.openalex_email
+
         self.comparator = MetadataComparator(
             title_threshold=title_threshold,
             author_threshold=author_threshold,
         )
         self.arxiv_fetcher = ArxivFetcher()
-        self.crossref_fetcher = CrossRefFetcher(mailto=crossref_mailto)
+        self.crossref_fetcher = CrossRefFetcher(
+            mailto=crossref_mailto or "surveymae@example.com"
+        )
         self.semantic_scholar_fetcher = SemanticScholarFetcher(api_key=semantic_scholar_api_key)
         self.openalex_fetcher = OpenAlexFetcher(email=openalex_email)
         self.dblp_fetcher = DBLPFetcher()

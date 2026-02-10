@@ -126,7 +126,29 @@ class CitationAnalyzer:
         Returns:
             List of YearBucket entries sorted by start_year.
         """
-        raise NotImplementedError("TODO: implement year window bucketing")
+        if window <= 0:
+            raise ValueError("window must be positive")
+
+        years = self._collect_numeric_years(references)
+        if not years:
+            return []
+
+        min_year = min(years)
+        max_year = max(years)
+        bucket_count = ((max_year - min_year) // window) + 1
+
+        counts = [0] * bucket_count
+        for year in years:
+            bucket_index = (year - min_year) // window
+            counts[bucket_index] += 1
+
+        buckets = []
+        for index, count in enumerate(counts):
+            start = min_year + index * window
+            end = start + window - 1
+            buckets.append(YearBucket(start_year=start, end_year=end, count=count))
+
+        return buckets
 
     def year_over_year_trend(self, references: list[dict[str, Any]]) -> dict[str, Any]:
         """Compute year-over-year trends for references.
@@ -134,7 +156,40 @@ class CitationAnalyzer:
         Returns:
             Dictionary with yearly counts, growth rates, and moving averages.
         """
-        raise NotImplementedError("TODO: implement year-over-year trend analysis")
+        counts = self._count_years(references)
+        years = sorted(counts.keys())
+
+        yearly_counts = [{"year": year, "count": counts[year]} for year in years]
+
+        growth = []
+        prev_count: Optional[int] = None
+        for year in years:
+            count = counts[year]
+            if prev_count is None:
+                growth.append({"year": year, "delta": None, "pct": None})
+            else:
+                delta = count - prev_count
+                pct = (delta / prev_count) * 100 if prev_count else None
+                growth.append({"year": year, "delta": delta, "pct": pct})
+            prev_count = count
+
+        window = 3
+        moving_average = []
+        for idx, year in enumerate(years):
+            if idx + 1 < window:
+                moving_average.append({"year": year, "window": window, "value": None})
+                continue
+            window_years = years[idx + 1 - window : idx + 1]
+            window_sum = sum(counts[y] for y in window_years)
+            moving_average.append(
+                {"year": year, "window": window, "value": window_sum / window}
+            )
+
+        return {
+            "year_counts": yearly_counts,
+            "growth": growth,
+            "moving_average": moving_average,
+        }
 
     def citation_age_distribution(
         self,
@@ -152,7 +207,31 @@ class CitationAnalyzer:
         Returns:
             Mapping from age-bin labels to counts.
         """
-        raise NotImplementedError("TODO: implement citation age distribution")
+        if bins is None:
+            bins = [0, 5, 10, 20]
+
+        bins = sorted(set(bins))
+        if bins[0] != 0:
+            bins = [0] + bins
+
+        counts: dict[str, int] = {}
+
+        for ref in references:
+            year_raw = str(ref.get("year", "")).strip()
+            if not year_raw.isdigit():
+                counts["unknown"] = counts.get("unknown", 0) + 1
+                continue
+
+            year = int(year_raw)
+            age = paper_year - year
+            if age < 0:
+                counts["future"] = counts.get("future", 0) + 1
+                continue
+
+            label = self._age_bucket_label(age, bins)
+            counts[label] = counts.get(label, 0) + 1
+
+        return counts
 
     def concentration_top_years(
         self,
@@ -164,7 +243,28 @@ class CitationAnalyzer:
         Returns:
             Dictionary with top-year counts and concentration ratios.
         """
-        raise NotImplementedError("TODO: implement top-k year concentration")
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+
+        counts = self._count_years(references)
+        total = sum(counts.values())
+
+        top_years = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:top_k]
+        top_list = []
+        top_sum = 0
+        for year, count in top_years:
+            top_sum += count
+            share = (count / total) if total else 0.0
+            top_list.append({"year": year, "count": count, "share": share})
+
+        top_k_share = (top_sum / total) if total else 0.0
+
+        return {
+            "top_years": top_list,
+            "top_k_share": top_k_share,
+            "total_known_years": total,
+            "unknown_years": self._count_unknown_years(self.count_by_year(references)),
+        }
 
     def author_statistics(self, references: list[dict[str, Any]]) -> dict[str, Any]:
         """Compute basic author statistics from references.
@@ -191,6 +291,28 @@ class CitationAnalyzer:
             Updated list of references with impact annotations.
         """
         raise NotImplementedError("TODO: implement high-impact annotation")
+
+    def _collect_numeric_years(self, references: list[dict[str, Any]]) -> list[int]:
+        years = []
+        for ref in references:
+            year = str(ref.get("year", "")).strip()
+            if year.isdigit():
+                years.append(int(year))
+        return years
+
+    def _count_years(self, references: list[dict[str, Any]]) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for year in self._collect_numeric_years(references):
+            counts[year] = counts.get(year, 0) + 1
+        return counts
+
+    def _age_bucket_label(self, age: int, bins: list[int]) -> str:
+        for idx in range(len(bins) - 1):
+            start = bins[idx]
+            end = bins[idx + 1]
+            if start <= age < end:
+                return f"{start}-{end - 1}"
+        return f"{bins[-1]}+"
 
 
 def create_citation_analysis_mcp_server():

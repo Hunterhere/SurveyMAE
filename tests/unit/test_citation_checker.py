@@ -107,6 +107,21 @@ References
         assert references[0]["year"] == "2017"
         assert references[1]["title"].startswith("BERT")
 
+    def test_extract_references_author_year_style(self, checker):
+        """Test extracting references without numeric prefixes."""
+        text = """
+References
+Vaswani, A., Shazeer, N. (2017). Attention Is All You Need. NeurIPS.
+Devlin, J., Chang, M. (2019). BERT: Pre-training of Deep Bidirectional Transformers.
+Brown, T. et al. (2020). Language Models are Few-Shot Learners.
+"""
+        references = checker.extract_references_from_text(text)
+
+        assert len(references) == 3
+        assert references[0]["year"] == "2017"
+        assert references[1]["year"] == "2019"
+        assert references[2]["year"] == "2020"
+
     def test_extract_references_from_pdf(self, checker):
         """Test PDF reference extraction on test_paper.pdf."""
         try:

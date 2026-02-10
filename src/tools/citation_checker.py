@@ -49,6 +49,7 @@ class CitationChecker:
         r"^\d+\.\s+",
         r"^\d+\)\s+",
     ]
+    REF_AUTHOR_YEAR_PATTERN = r"^[A-Z].{0,160}\b(19|20)\d{2}\b"
 
     def __init__(self):
         """Initialize the citation checker."""
@@ -248,8 +249,20 @@ class CitationChecker:
         )
 
         for idx, line in enumerate(lines):
-            if heading_pattern.match(line.strip()):
+            stripped = line.strip()
+            if heading_pattern.match(stripped):
                 return "\n".join(lines[idx + 1 :])
+            if (
+                len(stripped) <= 40
+                and re.search(r"\b(%s)\b" % "|".join(self.REFERENCE_HEADINGS), stripped, re.IGNORECASE)
+            ):
+                return "\n".join(lines[idx + 1 :])
+
+        candidate_indices = [i for i, line in enumerate(lines) if self._is_reference_start(line)]
+        if candidate_indices:
+            cutoff = int(len(lines) * 0.6)
+            start_index = next((i for i in candidate_indices if i >= cutoff), candidate_indices[0])
+            return "\n".join(lines[start_index:])
 
         fallback_start = int(len(lines) * 0.7)
         return "\n".join(lines[fallback_start:])
@@ -295,6 +308,8 @@ class CitationChecker:
         for pattern in self.REF_ENTRY_PATTERNS:
             if re.match(pattern, line):
                 return True
+        if re.match(self.REF_AUTHOR_YEAR_PATTERN, line):
+            return True
         return False
 
     def _parse_reference_entries(self, entries: List[str]) -> List[Dict[str, Any]]:

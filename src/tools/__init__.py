@@ -8,10 +8,13 @@ from .pdf_parser import PDFParser
 from .citation_checker import CitationChecker
 from .citation_metadata import CitationMetadataChecker
 from .citation_analysis import CitationAnalyzer
+from .literature_search import LiteratureSearch, LiteratureResult
 
 __all__ = [
     "PDFParser",
     "CitationChecker",
     "CitationMetadataChecker",
     "CitationAnalyzer",
+    "LiteratureSearch",
+    "LiteratureResult",
 ]
