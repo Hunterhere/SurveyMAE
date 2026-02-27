@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from src.tools.citation_checker import CitationChecker
+from src.tools.result_store import ResultStore
 from src.tools.pdf_parser import PDFParser
 
 logger = logging.getLogger(__name__)
@@ -38,9 +39,11 @@ class CitationAnalyzer:
         self,
         pdf_parser: Optional[PDFParser] = None,
         citation_checker: Optional[CitationChecker] = None,
+        result_store: Optional[ResultStore] = None,
     ) -> None:
         self.pdf_parser = pdf_parser or PDFParser()
         self.citation_checker = citation_checker or CitationChecker()
+        self.result_store = result_store
 
     def analyze_pdf(self, pdf_path: str) -> dict[str, Any]:
         """Analyze references in a PDF paper.
@@ -52,7 +55,18 @@ class CitationAnalyzer:
             A summary dictionary containing basic reference statistics.
         """
         references = self.citation_checker.extract_references_from_pdf(pdf_path)
-        return self.analyze_references(references)
+        summary = self.analyze_references(references)
+
+        if self.result_store:
+            try:
+                paper_id = self.result_store.register_paper(pdf_path)
+                payload = {"paper_id": paper_id, "summary": summary}
+                self.result_store.save_analysis(paper_id, payload)
+                self.result_store.update_index(paper_id, status="analyzed", source_path=pdf_path)
+            except Exception as exc:
+                logger.warning("Failed to persist analysis result: %s", exc)
+
+        return summary
 
     def analyze_references(self, references: list[dict[str, Any]]) -> dict[str, Any]:
         """Analyze a list of reference entries.
@@ -76,6 +90,14 @@ class CitationAnalyzer:
         }
 
         return summary
+
+    def analyze_references_with_validation(
+        self,
+        references: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Analyze references using validation metadata to fill missing fields."""
+        normalized = self._merge_validation_metadata(references)
+        return self.analyze_references(normalized)
 
     def count_by_year(self, references: list[dict[str, Any]]) -> list[YearCount]:
         """Count references by year and sort by year ascending.
@@ -105,6 +127,33 @@ class CitationAnalyzer:
             result.append(YearCount(year="unknown", count=unknown_count))
 
         return result
+
+    def _merge_validation_metadata(
+        self,
+        references: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        for ref in references:
+            ref_copy = dict(ref)
+            validation = ref.get("validation") or {}
+            metadata = validation.get("metadata") if isinstance(validation, dict) else None
+            if isinstance(metadata, dict):
+                if not ref_copy.get("title") and metadata.get("title"):
+                    ref_copy["title"] = metadata.get("title")
+                if not ref_copy.get("year") and metadata.get("year"):
+                    ref_copy["year"] = str(metadata.get("year"))
+                if not ref_copy.get("doi") and metadata.get("doi"):
+                    ref_copy["doi"] = metadata.get("doi")
+                if not ref_copy.get("arxiv_id") and metadata.get("arxiv_id"):
+                    ref_copy["arxiv_id"] = metadata.get("arxiv_id")
+                if not ref_copy.get("author") and metadata.get("authors"):
+                    authors = metadata.get("authors")
+                    if isinstance(authors, list):
+                        ref_copy["author"] = " and ".join(a for a in authors if a)
+                    elif isinstance(authors, str):
+                        ref_copy["author"] = authors
+            merged.append(ref_copy)
+        return merged
 
     def _count_unknown_years(self, year_counts: list[YearCount]) -> int:
         for entry in year_counts:

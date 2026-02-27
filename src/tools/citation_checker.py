@@ -6,15 +6,229 @@ Can be used to check if cited papers exist and match claims.
 
 import re
 import logging
-from typing import List, Dict, Optional, Any
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Dict, Optional, Any, Iterable, Tuple
+
+import httpx
 
 from src.tools.citation_metadata import (
     CitationMetadataChecker,
     bib_entry_from_dict,
 )
 from src.tools.pdf_parser import PDFParser
+from src.tools.result_store import ResultStore
+from src.core.config import load_config, SurveyMAEConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CitationSpan:
+    """In-text citation with location context."""
+
+    marker: str
+    kind: str
+    sentence: str
+    page: int
+    paragraph_index: int
+    line_in_paragraph: int
+    bbox: Optional[Tuple[float, float, float, float]] = None
+    reference_number: Optional[int] = None
+    author: str = ""
+    year: str = ""
+    ref_key: Optional[str] = None
+    ref_candidates: list[str] = field(default_factory=list)
+    marker_raw: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "marker": self.marker,
+            "marker_raw": self.marker_raw,
+            "kind": self.kind,
+            "sentence": self.sentence,
+            "page": self.page,
+            "paragraph_index": self.paragraph_index,
+            "line_in_paragraph": self.line_in_paragraph,
+            "bbox": self.bbox,
+            "reference_number": self.reference_number,
+            "author": self.author,
+            "year": self.year,
+            "ref_key": self.ref_key,
+            "ref_candidates": self.ref_candidates,
+        }
+
+
+@dataclass
+class ReferenceEntry:
+    """Parsed reference entry."""
+
+    key: str
+    title: str = ""
+    author: str = ""
+    year: str = ""
+    doi: str = ""
+    arxiv_id: str = ""
+    entry_type: str = "reference"
+    reference_number: Optional[int] = None
+    raw: str = ""
+    source: str = ""
+    validation: Optional[dict[str, Any]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "title": self.title,
+            "author": self.author,
+            "year": self.year,
+            "doi": self.doi,
+            "arxiv_id": self.arxiv_id,
+            "entry_type": self.entry_type,
+            "reference_number": self.reference_number,
+            "raw": self.raw,
+            "source": self.source,
+            "validation": self.validation,
+        }
+
+
+@dataclass
+class CitationExtractionResult:
+    """Structured citation extraction result."""
+
+    citations: list[CitationSpan] = field(default_factory=list)
+    references: list[ReferenceEntry] = field(default_factory=list)
+    backend: str = ""
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "citations": [c.to_dict() for c in self.citations],
+            "references": [r.to_dict() for r in self.references],
+            "backend": self.backend,
+            "errors": self.errors,
+        }
+
+
+class GrobidReferenceExtractor:
+    """Extract references using a running GROBID service."""
+
+    TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
+
+    def __init__(
+        self,
+        url: str = "http://localhost:8070",
+        timeout_s: int = 30,
+        consolidate: bool = False,
+    ) -> None:
+        self.url = url.rstrip("/")
+        self.timeout_s = timeout_s
+        self.consolidate = consolidate
+
+    def extract_references(self, pdf_path: str) -> list[ReferenceEntry]:
+        tei = self._process_fulltext(pdf_path)
+        return self._parse_references(tei)
+
+    def _process_fulltext(self, pdf_path: str) -> str:
+        pdf_file = Path(pdf_path)
+        if not pdf_file.exists():
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+        params = {
+            "consolidateCitations": "1" if self.consolidate else "0",
+            "includeRawCitations": "1",
+        }
+
+        with pdf_file.open("rb") as handle:
+            files = {"input": (pdf_file.name, handle, "application/pdf")}
+            response = httpx.post(
+                f"{self.url}/api/processFulltextDocument",
+                data=params,
+                files=files,
+                timeout=self.timeout_s,
+            )
+            response.raise_for_status()
+
+        return response.text
+
+    def _parse_references(self, tei_xml: str) -> list[ReferenceEntry]:
+        root = ET.fromstring(tei_xml)
+        entries: list[ReferenceEntry] = []
+
+        for bibl in root.findall(".//tei:listBibl/tei:biblStruct", self.TEI_NS):
+            ref_id = bibl.get("{http://www.w3.org/XML/1998/namespace}id", "")
+            reference_number = self._parse_reference_number(ref_id)
+
+            title = (
+                self._get_text(bibl.find(".//tei:analytic/tei:title", self.TEI_NS))
+                or self._get_text(bibl.find(".//tei:monogr/tei:title", self.TEI_NS))
+                or self._get_text(bibl.find(".//tei:title", self.TEI_NS))
+            )
+
+            authors = self._parse_authors(bibl)
+            author_str = " and ".join(authors)
+
+            year = self._extract_year(bibl)
+            doi = self._get_text(bibl.find(".//tei:idno[@type='DOI']", self.TEI_NS))
+            arxiv_id = self._get_text(bibl.find(".//tei:idno[@type='arXiv']", self.TEI_NS))
+
+            raw = ET.tostring(bibl, encoding="unicode")
+            key = ref_id or f"ref_{reference_number or len(entries) + 1}"
+
+            entries.append(
+                ReferenceEntry(
+                    key=key,
+                    title=title,
+                    author=author_str,
+                    year=year,
+                    doi=doi,
+                    arxiv_id=arxiv_id,
+                    reference_number=reference_number,
+                    raw=raw,
+                    source="grobid",
+                )
+            )
+
+        return entries
+
+    def _parse_authors(self, bibl: ET.Element) -> list[str]:
+        authors: list[str] = []
+        for author in bibl.findall(".//tei:author", self.TEI_NS):
+            surname = self._get_text(author.find(".//tei:surname", self.TEI_NS))
+            forename = self._get_text(author.find(".//tei:forename", self.TEI_NS))
+            if surname or forename:
+                name = f"{surname}, {forename}".strip(", ").strip()
+                authors.append(name)
+            else:
+                raw = self._get_text(author)
+                if raw:
+                    authors.append(raw)
+        return authors
+
+    def _extract_year(self, bibl: ET.Element) -> str:
+        date = bibl.find(".//tei:date", self.TEI_NS)
+        if date is None:
+            return ""
+        when = date.get("when", "")
+        if when:
+            return when[:4]
+        text = self._get_text(date)
+        match = re.search(r"\b(19|20)\d{2}\b", text)
+        return match.group(0) if match else ""
+
+    def _get_text(self, elem: Optional[ET.Element]) -> str:
+        if elem is None:
+            return ""
+        return "".join(elem.itertext()).strip()
+
+    def _parse_reference_number(self, ref_id: str) -> Optional[int]:
+        if not ref_id:
+            return None
+        match = re.search(r"(\d+)", ref_id)
+        if match:
+            return int(match.group(1))
+        return None
 
 
 class CitationChecker:
@@ -51,10 +265,45 @@ class CitationChecker:
     ]
     REF_AUTHOR_YEAR_PATTERN = r"^[A-Z].{0,160}\b(19|20)\d{2}\b"
 
-    def __init__(self):
+    # Author-year citation patterns
+    AUTHOR_YEAR_INLINE_PATTERN = (
+        r"([A-Z][A-Za-z'`\-]+(?:\s+(?:et al\.|and|&)\s+[A-Z][A-Za-z'`\-]+)*)"
+        r"\s*\((\d{4}[a-z]?)\)"
+    )
+    AUTHOR_YEAR_PAREN_PATTERN = r"\(([^)]*\b(?:19|20)\d{2}[a-z]?\b[^)]*)\)"
+
+    # Sentence splitting
+    SENTENCE_SPLIT_PATTERN = r"(?<=[.!?])\s+(?=[A-Z0-9])"
+    SENTENCE_ABBREVIATIONS = {
+        "et al.",
+        "fig.",
+        "figs.",
+        "eq.",
+        "eqs.",
+        "cf.",
+        "e.g.",
+        "i.e.",
+        "vs.",
+        "dr.",
+        "mr.",
+        "ms.",
+        "prof.",
+    }
+
+    def __init__(
+        self,
+        config: Optional[SurveyMAEConfig] = None,
+        result_store: Optional[ResultStore] = None,
+    ):
         """Initialize the citation checker."""
         self.citation_regex = re.compile(self.CITATION_PATTERN)
         self.ref_regex = re.compile(self.REF_PATTERN, re.MULTILINE)
+        self.author_year_inline_regex = re.compile(self.AUTHOR_YEAR_INLINE_PATTERN)
+        self.author_year_paren_regex = re.compile(self.AUTHOR_YEAR_PAREN_PATTERN)
+        self.sentence_split_regex = re.compile(self.SENTENCE_SPLIT_PATTERN)
+
+        self.config = config or load_config()
+        self.result_store = result_store
 
     def extract_citations(self, text: str) -> List[str]:
         """Extract all citations from the text.
@@ -213,6 +462,48 @@ class CitationChecker:
         content = self.parse_pdf(pdf_path)
         return self.extract_citations(content)
 
+    def extract_citations_with_context_from_pdf(self, pdf_path: str) -> dict[str, Any]:
+        """Extract citations with sentence and location context from PDF.
+
+        Args:
+            pdf_path: Path to the PDF file.
+
+        Returns:
+            Structured dict with citations, references, backend, and errors.
+        """
+        result = self._extract_citations_with_context_mupdf(pdf_path)
+        references, backend, errors = self._extract_references_with_backend(pdf_path)
+        citation_backend = result.backend or "mupdf"
+        result.references = references
+        result.backend = f"citations:{citation_backend};references:{backend}"
+        result.errors.extend(errors)
+        self._link_citations_to_references(result.citations, result.references)
+        self._persist_extraction(pdf_path, result)
+        return result.to_dict()
+
+    async def extract_citations_with_context_from_pdf_async(
+        self,
+        pdf_path: str,
+        verify_references: bool = False,
+        sources: Optional[Iterable[str]] = None,
+        verify_limit: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Async version with optional reference verification."""
+        base = self._extract_citations_with_context_mupdf(pdf_path)
+        references, backend, errors = self._extract_references_with_backend(pdf_path)
+        citation_backend = base.backend or "mupdf"
+        base.references = references
+        base.backend = f"citations:{citation_backend};references:{backend}"
+        base.errors.extend(errors)
+        self._link_citations_to_references(base.citations, base.references)
+        self._persist_extraction(pdf_path, base)
+
+        if verify_references:
+            await self._verify_references(base.references, sources, verify_limit)
+            self._persist_validation(pdf_path, base.references, sources, verify_limit)
+
+        return base.to_dict()
+
     def extract_references_from_text(self, text: str) -> List[Dict[str, Any]]:
         """Extract reference entries from PDF text.
 
@@ -240,6 +531,512 @@ class CitationChecker:
         """
         content = self.parse_pdf(pdf_path)
         return self.extract_references_from_text(content)
+
+    def _extract_references_with_backend(
+        self,
+        pdf_path: str,
+    ) -> tuple[list[ReferenceEntry], str, list[str]]:
+        citation_cfg = getattr(self.config, "citation", None)
+        backend = str(getattr(citation_cfg, "backend", "auto")).lower()
+        errors: list[str] = []
+
+        if backend in {"grobid", "auto"}:
+            if backend == "auto" and not self._grobid_is_available(
+                getattr(citation_cfg, "grobid_url", "http://localhost:8070")
+            ):
+                fallback_refs = self.extract_references_from_pdf(pdf_path)
+                return (
+                    self._reference_entries_from_dicts(fallback_refs, source="mupdf"),
+                    "mupdf",
+                    errors,
+                )
+            try:
+                extractor = GrobidReferenceExtractor(
+                    url=getattr(citation_cfg, "grobid_url", "http://localhost:8070"),
+                    timeout_s=int(getattr(citation_cfg, "grobid_timeout_s", 30)),
+                    consolidate=bool(getattr(citation_cfg, "grobid_consolidate", False)),
+                )
+                refs = extractor.extract_references(pdf_path)
+                if refs:
+                    return refs, "grobid", errors
+            except Exception as exc:
+                msg = f"grobid_failed: {exc}"
+                logger.warning(msg)
+                errors.append(msg)
+
+        fallback_refs = self.extract_references_from_pdf(pdf_path)
+        return self._reference_entries_from_dicts(fallback_refs, source="mupdf"), "mupdf", errors
+
+    def _grobid_is_available(self, url: str) -> bool:
+        try:
+            response = httpx.get(f"{url.rstrip('/')}/api/isalive", timeout=2)
+            return response.status_code == 200
+        except Exception:
+            return False
+
+    def _reference_entries_from_dicts(
+        self,
+        references: list[dict[str, Any]],
+        source: str,
+    ) -> list[ReferenceEntry]:
+        entries: list[ReferenceEntry] = []
+        for ref in references:
+            author = str(ref.get("author", "")).strip()
+            if ";" in author and " and " not in author:
+                parts = [p.strip() for p in author.split(";") if p.strip()]
+                author = " and ".join(parts)
+            entries.append(
+                ReferenceEntry(
+                    key=str(ref.get("key", "")).strip() or f"ref_{len(entries) + 1}",
+                    title=str(ref.get("title", "")).strip(),
+                    author=author,
+                    year=str(ref.get("year", "")).strip(),
+                    doi=str(ref.get("doi", "")).strip(),
+                    arxiv_id=str(ref.get("arxiv_id", "")).strip(),
+                    entry_type=str(ref.get("entry_type", "reference")),
+                    reference_number=ref.get("reference_number"),
+                    raw=str(ref.get("raw", "")),
+                    source=source,
+                )
+            )
+        return entries
+
+    async def _verify_references(
+        self,
+        references: list[ReferenceEntry],
+        sources: Optional[Iterable[str]] = None,
+        verify_limit: Optional[int] = None,
+    ) -> None:
+        checker = CitationMetadataChecker()
+        verified = 0
+        for ref in references:
+            if not (ref.title or ref.doi or ref.arxiv_id):
+                continue
+            bib_entry = bib_entry_from_dict(ref.to_dict())
+            report = await checker.verify_bib_entry(bib_entry, sources=sources)
+            ref.validation = report.to_dict()
+            verified += 1
+            if verify_limit is not None and verified >= verify_limit:
+                break
+
+    def _persist_extraction(self, pdf_path: str, result: CitationExtractionResult) -> None:
+        if not self.result_store:
+            return
+        try:
+            paper_id = self.result_store.register_paper(pdf_path)
+            self.result_store.save_extraction(paper_id, result.to_dict())
+            self.result_store.update_index(paper_id, status="extracted", source_path=pdf_path)
+        except Exception as exc:
+            logger.warning("Failed to persist extraction result: %s", exc)
+
+    def _persist_validation(
+        self,
+        pdf_path: str,
+        references: list[ReferenceEntry],
+        sources: Optional[Iterable[str]],
+        verify_limit: Optional[int],
+    ) -> None:
+        if not self.result_store:
+            return
+        try:
+            paper_id = self.result_store.register_paper(pdf_path)
+            validation = {
+                "paper_id": paper_id,
+                "validated_at": datetime.now(timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z"),
+                "sources": list(sources) if sources else [],
+                "verify_limit": verify_limit,
+                "reference_validations": [
+                    ref.validation for ref in references if ref.validation is not None
+                ],
+            }
+            self.result_store.save_validation(paper_id, validation)
+            self.result_store.update_index(paper_id, status="validated", source_path=pdf_path)
+        except Exception as exc:
+            logger.warning("Failed to persist validation result: %s", exc)
+
+    def _extract_citations_with_context_mupdf(self, pdf_path: str) -> CitationExtractionResult:
+        try:
+            import fitz  # PyMuPDF
+        except Exception as exc:
+            logger.warning("PyMuPDF unavailable, falling back to text-only citation extraction: %s", exc)
+            return self._extract_citations_with_context_text(pdf_path)
+
+        doc = fitz.open(pdf_path)
+        citations: list[CitationSpan] = []
+        paragraph_index = 0
+
+        for page_index, page in enumerate(doc, start=1):
+            page_dict = page.get_text("dict")
+            paragraphs = self._merge_text_blocks(page_dict.get("blocks", []))
+            for blocks in paragraphs:
+                paragraph_index += 1
+                paragraph_text, line_meta = self._build_paragraph_from_blocks(blocks)
+                if not paragraph_text.strip():
+                    continue
+
+                for sentence, start, end in self._split_sentences_with_spans(paragraph_text):
+                    extracted = self._extract_sentence_citations(sentence)
+                    if not extracted:
+                        continue
+
+                    line_info = self._find_line_for_span(line_meta, start, end)
+                    line_in_paragraph = line_info.get("line_in_paragraph", 0)
+                    bbox = line_info.get("bbox")
+
+                    for item in extracted:
+                        if item["kind"] == "numeric":
+                            for number in item.get("numbers", []):
+                                citations.append(
+                                    CitationSpan(
+                                        marker=f"[{number}]",
+                                        marker_raw=item["marker"],
+                                        kind="numeric",
+                                        sentence=sentence,
+                                        page=page_index,
+                                        paragraph_index=paragraph_index,
+                                        line_in_paragraph=line_in_paragraph,
+                                        bbox=bbox,
+                                        reference_number=number,
+                                    )
+                                )
+                        else:
+                            citations.append(
+                                CitationSpan(
+                                    marker=item["marker"],
+                                    kind="author_year",
+                                    sentence=sentence,
+                                    page=page_index,
+                                    paragraph_index=paragraph_index,
+                                    line_in_paragraph=line_in_paragraph,
+                                    bbox=bbox,
+                                    author=item.get("author", ""),
+                                    year=item.get("year", ""),
+                                )
+                            )
+
+        return CitationExtractionResult(citations=citations, backend="mupdf")
+
+    def _extract_citations_with_context_text(self, pdf_path: str) -> CitationExtractionResult:
+        content = self.parse_pdf(pdf_path)
+        citations: list[CitationSpan] = []
+        paragraph_index = 0
+
+        for paragraph in content.split("\n\n"):
+            paragraph = paragraph.strip()
+            if not paragraph or paragraph.lower().startswith("## page"):
+                continue
+            paragraph_index += 1
+            for sentence, start, end in self._split_sentences_with_spans(paragraph):
+                extracted = self._extract_sentence_citations(sentence)
+                if not extracted:
+                    continue
+                for item in extracted:
+                    if item["kind"] == "numeric":
+                        for number in item.get("numbers", []):
+                            citations.append(
+                                CitationSpan(
+                                    marker=item["marker"],
+                                    kind="numeric",
+                                    sentence=sentence,
+                                    page=0,
+                                    paragraph_index=paragraph_index,
+                                    line_in_paragraph=0,
+                                    reference_number=number,
+                                )
+                            )
+                    else:
+                        citations.append(
+                            CitationSpan(
+                                marker=item["marker"],
+                                kind="author_year",
+                                sentence=sentence,
+                                page=0,
+                                paragraph_index=paragraph_index,
+                                line_in_paragraph=0,
+                                author=item.get("author", ""),
+                                year=item.get("year", ""),
+                            )
+                        )
+
+        return CitationExtractionResult(citations=citations, backend="text")
+
+    def _merge_text_blocks(
+        self,
+        blocks: list[dict[str, Any]],
+    ) -> list[list[dict[str, Any]]]:
+        paragraphs: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = []
+
+        for block in blocks:
+            if block.get("type") != 0:
+                continue
+
+            if not current:
+                current = [block]
+                continue
+
+            if self._should_merge_blocks(current[-1], block):
+                current.append(block)
+            else:
+                paragraphs.append(current)
+                current = [block]
+
+        if current:
+            paragraphs.append(current)
+
+        return paragraphs
+
+    def _should_merge_blocks(
+        self,
+        prev: dict[str, Any],
+        curr: dict[str, Any],
+    ) -> bool:
+        prev_bbox = prev.get("bbox") or [0, 0, 0, 0]
+        curr_bbox = curr.get("bbox") or [0, 0, 0, 0]
+        prev_x0, prev_y0, prev_x1, prev_y1 = prev_bbox
+        curr_x0, curr_y0, _curr_x1, _curr_y1 = curr_bbox
+
+        gap = curr_y0 - prev_y1
+        if gap < -2:
+            return False
+
+        prev_line_height = self._estimate_line_height(prev)
+        if prev_line_height <= 0:
+            prev_line_height = 10.0
+
+        close_vertically = gap <= (prev_line_height * 1.6)
+        aligned = abs(curr_x0 - prev_x0) <= 10
+        indent = curr_x0 - prev_x0
+
+        prev_last_line = self._last_line_text(prev)
+        prev_end_sentence = bool(re.search(r"[.!?]['\"”’)]*$", prev_last_line.strip()))
+        curr_first_line = self._first_line_text(curr)
+        curr_starts_lower = curr_first_line[:1].islower()
+
+        if indent > 18:
+            return False
+
+        if close_vertically and aligned and (not prev_end_sentence or curr_starts_lower):
+            return True
+
+        return False
+
+    def _estimate_line_height(self, block: dict[str, Any]) -> float:
+        for line in block.get("lines", []):
+            bbox = line.get("bbox")
+            if bbox and len(bbox) == 4:
+                return max(0.0, float(bbox[3]) - float(bbox[1]))
+        return 0.0
+
+    def _last_line_text(self, block: dict[str, Any]) -> str:
+        lines = block.get("lines", [])
+        if not lines:
+            return ""
+        return "".join(span.get("text", "") for span in lines[-1].get("spans", []))
+
+    def _first_line_text(self, block: dict[str, Any]) -> str:
+        lines = block.get("lines", [])
+        if not lines:
+            return ""
+        return "".join(span.get("text", "") for span in lines[0].get("spans", []))
+
+    def _build_paragraph_from_blocks(
+        self,
+        blocks: list[dict[str, Any]],
+    ) -> tuple[str, list[dict[str, Any]]]:
+        paragraph_text = ""
+        line_meta: list[dict[str, Any]] = []
+        line_in_paragraph = 0
+
+        for block in blocks:
+            for line in block.get("lines", []):
+                line_text = "".join(span.get("text", "") for span in line.get("spans", []))
+                if not line_text.strip():
+                    continue
+
+                if paragraph_text:
+                    paragraph_text += "\n"
+                start = len(paragraph_text)
+                paragraph_text += line_text
+                end = len(paragraph_text)
+
+                line_in_paragraph += 1
+                bbox = line.get("bbox")
+                bbox_tuple = (
+                    tuple(bbox) if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else None
+                )
+
+                line_meta.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "line_in_paragraph": line_in_paragraph,
+                        "bbox": bbox_tuple,
+                    }
+                )
+
+        return paragraph_text, line_meta
+
+    def _split_sentences_with_spans(self, text: str) -> list[tuple[str, int, int]]:
+        spans: list[tuple[str, int, int]] = []
+        start = 0
+
+        for match in self.sentence_split_regex.finditer(text):
+            end = match.start()
+            candidate = text[start:end].strip()
+            if candidate and self._ends_with_abbreviation(candidate):
+                continue
+            if candidate:
+                spans.append((self._normalize_sentence(candidate), start, end))
+            start = match.end()
+
+        tail = text[start:].strip()
+        if tail:
+            spans.append((self._normalize_sentence(tail), start, len(text)))
+
+        return spans
+
+    def _ends_with_abbreviation(self, sentence: str) -> bool:
+        lowered = sentence.strip().lower()
+        return any(lowered.endswith(abbrev) for abbrev in self.SENTENCE_ABBREVIATIONS)
+
+    def _normalize_sentence(self, sentence: str) -> str:
+        return " ".join(sentence.split())
+
+    def _extract_sentence_citations(self, sentence: str) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+
+        for match in self.citation_regex.finditer(sentence):
+            marker = match.group(0)
+            numbers = self._expand_numeric_marker(marker)
+            results.append({"kind": "numeric", "marker": marker, "numbers": numbers})
+
+        for match in self.author_year_inline_regex.finditer(sentence):
+            results.append(
+                {
+                    "kind": "author_year",
+                    "marker": match.group(0),
+                    "author": match.group(1),
+                    "year": match.group(2),
+                }
+            )
+
+        for match in self.author_year_paren_regex.finditer(sentence):
+            group = match.group(1)
+            parts = [p.strip() for p in group.split(";") if p.strip()]
+            last_author = ""
+            for part in parts:
+                parsed = self._parse_author_year_part(part, last_author)
+                if not parsed:
+                    continue
+                author, year = parsed
+                last_author = author or last_author
+                marker = f"{author}, {year}" if author else year
+                results.append(
+                    {
+                        "kind": "author_year",
+                        "marker": marker,
+                        "author": author,
+                        "year": year,
+                    }
+                )
+
+        return results
+
+    def _parse_author_year_part(
+        self,
+        part: str,
+        fallback_author: str,
+    ) -> Optional[tuple[str, str]]:
+        match = re.search(r"(.+?)[,\s]+((?:19|20)\d{2}[a-z]?)", part)
+        if match:
+            author = match.group(1).strip()
+            year = match.group(2).strip()
+            return author, year
+        match = re.search(r"((?:19|20)\d{2}[a-z]?)", part)
+        if match and fallback_author:
+            return fallback_author, match.group(1)
+        return None
+
+    def _expand_numeric_marker(self, marker: str) -> list[int]:
+        inner = marker.strip("[]")
+        numbers: set[int] = set()
+        for part in inner.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                try:
+                    start, end = map(int, part.split("-", 1))
+                    numbers.update(range(start, end + 1))
+                except ValueError:
+                    continue
+            else:
+                try:
+                    numbers.add(int(part))
+                except ValueError:
+                    continue
+        return sorted(numbers)
+
+    def _find_line_for_span(
+        self,
+        line_meta: list[dict[str, Any]],
+        start: int,
+        end: int,
+    ) -> dict[str, Any]:
+        for meta in line_meta:
+            if meta["start"] <= start < meta["end"]:
+                return meta
+            if start <= meta["start"] < end:
+                return meta
+        return {"line_in_paragraph": 0, "bbox": None}
+
+    def _link_citations_to_references(
+        self,
+        citations: list[CitationSpan],
+        references: list[ReferenceEntry],
+    ) -> None:
+        ref_by_number = {
+            ref.reference_number: ref for ref in references if ref.reference_number
+        }
+        ref_by_author_year: dict[str, list[ReferenceEntry]] = {}
+        for ref in references:
+            key = self._author_year_key(ref.author, ref.year)
+            if key:
+                ref_by_author_year.setdefault(key, []).append(ref)
+
+        for citation in citations:
+            if citation.kind == "numeric" and citation.reference_number:
+                ref = ref_by_number.get(citation.reference_number)
+                if ref:
+                    citation.ref_key = ref.key
+            elif citation.kind == "author_year":
+                key = self._author_year_key(citation.author, citation.year)
+                candidates = ref_by_author_year.get(key, [])
+                if candidates:
+                    citation.ref_candidates = [c.key for c in candidates]
+                    citation.ref_key = candidates[0].key
+
+    def _author_year_key(self, author: str, year: str) -> str:
+        author_key = self._normalize_author_key(author)
+        year_key = str(year).strip()
+        if not author_key or not year_key:
+            return ""
+        return f"{author_key}|{year_key}"
+
+    def _normalize_author_key(self, author: str) -> str:
+        if not author:
+            return ""
+        lowered = author.lower()
+        lowered = re.sub(r"et al\.?", "", lowered)
+        lowered = lowered.replace("&", "and")
+        primary = lowered.split("and")[0]
+        tokens = re.findall(r"[a-z]+", primary)
+        if not tokens:
+            return ""
+        return tokens[-1]
 
     def _find_reference_block(self, text: str) -> str:
         lines = text.splitlines()
@@ -574,6 +1371,36 @@ def create_citation_checker_mcp_server():
                     "required": ["bib_entry"],
                 },
             ),
+            Tool(
+                name="extract_citations_with_context",
+                description=(
+                    "Extract citations from a PDF with sentence, page, and line context. "
+                    "Optionally verify references against external sources."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "pdf_path": {
+                            "type": "string",
+                            "description": "Path to the PDF file",
+                        },
+                        "verify_references": {
+                            "type": "boolean",
+                            "description": "Verify references via external sources",
+                        },
+                        "verify_sources": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Ordered list of sources to query",
+                        },
+                        "verify_limit": {
+                            "type": "integer",
+                            "description": "Max number of references to verify",
+                        },
+                    },
+                    "required": ["pdf_path"],
+                },
+            ),
         ]
 
     @app.call_tool()
@@ -648,6 +1475,23 @@ def create_citation_checker_mcp_server():
                     )
 
                 return [TextContent(type="text", text=json.dumps(report.to_dict()))]
+
+            elif name == "extract_citations_with_context":
+                verify = bool(arguments.get("verify_references", False))
+                sources = arguments.get("verify_sources")
+                verify_limit = arguments.get("verify_limit")
+                if verify:
+                    payload = await checker.extract_citations_with_context_from_pdf_async(
+                        arguments["pdf_path"],
+                        verify_references=True,
+                        sources=sources,
+                        verify_limit=verify_limit,
+                    )
+                else:
+                    payload = checker.extract_citations_with_context_from_pdf(
+                        arguments["pdf_path"]
+                    )
+                return [TextContent(type="text", text=json.dumps(payload))]
 
             else:
                 return [TextContent(

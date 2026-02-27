@@ -27,3 +27,19 @@ def test_semantic_scholar_fetcher_real_api():
     assert result is not None, "Semantic Scholar API returned no results"
     assert result.title
     assert result.year
+
+
+def test_semantic_scholar_search_deep_learning_statistical_viewpoint():
+    load_test_env()
+    config = load_search_engine_config()
+    if not config.semantic_scholar_api_key:
+        pytest.skip("SEMANTIC_SCHOLAR_API_KEY not configured")
+
+    fetcher = SemanticScholarFetcher(api_key=config.semantic_scholar_api_key)
+    title = "Deep learning: a statistical viewpoint"
+
+    result = fetcher.search_by_title(title)
+    print("Search result:", result)
+    if result is None:
+        pytest.xfail("Semantic Scholar returned no result for this title")
+    assert result.title

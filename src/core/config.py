@@ -108,6 +108,22 @@ class ReportConfig(BaseModel):
     format: str = "markdown"
 
 
+class CitationConfig(BaseModel):
+    """Configuration for citation extraction backends.
+
+    Attributes:
+        backend: Backend selector ("auto", "grobid", "mupdf").
+        grobid_url: Base URL for the GROBID service.
+        grobid_timeout_s: HTTP timeout for GROBID requests in seconds.
+        grobid_consolidate: Whether to enable GROBID citation consolidation.
+    """
+
+    backend: str = "auto"
+    grobid_url: str = "http://localhost:8070"
+    grobid_timeout_s: int = 30
+    grobid_consolidate: bool = False
+
+
 class SurveyMAEConfig(BaseModel):
     """Main configuration class for SurveyMAE.
 
@@ -129,6 +145,7 @@ class SurveyMAEConfig(BaseModel):
     mcp_servers: List[MCPServerConfig] = Field(default_factory=list)
     debate: DebateConfig = Field(default_factory=DebateConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
+    citation: CitationConfig = Field(default_factory=CitationConfig)
 
     @classmethod
     def from_yaml(cls, config_path: str) -> "SurveyMAEConfig":
@@ -170,6 +187,9 @@ class SurveyMAEConfig(BaseModel):
 
         if "report" in data and isinstance(data["report"], dict):
             data["report"] = ReportConfig(**data["report"])
+
+        if "citation" in data and isinstance(data["citation"], dict):
+            data["citation"] = CitationConfig(**data["citation"])
 
         return cls(**data)
 

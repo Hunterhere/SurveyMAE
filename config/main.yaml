@@ -14,6 +14,15 @@ llm:
   max_tokens: 4096
   # api_key is loaded from OPENAI_API_KEY env var
 
+# Citation Extraction Configuration
+citation:
+  # backend: auto | grobid | mupdf
+  backend: auto
+  # GROBID service URL (if backend is grobid/auto)
+  grobid_url: http://localhost:8070
+  grobid_timeout_s: 30
+  grobid_consolidate: false
+
 # Agent Configurations
 agents:
   - name: verifier
