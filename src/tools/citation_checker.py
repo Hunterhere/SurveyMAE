@@ -42,6 +42,8 @@ class CitationSpan:
     ref_key: Optional[str] = None
     ref_candidates: list[str] = field(default_factory=list)
     marker_raw: Optional[str] = None
+    section_title: Optional[str] = None
+    section_index: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +60,8 @@ class CitationSpan:
             "year": self.year,
             "ref_key": self.ref_key,
             "ref_candidates": self.ref_candidates,
+            "section_title": self.section_title,
+            "section_index": self.section_index,
         }
 
 
@@ -99,6 +103,7 @@ class CitationExtractionResult:
 
     citations: list[CitationSpan] = field(default_factory=list)
     references: list[ReferenceEntry] = field(default_factory=list)
+    sections: list[dict[str, Any]] = field(default_factory=list)
     backend: str = ""
     errors: list[str] = field(default_factory=list)
 
@@ -106,6 +111,7 @@ class CitationExtractionResult:
         return {
             "citations": [c.to_dict() for c in self.citations],
             "references": [r.to_dict() for r in self.references],
+            "sections": self.sections,
             "backend": self.backend,
             "errors": self.errors,
         }
@@ -304,6 +310,8 @@ class CitationChecker:
 
         self.config = config or load_config()
         self.result_store = result_store
+        self._heading_threshold: Optional[float] = None
+        self._heading_candidates: set[str] = set()
 
     def extract_citations(self, text: str) -> List[str]:
         """Extract all citations from the text.
@@ -666,14 +674,48 @@ class CitationChecker:
         doc = fitz.open(pdf_path)
         citations: list[CitationSpan] = []
         paragraph_index = 0
+        sections: list[dict[str, Any]] = []
+        current_section_title: Optional[str] = None
+        section_index = 0
+        body_font_size = self._estimate_body_font_size(doc)
+        self._heading_threshold = (
+            body_font_size + 1.5 if body_font_size else None
+        )
+        self._heading_candidates = self._extract_markdown_headings(pdf_path)
 
         for page_index, page in enumerate(doc, start=1):
             page_dict = page.get_text("dict")
             paragraphs = self._merge_text_blocks(page_dict.get("blocks", []))
             for blocks in paragraphs:
                 paragraph_index += 1
-                paragraph_text, line_meta = self._build_paragraph_from_blocks(blocks)
+                paragraph_text, line_meta, max_font_size = self._build_paragraph_from_blocks(
+                    blocks
+                )
                 if not paragraph_text.strip():
+                    continue
+                heading = self._extract_heading_text(paragraph_text, max_font_size)
+                if heading:
+                    if heading:
+                        current_section_title = heading
+                        section_index += 1
+                        kind = self._infer_section_kind(current_section_title)
+                        if (
+                            section_index == 1
+                            and page_index == 1
+                            and kind == "main"
+                            and not re.match(r"^\d+(\.\d+)*\b", current_section_title)
+                        ):
+                            kind = "title"
+                        sections.append(
+                            {
+                                "section_index": section_index,
+                                "section_title": current_section_title,
+                                "page": page_index,
+                                "paragraph_index": paragraph_index,
+                                "level": self._infer_section_level(current_section_title),
+                                "kind": kind,
+                            }
+                        )
                     continue
 
                 for sentence, start, end in self._split_sentences_with_spans(paragraph_text):
@@ -699,6 +741,8 @@ class CitationChecker:
                                         line_in_paragraph=line_in_paragraph,
                                         bbox=bbox,
                                         reference_number=number,
+                                        section_title=current_section_title,
+                                        section_index=section_index or None,
                                     )
                                 )
                         else:
@@ -713,19 +757,43 @@ class CitationChecker:
                                     bbox=bbox,
                                     author=item.get("author", ""),
                                     year=item.get("year", ""),
+                                    section_title=current_section_title,
+                                    section_index=section_index or None,
                                 )
                             )
 
-        return CitationExtractionResult(citations=citations, backend="mupdf")
+        return CitationExtractionResult(citations=citations, sections=sections, backend="mupdf")
 
     def _extract_citations_with_context_text(self, pdf_path: str) -> CitationExtractionResult:
         content = self.parse_pdf(pdf_path)
         citations: list[CitationSpan] = []
         paragraph_index = 0
+        sections: list[dict[str, Any]] = []
+        current_section_title: Optional[str] = None
+        section_index = 0
 
         for paragraph in content.split("\n\n"):
             paragraph = paragraph.strip()
             if not paragraph or paragraph.lower().startswith("## page"):
+                continue
+            if paragraph.startswith("#"):
+                heading = self._normalize_heading_text(paragraph)
+                if heading:
+                    current_section_title = heading
+                    section_index += 1
+                    kind = self._infer_section_kind(current_section_title)
+                    if section_index == 1 and kind == "main":
+                        kind = "title"
+                    sections.append(
+                        {
+                            "section_index": section_index,
+                            "section_title": current_section_title,
+                            "page": None,
+                            "paragraph_index": paragraph_index,
+                            "level": self._infer_section_level(current_section_title),
+                            "kind": kind,
+                        }
+                    )
                 continue
             paragraph_index += 1
             for sentence, start, end in self._split_sentences_with_spans(paragraph):
@@ -744,6 +812,8 @@ class CitationChecker:
                                     paragraph_index=paragraph_index,
                                     line_in_paragraph=0,
                                     reference_number=number,
+                                    section_title=current_section_title,
+                                    section_index=section_index or None,
                                 )
                             )
                     else:
@@ -757,10 +827,12 @@ class CitationChecker:
                                 line_in_paragraph=0,
                                 author=item.get("author", ""),
                                 year=item.get("year", ""),
+                                section_title=current_section_title,
+                                section_index=section_index or None,
                             )
                         )
 
-        return CitationExtractionResult(citations=citations, backend="text")
+        return CitationExtractionResult(citations=citations, sections=sections, backend="text")
 
     def _merge_text_blocks(
         self,
@@ -793,6 +865,8 @@ class CitationChecker:
         prev: dict[str, Any],
         curr: dict[str, Any],
     ) -> bool:
+        if self._is_heading_block(prev) or self._is_heading_block(curr):
+            return False
         prev_bbox = prev.get("bbox") or [0, 0, 0, 0]
         curr_bbox = curr.get("bbox") or [0, 0, 0, 0]
         prev_x0, prev_y0, prev_x1, prev_y1 = prev_bbox
@@ -823,6 +897,133 @@ class CitationChecker:
 
         return False
 
+    def _is_heading_block(self, block: dict[str, Any]) -> bool:
+        text = self._first_line_text(block).strip()
+        font_size = self._block_font_size(block)
+        return bool(self._extract_heading_text(text, font_size))
+
+    def _extract_heading_text(self, text: str, font_size: float) -> Optional[str]:
+        if self._heading_threshold is not None and font_size < self._heading_threshold:
+            return None
+        heading = self._normalize_heading_text(text)
+        if not heading:
+            return None
+        if not self._is_heading_text(heading):
+            return None
+        if self._heading_candidates and len(self._heading_candidates) >= 3:
+            if heading not in self._heading_candidates:
+                return None
+        return heading
+
+    def _is_heading_text(self, text: str) -> bool:
+        if not text:
+            return False
+        stripped = text.strip()
+        if len(stripped) > 80:
+            return False
+        if stripped.endswith("."):
+            return False
+        lowered = stripped.lower()
+        if lowered.startswith("references") or lowered.startswith("bibliography"):
+            return True
+        if re.match(r"^\d+(\.\d+)*\s+\S", stripped):
+            return True
+        if stripped.isupper():
+            return True
+        words = re.findall(r"[A-Za-z][A-Za-z'\-]*", stripped)
+        if not words:
+            return False
+        title_case = sum(1 for w in words if w[0].isupper())
+        return title_case / max(len(words), 1) >= 0.6
+
+    def _normalize_heading_text(self, text: str) -> str:
+        raw = text.strip()
+        if not raw:
+            return ""
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        if len(lines) >= 2 and re.fullmatch(r"\d+(\.\d+)*|[A-Z]", lines[0]):
+            heading = f"{lines[0]} {lines[1]}"
+        else:
+            heading = lines[0]
+        heading = heading.lstrip("#").strip()
+        heading = re.sub(r"\*\*(.+?)\*\*", r"\1", heading)
+        heading = re.sub(r"\s+", " ", heading)
+        return heading.strip()
+
+    def _extract_markdown_headings(self, pdf_path: str) -> set[str]:
+        """Extract heading candidates from markdown output (when available)."""
+        try:
+            parser = PDFParser()
+            content = parser.parse_cached(pdf_path)
+        except Exception:
+            return set()
+
+        candidates: set[str] = set()
+        for line in content.splitlines():
+            if not line.lstrip().startswith("#"):
+                continue
+            heading = self._normalize_heading_text(line)
+            if not heading:
+                continue
+            if len(heading) < 4:
+                continue
+            if not self._is_heading_text(heading):
+                continue
+            candidates.add(heading)
+        return candidates
+
+    def _estimate_body_font_size(self, doc: Any) -> float:
+        from collections import Counter
+
+        counts: Counter[float] = Counter()
+        for page in doc:
+            page_dict = page.get_text("dict")
+            for block in page_dict.get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        size = span.get("size")
+                        text = span.get("text", "")
+                        if size and text:
+                            counts[round(float(size), 1)] += len(text)
+        if not counts:
+            return 0.0
+        return counts.most_common(1)[0][0]
+
+    def _block_font_size(self, block: dict[str, Any]) -> float:
+        sizes = []
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                size = span.get("size")
+                if size:
+                    sizes.append(float(size))
+        if not sizes:
+            return 0.0
+        return sum(sizes) / len(sizes)
+
+    def _infer_section_level(self, title: str) -> int:
+        match = re.match(r"^(\d+(?:\.\d+)*)\b", title)
+        if match:
+            return match.group(1).count(".") + 1
+        if re.match(r"^[A-Z]\b", title):
+            return 1
+        return 1
+
+    def _infer_section_kind(self, title: str) -> str:
+        lowered = title.lower()
+        if "abstract" in lowered:
+            return "abstract"
+        if "introduction" in lowered:
+            return "introduction"
+        if "conclusion" in lowered:
+            return "conclusion"
+        if any(key in lowered for key in ("references", "bibliography")):
+            return "references"
+        if any(key in lowered for key in ("appendix", "appendices")):
+            return "appendix"
+        return "main"
+
     def _estimate_line_height(self, block: dict[str, Any]) -> float:
         for line in block.get("lines", []):
             bbox = line.get("bbox")
@@ -845,10 +1046,11 @@ class CitationChecker:
     def _build_paragraph_from_blocks(
         self,
         blocks: list[dict[str, Any]],
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], float]:
         paragraph_text = ""
         line_meta: list[dict[str, Any]] = []
         line_in_paragraph = 0
+        max_font_size = 0.0
 
         for block in blocks:
             for line in block.get("lines", []):
@@ -863,6 +1065,9 @@ class CitationChecker:
                 end = len(paragraph_text)
 
                 line_in_paragraph += 1
+                sizes = [span.get("size") for span in line.get("spans", []) if span.get("size")]
+                line_font_size = float(sum(sizes) / len(sizes)) if sizes else 0.0
+                max_font_size = max(max_font_size, line_font_size)
                 bbox = line.get("bbox")
                 bbox_tuple = (
                     tuple(bbox) if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else None
@@ -874,10 +1079,11 @@ class CitationChecker:
                         "end": end,
                         "line_in_paragraph": line_in_paragraph,
                         "bbox": bbox_tuple,
+                        "font_size": line_font_size,
                     }
                 )
 
-        return paragraph_text, line_meta
+        return paragraph_text, line_meta, max_font_size
 
     def _split_sentences_with_spans(self, text: str) -> list[tuple[str, int, int]]:
         spans: list[tuple[str, int, int]] = []

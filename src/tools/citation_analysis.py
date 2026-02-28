@@ -5,8 +5,10 @@ Provides basic statistics over extracted references, such as counts by year.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
+from datetime import datetime, timezone
 
 from src.tools.citation_checker import CitationChecker
 from src.tools.result_store import ResultStore
@@ -42,7 +44,7 @@ class CitationAnalyzer:
         result_store: Optional[ResultStore] = None,
     ) -> None:
         self.pdf_parser = pdf_parser or PDFParser()
-        self.citation_checker = citation_checker or CitationChecker()
+        self.citation_checker = citation_checker or CitationChecker(result_store=result_store)
         self.result_store = result_store
 
     def analyze_pdf(self, pdf_path: str) -> dict[str, Any]:
@@ -99,6 +101,529 @@ class CitationAnalyzer:
         normalized = self._merge_validation_metadata(references)
         return self.analyze_references(normalized)
 
+    def analyze_paragraph_distribution(
+        self,
+        citations: list[dict[str, Any]],
+        references: list[dict[str, Any]],
+        sections: Optional[list[dict[str, Any]]] = None,
+        exclude_section_kinds: Optional[set[str]] = None,
+        exclude_paragraph_section_kinds: Optional[set[str]] = None,
+        max_examples_per_paragraph: int = 2,
+        max_paragraphs: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Analyze citation distribution across paragraphs."""
+        ref_by_key = {ref.get("key"): ref for ref in references if ref.get("key")}
+        ref_by_number = {
+            ref.get("reference_number"): ref
+            for ref in references
+            if ref.get("reference_number")
+        }
+
+        paragraph_map: dict[int, list[dict[str, Any]]] = {}
+        for citation in citations:
+            paragraph_index = citation.get("paragraph_index")
+            if not paragraph_index:
+                continue
+            paragraph_map.setdefault(int(paragraph_index), []).append(citation)
+
+        paragraph_indices = sorted(paragraph_map.keys())
+        if max_paragraphs is not None:
+            paragraph_indices = paragraph_indices[: max_paragraphs]
+
+        paragraph_entries = []
+        paragraph_ref_sets: dict[int, set[str]] = {}
+        total_citations = 0
+        total_linked = 0
+        total_missing = 0
+        unique_refs: set[str] = set()
+        if exclude_section_kinds is None:
+            exclude_section_kinds = {"title", "abstract"}
+        if exclude_paragraph_section_kinds is None:
+            exclude_paragraph_section_kinds = {"references"}
+
+        section_kind_map: dict[tuple[Optional[int], str], str] = {}
+        section_kind_by_index: dict[int, str] = {}
+        section_root_map: dict[Optional[int], Optional[int]] = {}
+        section_title_map: dict[Optional[int], str] = {}
+        section_level_map: dict[Optional[int], int] = {}
+        section_number_map: dict[int, str] = {}
+        section_info: dict[int, dict[str, Any]] = {}
+        section_stats: dict[int, dict[str, Any]] = {}
+        # TODO: Paragraph table sometimes falls back to parent section titles when child
+        # headings are not reliably detected or are duplicated. Improve heading detection
+        # and section dedup/mapping so Section labels consistently show "number + subsection title".
+
+        if sections:
+            ordered_sections = sorted(
+                sections,
+                key=lambda sec: sec.get("section_index") or 0,
+            )
+            stack: list[tuple[int, Optional[int]]] = []
+            counters: list[int] = []
+            last_appendix_level: Optional[int] = None
+
+            for sec in ordered_sections:
+                sec_index = sec.get("section_index")
+                if sec_index is None:
+                    continue
+                raw_title = sec.get("section_title") or "Unknown"
+                level = sec.get("level") or 1
+                try:
+                    level = int(level)
+                except (TypeError, ValueError):
+                    level = 1
+                if level < 1:
+                    level = 1
+                explicit_number, _ = self._split_section_prefix(raw_title)
+                kind = sec.get("kind") or "main"
+                if (
+                    explicit_number
+                    and re.match(r"^[A-Z]$", explicit_number)
+                    and last_appendix_level is not None
+                    and level <= last_appendix_level
+                ):
+                    level = last_appendix_level + 1
+                if explicit_number and re.match(r"^\d+(?:\.\d+)*$", explicit_number):
+                    counters = [int(p) for p in explicit_number.split(".")]
+                    section_number_map[sec_index] = explicit_number
+                elif explicit_number and re.match(r"^[A-Z]$", explicit_number):
+                    section_number_map[sec_index] = explicit_number
+                else:
+                    if level > len(counters):
+                        while len(counters) < level:
+                            counters.append(1)
+                    else:
+                        counters = counters[:level]
+                        counters[-1] += 1
+                    section_number_map[sec_index] = ".".join(str(c) for c in counters)
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+                parent_index = stack[-1][1] if stack else None
+                section_root_map[sec_index] = parent_index
+                section_title_map[sec_index] = raw_title
+                section_level_map[sec_index] = level
+                section_kind_by_index[sec_index] = kind
+                section_info[sec_index] = {
+                    "section_index": sec_index,
+                    "section_number": section_number_map.get(sec_index),
+                    "section_title": raw_title,
+                    "level": level,
+                    "kind": kind,
+                }
+                if kind == "appendix":
+                    last_appendix_level = level
+                stack.append((level, sec_index))
+
+            def _find_root(index: Optional[int]) -> Optional[int]:
+                current = index
+                while current is not None and current in section_root_map:
+                    parent = section_root_map[current]
+                    if parent is None:
+                        break
+                    current = parent
+                return current
+
+            for sec in ordered_sections:
+                sec_index = sec.get("section_index")
+                if sec_index is None:
+                    continue
+                root_index = _find_root(sec_index) or sec_index
+                root_title = section_title_map.get(root_index, sec.get("section_title") or "Unknown")
+                root_kind = section_kind_by_index.get(root_index, "main")
+                section_kind_map.setdefault((root_index, root_title), root_kind)
+
+        def _infer_kind_from_title(title: Optional[str]) -> Optional[str]:
+            if not title:
+                return None
+            lowered = str(title).lower()
+            if "abstract" in lowered:
+                return "abstract"
+            if "introduction" in lowered:
+                return "introduction"
+            if "conclusion" in lowered:
+                return "conclusion"
+            if any(key in lowered for key in ("references", "bibliography")):
+                return "references"
+            if any(key in lowered for key in ("appendix", "appendices")):
+                return "appendix"
+            return None
+
+        for paragraph_index in paragraph_indices:
+            items = paragraph_map.get(paragraph_index, [])
+            page_values = [c.get("page") for c in items if c.get("page")]
+            line_values = [c.get("line_in_paragraph") for c in items if c.get("line_in_paragraph")]
+            raw_section_title = next(
+                (c.get("section_title") for c in items if c.get("section_title")),
+                None,
+            )
+            raw_section_index = next(
+                (c.get("section_index") for c in items if c.get("section_index")),
+                None,
+            )
+            leaf_index = raw_section_index
+            leaf_title = raw_section_title
+            if leaf_index is not None and not leaf_title:
+                leaf_title = section_title_map.get(leaf_index)
+            root_index = leaf_index
+            if leaf_index in section_root_map:
+                root_index = leaf_index
+                while section_root_map.get(root_index) is not None:
+                    root_index = section_root_map[root_index]
+            root_title = section_title_map.get(root_index, leaf_title or "Unknown")
+            root_number = section_number_map.get(root_index)
+            section_key = (root_index, root_title or "Unknown")
+            section_kind = section_kind_map.get(section_key)
+            if not section_kind:
+                section_kind = section_kind_by_index.get(root_index)
+            if not section_kind:
+                section_kind = _infer_kind_from_title(root_title) or _infer_kind_from_title(leaf_title)
+            leaf_kind = section_kind_by_index.get(leaf_index) or _infer_kind_from_title(leaf_title) or section_kind
+            leaf_number = section_number_map.get(leaf_index)
+            leaf_level = section_level_map.get(leaf_index)
+
+            ref_counts: dict[str, int] = {}
+            valid_counts = 0
+            invalid_counts = 0
+            unknown_counts = 0
+            ref_set: set[str] = set()
+            paragraph_linked = 0
+            paragraph_missing = 0
+
+            for citation in items:
+                if leaf_kind in exclude_section_kinds:
+                    continue
+                if leaf_kind in exclude_paragraph_section_kinds:
+                    continue
+                total_citations += 1
+                ref_key = citation.get("ref_key")
+                if not ref_key and citation.get("reference_number"):
+                    ref = ref_by_number.get(citation.get("reference_number"))
+                    ref_key = ref.get("key") if ref else None
+
+                if ref_key:
+                    ref_counts[ref_key] = ref_counts.get(ref_key, 0) + 1
+                    ref_set.add(ref_key)
+                    unique_refs.add(ref_key)
+                    paragraph_linked += 1
+
+                    ref = ref_by_key.get(ref_key) or ref_by_number.get(
+                        citation.get("reference_number")
+                    )
+                    validation = ref.get("validation") if ref else None
+                    if isinstance(validation, dict):
+                        if validation.get("is_valid") is True:
+                            valid_counts += 1
+                        elif validation.get("is_valid") is False:
+                            invalid_counts += 1
+                        else:
+                            unknown_counts += 1
+                    else:
+                        unknown_counts += 1
+                else:
+                    paragraph_missing += 1
+
+            if leaf_kind in exclude_section_kinds:
+                continue
+            if leaf_kind in exclude_paragraph_section_kinds:
+                continue
+
+            paragraph_ref_sets[paragraph_index] = ref_set
+            total_linked += paragraph_linked
+            total_missing += paragraph_missing
+
+            top_refs = sorted(ref_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+            ref_summary = []
+            for key, count in top_refs:
+                ref = ref_by_key.get(key) or {}
+                validation = ref.get("validation") if isinstance(ref, dict) else None
+                is_valid = validation.get("is_valid") if isinstance(validation, dict) else None
+                ref_summary.append(
+                    {
+                        "key": key,
+                        "count": count,
+                        "title": ref.get("title", ""),
+                        "year": ref.get("year", ""),
+                        "is_valid": is_valid,
+                    }
+                )
+
+            examples = []
+            if max_examples_per_paragraph > 0:
+                for citation in items:
+                    if leaf_kind in exclude_section_kinds:
+                        continue
+                    examples.append(
+                        {
+                            "marker": citation.get("marker"),
+                            "marker_raw": citation.get("marker_raw"),
+                            "sentence": citation.get("sentence", ""),
+                            "page": citation.get("page"),
+                            "line_in_paragraph": citation.get("line_in_paragraph"),
+                        }
+                    )
+                    if len(examples) >= max_examples_per_paragraph:
+                        break
+
+            citation_count = paragraph_linked + paragraph_missing
+
+            paragraph_entries.append(
+                {
+                    "paragraph_index": paragraph_index,
+                    "section_index": leaf_index,
+                    "section_number": leaf_number,
+                    "section_level": leaf_level,
+                    "section_title": leaf_title or "Unknown",
+                    "section_kind": leaf_kind,
+                    "root_section_index": root_index,
+                    "root_section_number": root_number,
+                    "root_section_title": root_title,
+                    "page_start": min(page_values) if page_values else None,
+                    "page_end": max(page_values) if page_values else None,
+                    "line_start": min(line_values) if line_values else None,
+                    "line_end": max(line_values) if line_values else None,
+                    "citation_count": citation_count,
+                    "unique_references": len(ref_set),
+                    "linked_citations": paragraph_linked,
+                    "missing_reference_links": paragraph_missing,
+                    "validation_counts": {
+                        "valid": valid_counts,
+                        "invalid": invalid_counts,
+                        "unknown": unknown_counts,
+                    },
+                    "top_references": ref_summary,
+                    "examples": examples,
+                }
+            )
+            if leaf_index is not None:
+                stats = section_stats.setdefault(
+                    leaf_index,
+                    {"paragraphs": set(), "citation_count": 0, "unique_refs": set()},
+                )
+                stats["paragraphs"].add(paragraph_index)
+                stats["citation_count"] += citation_count
+                stats["unique_refs"].update(ref_set)
+
+        filtered_indices = sorted(paragraph_ref_sets.keys())
+        adjacent_similarity = []
+        for left, right in zip(filtered_indices, filtered_indices[1:]):
+            left_set = paragraph_ref_sets.get(left, set())
+            right_set = paragraph_ref_sets.get(right, set())
+            union = left_set | right_set
+            if not union:
+                score = 0.0
+            else:
+                score = len(left_set & right_set) / len(union)
+            adjacent_similarity.append(
+                {
+                    "left_paragraph": left,
+                    "right_paragraph": right,
+                    "jaccard": round(score, 4),
+                    "shared_refs": len(left_set & right_set),
+                    "left_unique": len(left_set),
+                    "right_unique": len(right_set),
+                }
+            )
+
+        dispersion = []
+        per_ref_paragraphs: dict[str, set[int]] = {}
+        per_ref_counts: dict[str, int] = {}
+        for paragraph_index, items in paragraph_map.items():
+            for citation in items:
+                leaf_index = citation.get("section_index")
+                leaf_title = citation.get("section_title")
+                if leaf_index is not None and not leaf_title:
+                    leaf_title = section_title_map.get(leaf_index)
+                leaf_kind = section_kind_by_index.get(leaf_index) or _infer_kind_from_title(
+                    leaf_title
+                )
+                if not leaf_kind:
+                    root_index = leaf_index
+                    if leaf_index in section_root_map:
+                        root_index = leaf_index
+                        while section_root_map.get(root_index) is not None:
+                            root_index = section_root_map[root_index]
+                    root_title = section_title_map.get(root_index, leaf_title or "Unknown")
+                    leaf_kind = section_kind_by_index.get(root_index) or _infer_kind_from_title(
+                        root_title
+                    )
+                if leaf_kind in exclude_section_kinds:
+                    continue
+                if leaf_kind in exclude_paragraph_section_kinds:
+                    continue
+                ref_key = citation.get("ref_key")
+                if not ref_key and citation.get("reference_number"):
+                    ref = ref_by_number.get(citation.get("reference_number"))
+                    ref_key = ref.get("key") if ref else None
+                if not ref_key:
+                    continue
+                per_ref_counts[ref_key] = per_ref_counts.get(ref_key, 0) + 1
+                per_ref_paragraphs.setdefault(ref_key, set()).add(paragraph_index)
+
+        total_paragraphs = len(filtered_indices)
+        for key, para_set in per_ref_paragraphs.items():
+            ref = ref_by_key.get(key) or {}
+            validation = ref.get("validation") if isinstance(ref, dict) else None
+            is_valid = validation.get("is_valid") if isinstance(validation, dict) else None
+            paragraph_count = len(para_set)
+            dispersion.append(
+                {
+                    "key": key,
+                    "title": ref.get("title", ""),
+                    "year": ref.get("year", ""),
+                    "paragraph_count": paragraph_count,
+                    "total_citations": per_ref_counts.get(key, 0),
+                    "dispersion": round(
+                        (paragraph_count / total_paragraphs) if total_paragraphs else 0.0,
+                        4,
+                    ),
+                    "is_valid": is_valid,
+                }
+            )
+
+        dispersion.sort(key=lambda item: (-item["paragraph_count"], item["key"]))
+
+        section_agg: dict[int, dict[str, Any]] = {}
+        for sec_index in section_info:
+            stats = section_stats.get(
+                sec_index,
+                {"paragraphs": set(), "citation_count": 0, "unique_refs": set()},
+            )
+            section_agg[sec_index] = {
+                "paragraphs": set(stats["paragraphs"]),
+                "citation_count": stats["citation_count"],
+                "unique_refs": set(stats["unique_refs"]),
+            }
+
+        ordered_by_level = sorted(
+            section_info.values(),
+            key=lambda item: (item.get("level") or 1, item.get("section_index") or 0),
+            reverse=True,
+        )
+        for entry in ordered_by_level:
+            sec_index = entry["section_index"]
+            parent_index = section_root_map.get(sec_index)
+            if parent_index is None:
+                continue
+            parent_stats = section_agg.setdefault(
+                parent_index,
+                {"paragraphs": set(), "citation_count": 0, "unique_refs": set()},
+            )
+            child_stats = section_agg.get(
+                sec_index, {"paragraphs": set(), "citation_count": 0, "unique_refs": set()}
+            )
+            parent_stats["paragraphs"].update(child_stats["paragraphs"])
+            parent_stats["citation_count"] += child_stats["citation_count"]
+            parent_stats["unique_refs"].update(child_stats["unique_refs"])
+
+        section_entries = []
+        ordered_sections = sorted(
+            section_info.values(),
+            key=lambda item: (item.get("section_index") or 0),
+        )
+        for entry in ordered_sections:
+            if entry.get("kind") in exclude_section_kinds:
+                continue
+            stats = section_agg.get(
+                entry["section_index"],
+                {"paragraphs": set(), "citation_count": 0, "unique_refs": set()},
+            )
+            section_entries.append(
+                {
+                    "section_index": entry["section_index"],
+                    "section_number": entry.get("section_number"),
+                    "section_title": entry.get("section_title"),
+                    "paragraph_count": len(stats["paragraphs"]),
+                    "citation_count": stats["citation_count"],
+                    "unique_references": len(stats["unique_refs"]),
+                    "paragraph_indices": sorted(stats["paragraphs"]),
+                    "level": entry.get("level"),
+                    "kind": entry.get("kind"),
+                }
+            )
+
+        filtered_paragraphs = [p for p in paragraph_entries if p.get("citation_count")]
+
+        sections_with_citations = len(
+            [entry for entry in section_entries if entry.get("citation_count", 0) > 0]
+        )
+
+        summary = {
+            "total_citations": total_citations,
+            "paragraphs_with_citations": len(filtered_paragraphs),
+            "unique_references": len(unique_refs),
+            "linked_citations": total_linked,
+            "missing_reference_links": total_missing,
+            "avg_citations_per_paragraph": round(
+                (total_citations / len(filtered_paragraphs)) if filtered_paragraphs else 0.0, 2
+            ),
+            "avg_adjacent_similarity": round(
+                sum(edge["jaccard"] for edge in adjacent_similarity) / len(adjacent_similarity)
+                if adjacent_similarity
+                else 0.0,
+                4,
+            ),
+            "sections_with_citations": sections_with_citations,
+            "avg_citations_per_section": round(
+                (total_citations / len(section_entries)) if section_entries else 0.0, 2
+            ),
+        }
+
+        result = {
+            "format_version": "paragraph_distribution_v1",
+            "generated_at": datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+            "summary": summary,
+            "excluded_section_kinds": sorted(exclude_section_kinds),
+            "excluded_paragraph_section_kinds": sorted(exclude_paragraph_section_kinds),
+            "paragraphs": paragraph_entries,
+            "sections": section_entries,
+            "reference_dispersion": dispersion,
+            "adjacent_similarity": adjacent_similarity,
+        }
+
+        result["render"] = {
+            "markdown": self._render_paragraph_distribution_markdown(result),
+            "text": self._render_paragraph_distribution_text(result),
+        }
+
+        return result
+
+    async def analyze_pdf_paragraph_distribution(
+        self,
+        pdf_path: str,
+        verify_references: bool = True,
+        sources: Optional[list[str]] = None,
+        verify_limit: Optional[int] = None,
+    ) -> dict[str, Any]:
+        extraction = await self.citation_checker.extract_citations_with_context_from_pdf_async(
+            pdf_path,
+            verify_references=verify_references,
+            sources=sources,
+            verify_limit=verify_limit,
+        )
+        result = self.analyze_paragraph_distribution(
+            extraction.get("citations", []),
+            extraction.get("references", []),
+            sections=extraction.get("sections"),
+        )
+        if self.result_store:
+            try:
+                paper_id = self.result_store.register_paper(pdf_path)
+                payload = {
+                    "paper_id": paper_id,
+                    "analysis_type": "paragraph_distribution",
+                    "summary": result["summary"],
+                    "render": result.get("render"),
+                    "paragraph_distribution": result,
+                }
+                self.result_store.save_analysis(paper_id, payload)
+                self.result_store.update_index(paper_id, status="analyzed", source_path=pdf_path)
+            except Exception as exc:
+                logger.warning("Failed to persist paragraph analysis: %s", exc)
+
+        return result
+
     def count_by_year(self, references: list[dict[str, Any]]) -> list[YearCount]:
         """Count references by year and sort by year ascending.
 
@@ -154,6 +679,163 @@ class CitationAnalyzer:
                         ref_copy["author"] = authors
             merged.append(ref_copy)
         return merged
+
+    def _render_paragraph_distribution_markdown(self, data: dict[str, Any]) -> str:
+        summary = data.get("summary", {})
+        paragraphs = data.get("paragraphs", [])
+        sections = data.get("sections", [])
+        ordered_paragraphs = sorted(
+            paragraphs, key=lambda item: (item.get("paragraph_index") or 0)
+        )
+
+        lines = [
+            "### Paragraph Citation Distribution",
+            f"- Total citations: {summary.get('total_citations')}",
+            f"- Paragraphs with citations: {summary.get('paragraphs_with_citations')}",
+            f"- Unique references: {summary.get('unique_references')}",
+            f"- Avg citations/paragraph: {summary.get('avg_citations_per_paragraph')}",
+            f"- Avg adjacent similarity: {summary.get('avg_adjacent_similarity')}",
+            f"- Sections with citations: {summary.get('sections_with_citations')}",
+            f"- Avg citations/section: {summary.get('avg_citations_per_section')}",
+            "",
+            "#### Sections",
+            "| Section | Paragraphs | Citations | Unique Refs |",
+            "|---|---|---|---|",
+        ]
+
+        for item in sections:
+            section_label = self._format_section_label(
+                item.get("section_title"),
+                item.get("section_number"),
+                item.get("level"),
+                for_markdown=True,
+            )
+            lines.append(
+                f"| {section_label} | {item.get('paragraph_count')} | "
+                f"{item.get('citation_count')} | {item.get('unique_references')} |"
+            )
+
+        lines += [
+            "",
+            "| Paragraph | Section | Page Range | Citations | Unique Refs | Top Refs |",
+            "|---|---|---|---|---|---|",
+        ]
+
+        for item in ordered_paragraphs:
+            page_range = "-"
+            if item.get("page_start") is not None:
+                if item.get("page_end") and item.get("page_end") != item.get("page_start"):
+                    page_range = f"{item.get('page_start')}-{item.get('page_end')}"
+                else:
+                    page_range = str(item.get("page_start"))
+            top_refs = ", ".join(
+                f"{ref.get('key')}({ref.get('count')})" for ref in item.get("top_references", [])
+            )
+            section_label = self._format_section_label(
+                item.get("section_title"),
+                item.get("section_number"),
+                item.get("section_level"),
+                for_markdown=True,
+            )
+            lines.append(
+                f"| {item.get('paragraph_index')} | {section_label} | {page_range} | "
+                f"{item.get('citation_count')} | {item.get('unique_references')} | {top_refs} |"
+            )
+
+        return "\n".join(lines)
+
+    def _render_paragraph_distribution_text(self, data: dict[str, Any]) -> str:
+        summary = data.get("summary", {})
+        paragraphs = data.get("paragraphs", [])
+        sections = data.get("sections", [])
+        ordered_paragraphs = sorted(
+            paragraphs, key=lambda item: (item.get("paragraph_index") or 0)
+        )
+
+        lines = [
+            "Paragraph Citation Distribution",
+            f"Total citations: {summary.get('total_citations')}",
+            f"Paragraphs with citations: {summary.get('paragraphs_with_citations')}",
+            f"Unique references: {summary.get('unique_references')}",
+            f"Avg citations/paragraph: {summary.get('avg_citations_per_paragraph')}",
+            f"Avg adjacent similarity: {summary.get('avg_adjacent_similarity')}",
+            f"Sections with citations: {summary.get('sections_with_citations')}",
+            f"Avg citations/section: {summary.get('avg_citations_per_section')}",
+            "",
+            "Sections:",
+        ]
+
+        for item in sections:
+            section_label = self._format_section_label(
+                item.get("section_title"),
+                item.get("section_number"),
+                item.get("level"),
+                for_markdown=False,
+            )
+            lines.append(
+                f"- {section_label}: paragraphs={item.get('paragraph_count')} "
+                f"citations={item.get('citation_count')} unique_refs={item.get('unique_references')}"
+            )
+
+        lines.append("")
+
+        for item in ordered_paragraphs:
+            page_range = "-"
+            if item.get("page_start") is not None:
+                if item.get("page_end") and item.get("page_end") != item.get("page_start"):
+                    page_range = f"{item.get('page_start')}-{item.get('page_end')}"
+                else:
+                    page_range = str(item.get("page_start"))
+            top_refs = ", ".join(
+                f"{ref.get('key')}({ref.get('count')})" for ref in item.get("top_references", [])
+            )
+            section_label = self._format_section_label(
+                item.get("section_title"),
+                item.get("section_number"),
+                item.get("section_level"),
+                for_markdown=False,
+            )
+            lines.append(
+                f"[P{item.get('paragraph_index')}] section={section_label} pages={page_range} "
+                f"citations={item.get('citation_count')} "
+                f"unique_refs={item.get('unique_references')} "
+                f"top_refs={top_refs}"
+            )
+
+        return "\n".join(lines)
+
+    def _normalize_section_label(self, label: Optional[str]) -> str:
+        if not label:
+            return "Unknown"
+        return " ".join(str(label).split())
+
+    def _split_section_prefix(self, title: Optional[str]) -> tuple[Optional[str], str]:
+        if not title:
+            return None, "Unknown"
+        text = self._normalize_section_label(title)
+        match = re.match(r"^(\d+(?:\.\d+)*)\s+(.+)$", text)
+        if match:
+            return match.group(1), match.group(2)
+        match = re.match(r"^([A-Z])\s+(.+)$", text)
+        if match:
+            return match.group(1), match.group(2)
+        return None, text
+
+    def _format_section_label(
+        self,
+        title: Optional[str],
+        number: Optional[str],
+        level: Optional[int],
+        *,
+        for_markdown: bool,
+    ) -> str:
+        label = self._normalize_section_label(title)
+        prefix, remainder = self._split_section_prefix(label)
+        if number and prefix == number and remainder:
+            label = remainder
+        if number:
+            label = f"{number} {label}"
+        return label
 
     def _count_unknown_years(self, year_counts: list[YearCount]) -> int:
         for entry in year_counts:
@@ -405,6 +1087,62 @@ def create_citation_analysis_mcp_server():
                     "required": ["references"],
                 },
             ),
+            Tool(
+                name="analyze_paragraph_distribution",
+                description="Analyze citation distribution across paragraphs",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "citations": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Citations with paragraph indices",
+                        },
+                        "references": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Reference entries with metadata/validation",
+                        },
+                        "sections": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Section headings extracted from the PDF",
+                        },
+                        "max_examples_per_paragraph": {
+                            "type": "integer",
+                            "description": "Max example sentences per paragraph",
+                        },
+                    },
+                    "required": ["citations", "references"],
+                },
+            ),
+            Tool(
+                name="analyze_pdf_paragraph_distribution",
+                description="Extract, validate, and analyze citation distribution for a PDF",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "pdf_path": {
+                            "type": "string",
+                            "description": "Path to the PDF file",
+                        },
+                        "verify_references": {
+                            "type": "boolean",
+                            "description": "Verify references via external sources",
+                        },
+                        "verify_sources": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Ordered list of sources to query",
+                        },
+                        "verify_limit": {
+                            "type": "integer",
+                            "description": "Max number of references to verify",
+                        },
+                    },
+                    "required": ["pdf_path"],
+                },
+            ),
         ]
 
     @app.call_tool()
@@ -415,6 +1153,24 @@ def create_citation_analysis_mcp_server():
                 return [TextContent(type="text", text=json.dumps(report))]
             if name == "analyze_references":
                 report = analyzer.analyze_references(arguments["references"])
+                return [TextContent(type="text", text=json.dumps(report))]
+
+            if name == "analyze_paragraph_distribution":
+                report = analyzer.analyze_paragraph_distribution(
+                    arguments["citations"],
+                    arguments["references"],
+                    sections=arguments.get("sections"),
+                    max_examples_per_paragraph=arguments.get("max_examples_per_paragraph", 2),
+                )
+                return [TextContent(type="text", text=json.dumps(report))]
+
+            if name == "analyze_pdf_paragraph_distribution":
+                report = await analyzer.analyze_pdf_paragraph_distribution(
+                    arguments["pdf_path"],
+                    verify_references=arguments.get("verify_references", True),
+                    sources=arguments.get("verify_sources"),
+                    verify_limit=arguments.get("verify_limit"),
+                )
                 return [TextContent(type="text", text=json.dumps(report))]
 
             return [TextContent(type="text", text=f"Unknown tool: {name}", isError=True)]

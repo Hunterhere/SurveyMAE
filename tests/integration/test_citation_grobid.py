@@ -134,6 +134,7 @@ async def test_citation_metadata_verification_pipeline():
     paragraph_report = analyzer.analyze_paragraph_distribution(
         result.get("citations", []),
         references,
+        sections=result.get("sections"),
         max_examples_per_paragraph=1,
     )
     assert paragraph_report["summary"]["paragraphs_with_citations"] > 0
