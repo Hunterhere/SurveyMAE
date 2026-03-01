@@ -6,6 +6,7 @@ ACTION="${1:-start}"
 IMAGE="grobid/grobid:0.8.2-full"
 CONTAINER_NAME="grobid"
 PORT="8070"
+MEMORY="${GROBID_MEMORY:-4g}"
 LOG_MAX_SIZE="10m"
 LOG_MAX_FILE="5"
 LOGS_TAIL="200"
@@ -31,6 +32,7 @@ start_container() {
   ensure_image
 
   if [[ -n "$(container_id)" ]]; then
+    docker update --memory "$MEMORY" --memory-swap "$MEMORY" "$CONTAINER_NAME" >/dev/null
     if is_running; then
       echo "Container '$CONTAINER_NAME' is already running."
       return
@@ -43,6 +45,7 @@ start_container() {
   echo "Creating and starting container '$CONTAINER_NAME' ..."
   docker run -d --name "$CONTAINER_NAME" --restart unless-stopped --init --ulimit core=0 \
     -p "${PORT}:8070" \
+    --memory "$MEMORY" --memory-swap "$MEMORY" \
     --log-opt "max-size=${LOG_MAX_SIZE}" --log-opt "max-file=${LOG_MAX_FILE}" \
     "$IMAGE" >/dev/null
 }

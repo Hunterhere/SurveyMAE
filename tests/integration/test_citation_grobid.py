@@ -69,7 +69,7 @@ def test_grobid_reference_extraction_and_context(tmp_path: Path):
     grobid_url = os.getenv("GROBID_URL", "http://localhost:8070")
     grobid_available = _grobid_is_available(grobid_url)
 
-    pdf_path = Path(__file__).resolve().parents[2] / "test_paper.pdf"
+    pdf_path = Path(__file__).resolve().parents[2] / "test_survey2.pdf"
     assert pdf_path.exists(), f"Missing test PDF: {pdf_path}"
 
     backend = "grobid" if grobid_available else "auto"
@@ -110,7 +110,7 @@ def test_grobid_reference_extraction_and_context(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_citation_metadata_verification_pipeline():
     grobid_url = os.getenv("GROBID_URL", "http://localhost:8070")
-    pdf_path = Path(__file__).resolve().parents[2] / "test_survey.pdf"
+    pdf_path = Path(__file__).resolve().parents[2] / "test_survey2.pdf"
     assert pdf_path.exists(), f"Missing test PDF: {pdf_path}"
 
     sources_raw = os.getenv("CITATION_VERIFY_SOURCES", "semantic_scholar")

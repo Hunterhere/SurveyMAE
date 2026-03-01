@@ -4,6 +4,7 @@ param(
     [string]$Image = "grobid/grobid:0.8.2-full",
     [string]$ContainerName = "grobid",
     [int]$Port = 8070,
+    [string]$Memory = "4g",
     [string]$LogMaxSize = "10m",
     [int]$LogMaxFile = 5,
     [int]$LogsTail = 200
@@ -33,6 +34,7 @@ function Start-Container {
 
     $containerId = Get-ContainerId
     if ($containerId) {
+        docker update --memory $Memory --memory-swap $Memory $ContainerName | Out-Null
         if (Is-Running) {
             Write-Host "Container '$ContainerName' is already running."
             return
@@ -45,6 +47,7 @@ function Start-Container {
     Write-Host "Creating and starting container '$ContainerName' ..."
     docker run -d --name $ContainerName --restart unless-stopped --init --ulimit core=0 `
         -p "$Port`:8070" `
+        --memory $Memory --memory-swap $Memory `
         --log-opt "max-size=$LogMaxSize" --log-opt "max-file=$LogMaxFile" `
         $Image | Out-Null
 }
