@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from src.tools.citation_checker import CitationChecker
+from src.tools.citation_checker import CitationChecker, ReferenceEntry
 
 
 class TestCitationChecker:
@@ -142,3 +142,39 @@ Brown, T. et al. (2020). Language Models are Few-Shot Learners.
         assert isinstance(references, list)
         assert len(references) > 0
         assert references[0]["title"]
+
+    def test_build_real_citation_edges_from_validation_metadata(self, checker):
+        """Build real edges from validated metadata reference targets."""
+        ref_a = ReferenceEntry(
+            key="ref_a",
+            title="Paper A",
+            doi="10.1000/a",
+            validation={
+                "metadata": {
+                    "openalex_id": "https://openalex.org/W123",
+                    "reference_targets": [
+                        {"openalex_id": "https://openalex.org/W456"},
+                        {"doi": "10.1000/c"},
+                    ],
+                }
+            },
+        )
+        ref_b = ReferenceEntry(
+            key="ref_b",
+            title="Paper B",
+            validation={"metadata": {"openalex_id": "W456"}},
+        )
+        ref_c = ReferenceEntry(
+            key="ref_c",
+            title="Paper C",
+            doi="https://doi.org/10.1000/C",
+            validation={"metadata": {}},
+        )
+
+        payload = checker.build_real_citation_edges([ref_a, ref_b, ref_c])
+        edges = {(item["source"], item["target"]) for item in payload["edges"]}
+
+        assert ("ref_a", "ref_b") in edges
+        assert ("ref_a", "ref_c") in edges
+        assert payload["stats"]["n_edges"] == 2
+        assert payload["stats"]["resolved_target_candidates"] == 2

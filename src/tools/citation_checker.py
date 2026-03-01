@@ -106,6 +106,8 @@ class CitationExtractionResult:
     sections: list[dict[str, Any]] = field(default_factory=list)
     backend: str = ""
     errors: list[str] = field(default_factory=list)
+    real_citation_edges: list[dict[str, Any]] = field(default_factory=list)
+    real_citation_edge_stats: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +116,8 @@ class CitationExtractionResult:
             "sections": self.sections,
             "backend": self.backend,
             "errors": self.errors,
+            "real_citation_edges": self.real_citation_edges,
+            "real_citation_edge_stats": self.real_citation_edge_stats,
         }
 
 
@@ -508,7 +512,18 @@ class CitationChecker:
 
         if verify_references:
             await self._verify_references(base.references, sources, verify_limit)
-            self._persist_validation(pdf_path, base.references, sources, verify_limit)
+            real_graph = self.build_real_citation_edges(base.references)
+            base.real_citation_edges = real_graph["edges"]
+            base.real_citation_edge_stats = real_graph["stats"]
+            # Re-persist extraction so downstream can read real edges from extraction.json.
+            self._persist_extraction(pdf_path, base)
+            self._persist_validation(
+                pdf_path,
+                base.references,
+                sources,
+                verify_limit,
+                real_graph,
+            )
 
         return base.to_dict()
 
@@ -643,6 +658,7 @@ class CitationChecker:
         references: list[ReferenceEntry],
         sources: Optional[Iterable[str]],
         verify_limit: Optional[int],
+        real_graph: Optional[dict[str, Any]] = None,
     ) -> None:
         if not self.result_store:
             return
@@ -659,10 +675,166 @@ class CitationChecker:
                     ref.validation for ref in references if ref.validation is not None
                 ],
             }
+            if real_graph is not None:
+                validation["real_citation_edges"] = real_graph.get("edges", [])
+                validation["real_citation_edge_stats"] = real_graph.get("stats", {})
             self.result_store.save_validation(paper_id, validation)
             self.result_store.update_index(paper_id, status="validated", source_path=pdf_path)
         except Exception as exc:
             logger.warning("Failed to persist validation result: %s", exc)
+
+    def build_real_citation_edges(
+        self,
+        references: list[ReferenceEntry],
+    ) -> dict[str, Any]:
+        """Build real in-set citation edges from verified metadata."""
+        id_to_keys: dict[str, set[str]] = {}
+        source_tokens: dict[str, set[str]] = {}
+
+        for ref in references:
+            tokens = self._reference_identity_tokens(ref)
+            source_tokens[ref.key] = tokens
+            for token in tokens:
+                id_to_keys.setdefault(token, set()).add(ref.key)
+
+        edge_set: set[tuple[str, str]] = set()
+        total_target_candidates = 0
+        resolved_target_candidates = 0
+        unresolved_target_candidates = 0
+
+        for ref in references:
+            target_token_sets = self._extract_target_token_sets(ref.validation)
+            for token_set in target_token_sets:
+                total_target_candidates += 1
+                matched: set[str] = set()
+                for token in token_set:
+                    matched.update(id_to_keys.get(token, set()))
+                if ref.key in matched:
+                    matched.remove(ref.key)
+                if matched:
+                    resolved_target_candidates += 1
+                else:
+                    unresolved_target_candidates += 1
+                for dst in matched:
+                    edge_set.add((ref.key, dst))
+
+        edges = [
+            {"source": src, "target": dst}
+            for src, dst in sorted(edge_set, key=lambda item: (item[0], item[1]))
+        ]
+        stats = {
+            "n_edges": len(edges),
+            "n_sources": len([ref for ref in references if ref.validation]),
+            "total_target_candidates": total_target_candidates,
+            "resolved_target_candidates": resolved_target_candidates,
+            "unresolved_target_candidates": unresolved_target_candidates,
+            "resolved_target_ratio": (
+                (resolved_target_candidates / total_target_candidates)
+                if total_target_candidates
+                else 0.0
+            ),
+        }
+        if edges:
+            stats["status"] = "ok"
+            stats["failure_reason"] = ""
+        else:
+            stats["status"] = "failed"
+            stats["failure_reason"] = "NO_REAL_EDGES"
+        return {"edges": edges, "stats": stats}
+
+    def _reference_identity_tokens(self, ref: ReferenceEntry) -> set[str]:
+        tokens: set[str] = set()
+        if ref.key:
+            tokens.add(f"key:{ref.key.strip()}")
+        if ref.doi:
+            doi = self._normalize_doi(ref.doi)
+            if doi:
+                tokens.add(f"doi:{doi}")
+        if ref.arxiv_id:
+            arxiv = self._normalize_arxiv_id(ref.arxiv_id)
+            if arxiv:
+                tokens.add(f"arxiv:{arxiv}")
+
+        validation = ref.validation if isinstance(ref.validation, dict) else {}
+        metadata = validation.get("metadata") if isinstance(validation, dict) else {}
+        if isinstance(metadata, dict):
+            meta_doi = self._normalize_doi(str(metadata.get("doi", "")).strip())
+            if meta_doi:
+                tokens.add(f"doi:{meta_doi}")
+            meta_arxiv = self._normalize_arxiv_id(str(metadata.get("arxiv_id", "")).strip())
+            if meta_arxiv:
+                tokens.add(f"arxiv:{meta_arxiv}")
+            meta_openalex = self._normalize_openalex_id(
+                str(metadata.get("openalex_id") or metadata.get("id") or "")
+            )
+            if meta_openalex:
+                tokens.add(f"openalex:{meta_openalex}")
+            meta_ss = str(metadata.get("paper_id") or "").strip()
+            if meta_ss:
+                tokens.add(f"s2:{meta_ss}")
+        return tokens
+
+    def _extract_target_token_sets(
+        self,
+        validation: Optional[dict[str, Any]],
+    ) -> list[set[str]]:
+        if not isinstance(validation, dict):
+            return []
+        metadata = validation.get("metadata")
+        if not isinstance(metadata, dict):
+            return []
+
+        targets = metadata.get("reference_targets", [])
+        token_sets: list[set[str]] = []
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            tokens: set[str] = set()
+            target_key = str(target.get("key") or "").strip()
+            if target_key:
+                tokens.add(f"key:{target_key}")
+            target_doi = self._normalize_doi(str(target.get("doi") or "").strip())
+            if target_doi:
+                tokens.add(f"doi:{target_doi}")
+            target_arxiv = self._normalize_arxiv_id(str(target.get("arxiv_id") or "").strip())
+            if target_arxiv:
+                tokens.add(f"arxiv:{target_arxiv}")
+            target_openalex = self._normalize_openalex_id(
+                str(target.get("openalex_id") or target.get("id") or "")
+            )
+            if target_openalex:
+                tokens.add(f"openalex:{target_openalex}")
+            target_ss = str(target.get("semantic_scholar_id") or "").strip()
+            if target_ss:
+                tokens.add(f"s2:{target_ss}")
+            if tokens:
+                token_sets.append(tokens)
+
+        return token_sets
+
+    def _normalize_doi(self, doi: str) -> str:
+        value = doi.strip().lower()
+        if not value:
+            return ""
+        value = re.sub(r"^https?://(dx\.)?doi\.org/", "", value)
+        value = re.sub(r"^doi:\s*", "", value)
+        return value.strip()
+
+    def _normalize_arxiv_id(self, arxiv_id: str) -> str:
+        value = arxiv_id.strip()
+        if not value:
+            return ""
+        value = re.sub(r"^arxiv:\s*", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"v\d+$", "", value, flags=re.IGNORECASE)
+        return value.strip().lower()
+
+    def _normalize_openalex_id(self, openalex_id: str) -> str:
+        value = openalex_id.strip()
+        if not value:
+            return ""
+        value = value.replace("https://openalex.org/", "").replace("http://openalex.org/", "")
+        value = value.replace("openalex:", "")
+        return value.strip().upper()
 
     def _extract_citations_with_context_mupdf(self, pdf_path: str) -> CitationExtractionResult:
         try:

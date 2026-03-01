@@ -107,6 +107,10 @@ class SemanticScholarResult:
     paper_id: str
     citation_count: int
     url: str
+    doi: str = ""
+    arxiv_id: str = ""
+    openalex_id: str = ""
+    reference_targets: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -120,6 +124,8 @@ class OpenAlexResult:
     doi: str
     citation_count: int
     url: str
+    openalex_id: str = ""
+    reference_targets: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -904,6 +910,10 @@ class SemanticScholarFetcher:
 
     BASE_URL = "https://api.semanticscholar.org/graph/v1"
     RATE_LIMIT_DELAY = 0.5
+    _FIELDS = (
+        "title,authors,year,abstract,paperId,citationCount,url,"
+        "externalIds,references.paperId,references.externalIds"
+    )
 
     def __init__(self, api_key: Optional[str] = None) -> None:
         self._api_key = api_key
@@ -920,7 +930,7 @@ class SemanticScholarFetcher:
         params = {
             "query": title,
             "limit": max_results,
-            "fields": "title,authors,year,abstract,paperId,citationCount,url",
+            "fields": self._FIELDS,
         }
 
         try:
@@ -941,7 +951,7 @@ class SemanticScholarFetcher:
         await self._rate_limiter.wait()
 
         url = f"{self.BASE_URL}/paper/DOI:{doi}"
-        params = {"fields": "title,authors,year,abstract,paperId,citationCount,url"}
+        params = {"fields": self._FIELDS}
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -958,7 +968,7 @@ class SemanticScholarFetcher:
 
         clean_id = arxiv_id.replace("arXiv:", "")
         url = f"{self.BASE_URL}/paper/ARXIV:{clean_id}"
-        params = {"fields": "title,authors,year,abstract,paperId,citationCount,url"}
+        params = {"fields": self._FIELDS}
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -986,6 +996,56 @@ class SemanticScholarFetcher:
 
             year = paper_data.get("year")
             year_str = str(year) if year else ""
+            external_ids = paper_data.get("externalIds") or {}
+            doi = str(
+                external_ids.get("DOI")
+                or external_ids.get("doi")
+                or ""
+            ).strip()
+            arxiv_id = str(
+                external_ids.get("ArXiv")
+                or external_ids.get("arXiv")
+                or external_ids.get("arxiv")
+                or ""
+            ).strip()
+            openalex_id = str(
+                external_ids.get("OpenAlex")
+                or external_ids.get("openalex")
+                or ""
+            ).strip()
+            reference_targets: list[dict[str, str]] = []
+            for ref in paper_data.get("references", []) or []:
+                if not isinstance(ref, dict):
+                    continue
+                target: dict[str, str] = {}
+                ref_pid = str(ref.get("paperId") or "").strip()
+                if ref_pid:
+                    target["semantic_scholar_id"] = ref_pid
+                ref_external_ids = ref.get("externalIds") or {}
+                ref_doi = str(
+                    ref_external_ids.get("DOI")
+                    or ref_external_ids.get("doi")
+                    or ""
+                ).strip()
+                if ref_doi:
+                    target["doi"] = ref_doi
+                ref_arxiv = str(
+                    ref_external_ids.get("ArXiv")
+                    or ref_external_ids.get("arXiv")
+                    or ref_external_ids.get("arxiv")
+                    or ""
+                ).strip()
+                if ref_arxiv:
+                    target["arxiv_id"] = ref_arxiv
+                ref_openalex = str(
+                    ref_external_ids.get("OpenAlex")
+                    or ref_external_ids.get("openalex")
+                    or ""
+                ).strip()
+                if ref_openalex:
+                    target["openalex_id"] = ref_openalex
+                if target:
+                    reference_targets.append(target)
 
             return SemanticScholarResult(
                 title=paper_data.get("title", ""),
@@ -995,6 +1055,10 @@ class SemanticScholarFetcher:
                 paper_id=paper_data.get("paperId", ""),
                 citation_count=paper_data.get("citationCount", 0),
                 url=paper_data.get("url", ""),
+                doi=doi,
+                arxiv_id=arxiv_id,
+                openalex_id=openalex_id,
+                reference_targets=reference_targets,
             )
         except (KeyError, TypeError):
             return None
@@ -1079,6 +1143,12 @@ class OpenAlexFetcher:
 
             citation_count = work_data.get("cited_by_count", 0)
             url = work_data.get("id", "")
+            openalex_id = str(work_data.get("id", "")).strip()
+            reference_targets: list[dict[str, str]] = []
+            for target in work_data.get("referenced_works", []) or []:
+                target_id = str(target).strip()
+                if target_id:
+                    reference_targets.append({"openalex_id": target_id})
 
             return OpenAlexResult(
                 title=title,
@@ -1088,6 +1158,8 @@ class OpenAlexFetcher:
                 doi=doi,
                 citation_count=citation_count,
                 url=url,
+                openalex_id=openalex_id,
+                reference_targets=reference_targets,
             )
         except (KeyError, TypeError):
             return None

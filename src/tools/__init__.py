@@ -8,6 +8,7 @@ from .pdf_parser import PDFParser
 from .citation_checker import CitationChecker
 from .citation_metadata import CitationMetadataChecker
 from .citation_analysis import CitationAnalyzer
+from .citation_graph_analysis import CitationGraphAnalyzer
 from .result_store import ResultStore
 from .literature_search import LiteratureSearch, LiteratureResult
 
@@ -16,6 +17,7 @@ __all__ = [
     "CitationChecker",
     "CitationMetadataChecker",
     "CitationAnalyzer",
+    "CitationGraphAnalyzer",
     "ResultStore",
     "LiteratureSearch",
     "LiteratureResult",
