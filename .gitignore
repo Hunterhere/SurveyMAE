@@ -27,10 +27,13 @@ config/local.yaml
 
 # Output
 output/
+lib/
 *.md
 
 # Testing
 .pytest_cache/
+.pytest_artifacts/
+.pytest_artifacts*/
 .coverage
 htmlcov/
 
