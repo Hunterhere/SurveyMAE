@@ -28,7 +28,7 @@ config/local.yaml
 # Output
 output/
 lib/
-*.md
+
 
 # Testing
 .pytest_cache/
