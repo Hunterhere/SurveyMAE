@@ -11,9 +11,16 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from src.core.config import SurveyMAEConfig
 from src.core.state import SurveyState
-from src.agents import BaseAgent, VerifierAgent, ExpertAgent, ReaderAgent, CorrectorAgent
+from src.agents import (
+    BaseAgent,
+    CorrectorAgent,
+    ExpertAgent,
+    ReaderAgent,
+    ReportAgent,
+    VerifierAgent,
+)
 from src.graph.edges import should_continue_debate, should_end
-from src.graph.nodes import run_debate, aggregate_scores
+from src.graph.nodes import run_debate
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +55,6 @@ def create_workflow(
     # Add debate node
     workflow.add_node("debate", run_debate)
 
-    # Add aggregation node
-    workflow.add_node("aggregate", aggregate_scores)
-
     # Define the workflow flow
     # 1. Start -> Parse PDF
     workflow.add_edge(START, "parse_pdf")
@@ -66,7 +70,7 @@ def create_workflow(
         "verifier",
         should_end,
         {
-            "END": "aggregate",
+            "END": "reporter",
             "debate": "debate",
         },
     )
@@ -74,7 +78,7 @@ def create_workflow(
         "expert",
         should_end,
         {
-            "END": "aggregate",
+            "END": "reporter",
             "debate": "debate",
         },
     )
@@ -82,7 +86,7 @@ def create_workflow(
         "reader",
         should_end,
         {
-            "END": "aggregate",
+            "END": "reporter",
             "debate": "debate",
         },
     )
@@ -90,23 +94,23 @@ def create_workflow(
         "corrector",
         should_end,
         {
-            "END": "aggregate",
+            "END": "reporter",
             "debate": "debate",
         },
     )
 
-    # 4. Debate -> Continue or Aggregate
+    # 4. Debate -> Continue or Reporter
     workflow.add_conditional_edges(
         "debate",
         should_continue_debate,
         {
             "continue": "debate",  # Another round
-            "aggregate": "aggregate",
+            "reporter": "reporter",
         },
     )
 
-    # 5. Aggregate -> END
-    workflow.add_edge("aggregate", END)
+    # 5. Reporter -> END
+    workflow.add_edge("reporter", END)
 
     return workflow
 
@@ -153,6 +157,7 @@ def _create_agents(config: Optional[SurveyMAEConfig] = None):
         ExpertAgent(),
         ReaderAgent(),
         CorrectorAgent(),
+        ReportAgent(),
     ]
 
     return agents

@@ -8,6 +8,7 @@ from .verifier import VerifierAgent
 from .expert import ExpertAgent
 from .reader import ReaderAgent
 from .corrector import CorrectorAgent
+from .reporter import ReportAgent
 
 __all__ = [
     "BaseAgent",
@@ -15,4 +16,5 @@ __all__ = [
     "ExpertAgent",
     "ReaderAgent",
     "CorrectorAgent",
+    "ReportAgent",
 ]

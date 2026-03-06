@@ -9,14 +9,14 @@ from src.core.config import DebateConfig
 from src.core.state import SurveyState
 
 
-def should_continue_debate(state: SurveyState) -> Literal["continue", "aggregate"]:
-    """Determine if the debate should continue or proceed to aggregation.
+def should_continue_debate(state: SurveyState) -> Literal["continue", "reporter"]:
+    """Determine if the debate should continue or proceed to report generation.
 
     Args:
         state: The current workflow state.
 
     Returns:
-        "continue" to run another debate round, "aggregate" to finalize scores.
+        "continue" to run another debate round, "reporter" to finalize scores.
     """
     # This would typically use DebateConfig, passed via config or state
     max_rounds = state.get("metadata", {}).get("max_debate_rounds", 3)
@@ -27,7 +27,7 @@ def should_continue_debate(state: SurveyState) -> Literal["continue", "aggregate
     if current_round < max_rounds and not consensus_reached:
         return "continue"
 
-    return "aggregate"
+    return "reporter"
 
 
 def should_end(state: SurveyState) -> Literal["END", "debate"]:

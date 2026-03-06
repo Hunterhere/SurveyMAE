@@ -49,6 +49,12 @@ agents:
     retry_attempts: 3
     timeout: 120
 
+  - name: reporter
+    system_prompt: config/prompts/reporter.yaml
+    tools: []
+    retry_attempts: 3
+    timeout: 120
+
 # MCP Server Configurations
 mcp_servers:
   # Local PDF Parser MCP Server
@@ -87,6 +93,7 @@ debate:
     expert: 1.2
     reader: 1.0
     corrector: 0.8
+    reporter: 1.0
 
 # Report Generation Configuration
 report:

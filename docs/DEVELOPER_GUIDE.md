@@ -89,7 +89,8 @@ SurveyMAE/
 │       ├── verifier.yaml
 │       ├── expert.yaml
 │       ├── reader.yaml
-│       └── corrector.yaml
+│       ├── corrector.yaml
+│       └── reporter.yaml
 ├── src/
 │   ├── main.py                # CLI 入口点
 │   ├── core/                  # 核心框架层
@@ -101,7 +102,8 @@ SurveyMAE/
 │   │   ├── verifier.py        # 事实验证智能体
 │   │   ├── expert.py          # 领域专家智能体
 │   │   ├── reader.py          # 读者模拟智能体
-│   │   └── corrector.py       # 偏差校正智能体
+│   │   ├── corrector.py       # 偏差校正智能体
+│   │   └── reporter.py        # 报告生成智能体
 │   ├── graph/                 # LangGraph 图编排层
 │   │   ├── builder.py         # StateGraph 构建与编译
 │   │   ├── edges.py           # 条件边路由逻辑
@@ -110,10 +112,18 @@ SurveyMAE/
 │   │       └── aggregator.py  # 评分聚合节点
 │   └── tools/                 # 工具实现
 │       ├── pdf_parser.py      # PDF 解析工具
+│       ├── pdf_parser_server.py # PDF MCP Server
 │       ├── citation_checker.py # 引用检查工具
+│       ├── citation_checker_server.py # Citation Checker MCP Server
 │       ├── citation_metadata.py # 引用元数据比较/检索
 │       ├── citation_analysis.py # 引用统计分析工具
-│       └── *_server.py        # MCP Server 实现
+│       ├── citation_analysis_server.py # Citation Analysis MCP Server
+│       ├── citation_graph_analysis.py # 引用图分析工具
+│       ├── citation_graph_analysis_server.py # Citation Graph MCP Server
+│       ├── literature_search.py # 文献检索聚合工具
+│       ├── literature_search_server.py # Literature Search MCP Server
+│       ├── result_store.py    # 结果持久化工具
+│       └── fetchers/          # 各学术源适配器（arXiv/CrossRef等）
 └── tests/
     ├── unit/                  # 单元测试
     └── integration/           # 集成测试
@@ -983,4 +993,3 @@ Reference image file: `docs/test_survey2_citation_graph.png`
   - `tests/integration/test_citation_graph_pipeline.py`
 - Keep "real-edge-first" semantics unchanged unless requirement explicitly changes.
 - Future improvement TODO remains in `scripts/render_citation_graph_pyvis.py` for hybrid center selection.
-

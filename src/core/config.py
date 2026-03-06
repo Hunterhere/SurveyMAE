@@ -89,6 +89,7 @@ class DebateConfig(BaseModel):
         "expert": 1.2,
         "reader": 1.0,
         "corrector": 0.8,
+        "reporter": 1.0,
     })
 
 
