@@ -33,6 +33,127 @@ class LLMConfig(BaseModel):
     max_tokens: int = 4096
 
 
+class MultiModelConfig(BaseModel):
+    """Configuration for multi-model voting.
+
+    Attributes:
+        enabled: Whether to enable multi-model voting.
+        models: List of model configurations for voting.
+    """
+
+    enabled: bool = False
+    models: List[LLMConfig] = Field(default_factory=list)
+
+
+class AgentModelConfig(BaseModel):
+    """Configuration for a specific agent's model.
+
+    Attributes:
+        name: Agent name (verifier, expert, reader, corrector, reporter).
+        provider: LLM provider.
+        model: Model identifier.
+        temperature: Generation temperature.
+        max_tokens: Maximum tokens.
+        multi_model: Multi-model voting configuration.
+    """
+
+    name: str
+    provider: str = "openai"
+    model: str = "gpt-4o"
+    temperature: float = 0.0
+    max_tokens: int = 4096
+    multi_model: Optional[MultiModelConfig] = None
+
+
+class ModelConfig(BaseModel):
+    """Configuration for all agent models.
+
+    Attributes:
+        default: Default LLM configuration.
+        agents: Agent-specific model configurations.
+        providers: Provider-level configurations.
+    """
+
+    default: LLMConfig = Field(default_factory=LLMConfig)
+    agents: Dict[str, AgentModelConfig] = Field(default_factory=dict)
+    providers: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+    @classmethod
+    def from_yaml(cls, config_path: str) -> "ModelConfig":
+        """Load model configuration from YAML file.
+
+        Args:
+            config_path: Path to models.yaml.
+
+        Returns:
+            ModelConfig instance.
+        """
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        # Parse default
+        default = LLMConfig(**data.get("default", {}))
+
+        # Parse agent configs
+        agents = {}
+        if "agents" in data:
+            for name, agent_data in data["agents"].items():
+                multi_model = None
+                if "multi_model" in agent_data:
+                    mm_data = agent_data["multi_model"]
+                    models = [LLMConfig(**m) for m in mm_data.get("models", [])]
+                    multi_model = MultiModelConfig(
+                        enabled=mm_data.get("enabled", False),
+                        models=models,
+                    )
+                agents[name] = AgentModelConfig(
+                    name=name,
+                    provider=agent_data.get("provider", "openai"),
+                    model=agent_data.get("model", "gpt-4o"),
+                    temperature=agent_data.get("temperature", 0.0),
+                    max_tokens=agent_data.get("max_tokens", 4096),
+                    multi_model=multi_model,
+                )
+
+        return cls(
+            default=default,
+            agents=agents,
+            providers=data.get("providers", {}),
+        )
+
+    def get_agent_config(self, agent_name: str) -> LLMConfig:
+        """Get LLM config for a specific agent.
+
+        Args:
+            agent_name: Name of the agent.
+
+        Returns:
+            LLMConfig for the agent, or default if not found.
+        """
+        if agent_name in self.agents:
+            agent = self.agents[agent_name]
+            return LLMConfig(
+                provider=agent.provider,
+                model=agent.model,
+                temperature=agent.temperature,
+                max_tokens=agent.max_tokens,
+            )
+        return self.default
+
+    def get_multi_model_config(self, agent_name: str) -> Optional[MultiModelConfig]:
+        """Get multi-model config for a specific agent.
+
+        Args:
+            agent_name: Name of the agent.
+
+        Returns:
+            MultiModelConfig if configured, None otherwise.
+        """
+        if agent_name in self.agents:
+            return self.agents[agent_name].multi_model
+        return None
+
+
 class AgentConfig(BaseModel):
     """Configuration for a specific evaluation agent.
 
@@ -236,3 +357,33 @@ def load_config(config_path: Optional[str] = None) -> SurveyMAEConfig:
 
     # Return default config if no file found
     return SurveyMAEConfig.from_env()
+
+
+def load_model_config(config_path: Optional[str] = None) -> ModelConfig:
+    """Load model configuration from file.
+
+    Args:
+        config_path: Optional path to models.yaml.
+                    If not provided, looks for config/models.yaml.
+
+    Returns:
+        ModelConfig instance.
+    """
+    if config_path is None:
+        # Look for config in standard locations
+        possible_paths = [
+            Path("config/models.yaml"),
+            Path("../config/models.yaml"),
+            Path(__file__).parent.parent.parent / "config" / "models.yaml",
+        ]
+
+        for path in possible_paths:
+            if path.exists():
+                config_path = str(path)
+                break
+
+    if config_path and Path(config_path).exists():
+        return ModelConfig.from_yaml(config_path)
+
+    # Return default config if no file found
+    return ModelConfig()

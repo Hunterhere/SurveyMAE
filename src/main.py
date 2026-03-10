@@ -6,9 +6,17 @@ CLI interface for running the multi-agent survey evaluation framework.
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+
+# Try to load .env from project root
+_project_root = Path(__file__).parent.parent
+load_dotenv(_project_root / ".env")
 
 from src.core.config import load_config, SurveyMAEConfig
 from src.core.state import SurveyState

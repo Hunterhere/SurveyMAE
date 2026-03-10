@@ -47,3 +47,7 @@ Thumbs.db
 # BibGuard
 BibGuard/
 BibGuard/**
+
+# Claude Code
+
+.claude/

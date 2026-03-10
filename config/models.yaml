@@ -1,0 +1,190 @@
+# SurveyMAE Model Configuration
+# Configure different models for each agent and task
+
+# Default LLM settings (used when agent-specific config is not provided)
+default:
+  provider: qwen
+  model: qwen3.5-flash
+  temperature: 0.0
+  max_tokens: 4096
+
+# Agent-specific model configurations
+agents:
+  # Verifier Agent - used for fact-checking and citation verification
+  verifier:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.1
+    max_tokens: 4096
+
+  # Expert Agent - used for domain expert evaluation
+  expert:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.0
+    max_tokens: 4096
+
+  # Reader Agent - used for readability and coverage evaluation
+  reader:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.2
+    max_tokens: 2048
+
+  # Corrector Agent - uses multiple models for bias correction voting
+  corrector:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.1
+    max_tokens: 4096
+    # Multi-model voting configuration
+    multi_model:
+      enabled: true
+      models:
+        - provider: qwen
+          model: qwen3.5-flash
+          temperature: 0.1
+        - provider: deepseek
+          model: deepseek-chat
+          temperature: 0.1
+        - provider: qwen
+          model: qwen3.5-flash
+          temperature: 0.5
+
+  # Reporter Agent - used for report generation
+  reporter:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.0
+    max_tokens: 8192
+
+# Alternative provider configurations (for multi-vendor support)
+# Each provider uses OpenAI-compatible API format
+providers:
+  # OpenAI (default)
+  openai:
+    base_url: null  # Uses https://api.openai.com/v1
+    models:
+      - gpt-5.4
+      - gpt-5.3-instant
+      - gpt-5.3-codex
+      - gpt-5.2-pro
+      - gpt-5.2-thinking
+      - gpt-5.2-instant
+      - gpt-5.1
+      - gpt-5-pro
+      - gpt-5-thinking
+      - gpt-5-instant
+      - gpt-4o
+      - gpt-4o-mini
+    env_key: OPENAI_API_KEY
+
+  # Anthropic Claude
+  anthropic:
+    base_url: null  # Uses https://api.anthropic.com
+    models:
+      - claude-opus-4-6-20260205
+      - claude-sonnet-4-6-20260217
+      - claude-3-5-sonnet-20241022
+      - claude-3-opus-20240229
+      - claude-3-sonnet-20240229
+      - claude-3-haiku-20240307
+    env_key: ANTHROPIC_API_KEY
+
+  # Kimi (Moonshot AI) - 月之暗面
+  # API: https://platform.moonshot.cn/
+  kimi:
+    base_url: https://api.moonshot.cn/v1
+    models:
+      - kimi-k2.5
+      - kimi-k2-thinking
+      - kimi-k2
+      - kimi-chat
+      - kimi-chat-function-call
+    env_key: KIMI_API_KEY
+
+  # 阿里Qwen (Alibaba Cloud) - 阿里云通义千问
+  # API: https://dashscope.console.aliyun.com/
+  qwen:
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    models:
+      - qwen3.5-plus
+      - qwen3.5-397b-a17b
+      - qwen3-30b-a18b
+      - qwen3-8b
+      - qwen3-4b
+      - qwen-turbo
+      - qwen-plus
+      - qwen-max
+      - qwen-max-longcontext
+      - qwen-coder-turbo
+    env_key: DASHSCOPE_API_KEY
+
+  # 智谱ChatGLM (Zhipu AI) - 智谱AI
+  # API: https://open.bigmodel.cn/
+  chatglm:
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    models:
+      - glm-5
+      - glm-4-flash
+      - glm-4-plus
+      - glm-4
+      - glm-3-turbo
+    env_key: ZHIPU_API_KEY
+
+  # 阶跃星辰Step (StepFun) - 阶跃星辰
+  # API: https://platform.stepfun.com/
+  step:
+    base_url: https://api.stepfun.com/v1
+    models:
+      - step-3.5-flash
+      - step-1-vision
+      - step-1
+      - step-2
+      - step-1-flash
+    env_key: STEP_API_KEY
+
+  # Deepseek - 深度求索
+  # API: https://platform.deepseek.com/
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    models:
+      - deepseek-v3.2
+      - deepseek-v3.1
+      - deepseek-chat
+      - deepseek-coder
+    env_key: DEEPSEEK_API_KEY
+
+  # Google Gemini - 谷歌Gemini
+  # API: https://aistudio.google.com/app/apikey
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    models:
+      - gemini-3.1-pro
+      - gemini-3.1-flash
+      - gemini-3.0-pro
+      - gemini-2.0-flash-exp
+      - gemini-1.5-pro
+      - gemini-1.5-flash
+      - gemini-1.5-flash-8b
+    env_key: GOOGLE_API_KEY
+
+  # 字节Seed (ByteDance) - 字节跳动豆包
+  # API: https://console.volcengine.io/
+  seed:
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    models:
+      - doubao-seed-2.0-pro
+      - doubao-seed-2.0-lite
+      - doubao-seed-2.0-mini
+      - doubao-seed-2.0-code
+      - doubao-pro-32k
+      - doubao-pro-4k
+      - doubao-lite-32k
+      - doubao-lite-4k
+    env_key: BYTEAPI_KEY
+
+# Example: Custom OpenAI-compatible endpoint
+# custom:
+#   base_url: http://localhost:1234/v1
+#   model: custom-model

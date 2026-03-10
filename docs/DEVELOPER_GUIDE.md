@@ -19,6 +19,9 @@
 ### 核心特性
 
 - **多维度评估**: 4 个专业智能体从不同角度评估综述质量
+- **多厂商模型支持**: 支持 9+ LLM 提供商（OpenAI、Anthropic、Kimi、Qwen、ChatGLM、Step、Deepseek、 Gemini、Seed）
+- **多模型投票**: CorrectorAgent 支持多模型并行调用与多数投票，减少模型偏差
+- **Agent 工具集成**: 各 Agent 内置调用专业工具（引用检查、引用图分析、文献检索等）
 - **辩论机制**: 支持多轮辩论达成共识
 - **MCP 协议**: 工具可通过 MCP 协议暴露和调用
 - **可扩展架构**: 易于添加新的评估维度和智能体
@@ -26,12 +29,13 @@
 
 ### 评估维度
 
-| 智能体 | 维度 | 描述 |
-|--------|------|------|
-| VerifierAgent | 事实性 | 幻觉检测、引用验证 |
-| ExpertAgent | 深度 | 技术准确性、逻辑连贯性 |
-| ReaderAgent | 可读性 | 覆盖范围、清晰度 |
-| CorrectorAgent | 平衡性 | 偏见检测、观点平衡 |
+| 智能体 | 维度 | 描述 | 集成工具 |
+|--------|------|------|----------|
+| VerifierAgent | 事实性 | 幻觉检测、引用验证 | CitationChecker |
+| ExpertAgent | 深度 | 技术准确性、逻辑连贯性 | CitationGraphAnalyzer |
+| ReaderAgent | 可读性 | 覆盖范围、清晰度 | CitationAnalyzer |
+| CorrectorAgent | 平衡性 | 偏见检测、观点平衡 | 多模型投票 (Multi-Model Voting) |
+| ReporterAgent | 报告生成 | 评估结果聚合与报告生成 | 评分聚合、雷达图生成 |
 
 ---
 
@@ -85,6 +89,8 @@ uv run python -m src.main path/to/survey.pdf -v
 SurveyMAE/
 ├── config/                     # 配置文件目录
 │   ├── main.yaml              # 主配置（LLM、Agent、MCP服务器等）
+│   ├── models.yaml            # 模型配置（多厂商、多模型投票）
+│   ├── search_engines.yaml    # 文献检索配置
 │   └── prompts/               # Agent System Prompt 模板
 │       ├── verifier.yaml
 │       ├── expert.yaml
@@ -92,7 +98,7 @@ SurveyMAE/
 │       ├── corrector.yaml
 │       └── reporter.yaml
 ├── src/
-│   ├── main.py                # CLI 入口点
+│   ├── main.py                # CLI 入口点（自动加载 .env）
 │   ├── core/                  # 核心框架层
 │   │   ├── state.py           # LangGraph 状态定义
 │   │   ├── config.py          # 配置加载与管理
@@ -241,15 +247,127 @@ citation:
 
 ### 环境变量 (.env)
 
+项目统一使用 `python-dotenv` 加载环境变量。
+
+#### 主流程自动加载
+
+主流程 (`src/main.py`) 使用 `python-dotenv` 自动加载 `.env` 文件：
+
+```python
+from dotenv import load_dotenv
+
+# 自动从项目根目录加载 .env
+_project_root = Path(__file__).parent.parent
+load_dotenv(_project_root / ".env")
+```
+
+#### 测试环境自动加载
+
+测试框架 (`tests/conftest.py`) 同样使用 `python-dotenv`，在 pytest 启动时自动加载：
+
+```python
+# tests/conftest.py
+from dotenv import load_dotenv
+from pathlib import Path
+
+def load_test_env(env_file: str = None) -> bool:
+    """Load environment variables using python-dotenv."""
+    if env_file is None:
+        project_root = Path(__file__).parent.parent
+        env_file = project_root / ".env"
+    return load_dotenv(env_file)
+
+# 导入时自动加载
+load_test_env()
+```
+
+#### 环境变量列表
+
 ```bash
-# OpenAI API Key
-OPENAI_API_KEY=sk-your-key-here
+# LLM 提供商 API Keys
+OPENAI_API_KEY=sk-your-key-here           # OpenAI
+ANTHROPIC_API_KEY=sk-ant-your-key-here     # Anthropic Claude
+KIMI_API_KEY=your_kimi_key_here           # 月之暗面 Kimi
+DASHSCOPE_API_KEY=your_qwen_key_here      # 阿里云通义千问 Qwen
+ZHIPU_API_KEY=your_chatglm_key_here       # 智谱AI ChatGLM
+STEP_API_KEY=your_step_key_here           # 阶跃星辰 StepFun
+DEEPSEEK_API_KEY=your_deepseek_key_here   # 深度求索 Deepseek
+GOOGLE_API_KEY=your_google_key_here       # 谷歌 Gemini
+BYTEAPI_KEY=your_byte_key_here            # 字节跳动豆包
 
-# 可选: Anthropic API Key
-ANTHROPIC_API_KEY=sk-ant-your-key-here
+# 文献检索 API Keys
+SEMANTIC_SCHOLAR_API_KEY=your_s2_key_here
+OPENALEX_EMAIL=your_email@example.com
+```
 
-# 可选: API 代理
-OPENAI_BASE_URL=https://api.openai.com/v1
+#### 模型配置文件 (config/models.yaml)
+
+项目使用 `config/models.yaml` 管理模型配置，支持多厂商模型：
+
+```yaml
+# 默认 LLM 设置
+default:
+  provider: openai
+  model: gpt-4o
+  temperature: 0.0
+  max_tokens: 4096
+
+# Agent 特定配置
+agents:
+  verifier:
+    provider: openai
+    model: gpt-4o
+  corrector:
+    provider: openai
+    model: gpt-4o
+    # 多模型投票配置
+    multi_model:
+      enabled: true
+      models:
+        - provider: openai
+          model: gpt-4o
+        - provider: openai
+          model: gpt-4o-mini
+        - provider: anthropic
+          model: claude-3-5-sonnet-20241022
+
+# 支持的提供商配置
+providers:
+  openai:
+    base_url: null
+    models: [gpt-4o, gpt-4o-mini, gpt-4-turbo]
+
+  anthropic:
+    base_url: null
+    models: [claude-3-5-sonnet-20241022, claude-3-opus-20240229]
+
+  kimi:           # 月之暗面
+    base_url: https://api.moonshot.cn/v1
+    models: [kimi-chat, kimi-latest]
+
+  qwen:           # 阿里云通义千问
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    models: [qwen-turbo, qwen-plus, qwen-max]
+
+  chatglm:        # 智谱AI
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    models: [glm-4, glm-4-flash, glm-4-plus]
+
+  step:           # 阶跃星辰
+    base_url: https://api.stepfun.com/v1
+    models: [step-1, step-2, step-1-flash]
+
+  deepseek:       # 深度求索
+    base_url: https://api.deepseek.com/v1
+    models: [deepseek-chat, deepseek-coder]
+
+  gemini:         # 谷歌
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    models: [gemini-2.0-flash-exp, gemini-1.5-pro, gemini-1.5-flash]
+
+  seed:           # 字节跳动豆包
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    models: [doubao-pro-32k, doubao-lite-32k]
 ```
 
 ### Prompt 模板 (config/prompts/)
@@ -743,11 +861,21 @@ class MCPManager:
 ### Agent Base Class
 
 ```python
+from src.agents.base import BaseAgent, MultiModelConfig
+
 class BaseAgent(ABC):
     name: str                      # Agent 标识
 
-    def __init__(self, name: str, config: AgentConfig = None, mcp: MCPManager = None):
-        """初始化 Agent"""
+    def __init__(self, name: str, config: AgentConfig = None, mcp: MCPManager = None,
+                 multi_model_config: MultiModelConfig = None):
+        """初始化 Agent
+
+        Args:
+            name: Agent 名称
+            config: Agent 配置
+            mcp: MCP 管理器
+            multi_model_config: 多模型配置（用于投票）
+        """
 
     async def evaluate(self, state: SurveyState, section_name: str = None) -> EvaluationRecord:
         """执行评估（子类实现）"""
@@ -756,13 +884,70 @@ class BaseAgent(ABC):
         """LangGraph 节点调用方法"""
 ```
 
+#### Agent 工具调用
+
+各 Agent 可通过 `self.mcp.call_tool()` 调用 MCP 工具：
+
+```python
+# 在 Agent 中调用工具
+result = await self.mcall_tool(
+    server="citation_checker",
+    tool="extract_citations_with_context",
+    args={"pdf_path": state["source_pdf_path"]}
+)
+```
+
+#### 多模型投票支持
+
+CorrectorAgent 支持多模型并行调用与多数投票：
+
+```python
+from src.agents.base import MultiModelConfig
+from src.core.config import LLMConfig
+
+# 配置多模型投票
+multi_model_config = MultiModelConfig(
+    models=[
+        LLMConfig(provider="openai", model="gpt-4o", temperature=0.1),
+        LLMConfig(provider="openai", model="gpt-4o-mini", temperature=0.1),
+        LLMConfig(provider="anthropic", model="claude-3-5-sonnet-20241022"),
+    ],
+    use_parallel=True
+)
+
+agent = CorrectorAgent(multi_model_config=multi_model_config)
+```
+
 ---
 
 ## 常见问题
 
 ### Q: 如何添加自定义的 LLM 提供商？
 
-修改 `src/core/config.py` 中的 `LLMConfig`，然后在 `src/agents/base.py` 的 `_init_llm` 方法中添加对应逻辑。
+项目已在 `src/agents/base.py` 中预置 9 个主流 LLM 提供商支持。如需添加新的提供商：
+
+1. 在 `src/agents/base.py` 的 `provider_urls` 字典中添加映射：
+
+```python
+provider_urls = {
+    # 现有提供商...
+    "new_provider": ("https://api.newprovider.com/v1", "NEWPROVIDER_API_KEY"),
+}
+```
+
+2. 在 `config/models.yaml` 的 `providers` 部分添加配置：
+
+```yaml
+providers:
+  new_provider:
+    base_url: https://api.newprovider.com/v1
+    models:
+      - model-a
+      - model-b
+    env_key: NEWPROVIDER_API_KEY
+```
+
+3. 在 `.env` 中添加对应的 API Key
 
 ### Q: 如何跳过辩论阶段直接聚合？
 
@@ -792,6 +977,35 @@ result = await agent.evaluate(state)
 debate:
   max_rounds: 5  # 改为 5 轮
 ```
+
+### Q: 如何配置多模型投票？
+
+在 `config/models.yaml` 中为 CorrectorAgent 配置多模型：
+
+```yaml
+agents:
+  corrector:
+    provider: openai
+    model: gpt-4o
+    multi_model:
+      enabled: true
+      models:
+        - provider: openai
+          model: gpt-4o
+        - provider: openai
+          model: gpt-4o-mini
+        - provider: anthropic
+          model: claude-3-5-sonnet-20241022
+```
+
+### Q: ReporterAgent 报告生成包含哪些内容？
+
+ReporterAgent 负责生成最终评估报告，包含：
+
+- **评估摘要**: 各维度的评分和等级
+- **评分详情**: 每个 Agent 的评分理由和证据
+- **建议**: 基于评分生成的改进建议
+- **雷达图**: 可视化展示各维度评分（需 `include_radar: true` 配置）
 
 ---
 
@@ -869,10 +1083,28 @@ mcp_servers:
 
 ### 测试准则（Unit vs Integration）
 
-- `tests/unit/`：仅测纯逻辑，不访问网络/真实文件。
+- `tests/unit/`：仅测纯逻辑，不访问网络/真实文件。使用 mock 模拟 LLM 调用。
 - `tests/integration/`：允许真实 API / 真实 PDF 解析。
-- `tests/integration/__init__.py` 会自动加载 `.env`，确保集成测试能读取密钥。
-- 真实 API 测试应在未配置密钥时 `skip`，避免 CI 报错。
+- **环境变量加载**：
+  - `tests/conftest.py` 在 pytest 启动时自动加载 `.env` 文件
+  - 单元测试和集成测试都无需手动设置环境变量
+- 真实 API 测试应在未配置密钥时 `skip`，避免 CI 报错：
+
+  ```python
+  if not os.getenv("OPENAI_API_KEY"):
+      pytest.skip("No OPENAI_API_KEY available")
+  ```
+
+### 测试辅助函数
+
+项目提供测试辅助函数（位于 `tests/conftest.py`）：
+
+```python
+from tests.conftest import load_test_env
+
+# 手动重新加载环境变量（如需要）
+load_test_env()
+```
 
 ---
 
