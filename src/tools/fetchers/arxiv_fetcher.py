@@ -151,11 +151,15 @@ class ArxivFetcher:
         arxiv_id = match.group(1) if match else ""
 
         title_elem = entry.find("atom:title", ns)
-        title = self._clean_text(title_elem.text) if title_elem is not None and title_elem.text else ""
+        title = (
+            self._clean_text(title_elem.text) if title_elem is not None and title_elem.text else ""
+        )
 
         summary_elem = entry.find("atom:summary", ns)
         abstract = (
-            self._clean_text(summary_elem.text) if summary_elem is not None and summary_elem.text else ""
+            self._clean_text(summary_elem.text)
+            if summary_elem is not None and summary_elem.text
+            else ""
         )
 
         authors = []
@@ -165,10 +169,16 @@ class ArxivFetcher:
                 authors.append(name_elem.text.strip())
 
         published_elem = entry.find("atom:published", ns)
-        published = published_elem.text.strip() if published_elem is not None and published_elem.text else ""
+        published = (
+            published_elem.text.strip()
+            if published_elem is not None and published_elem.text
+            else ""
+        )
 
         updated_elem = entry.find("atom:updated", ns)
-        updated = updated_elem.text.strip() if updated_elem is not None and updated_elem.text else ""
+        updated = (
+            updated_elem.text.strip() if updated_elem is not None and updated_elem.text else ""
+        )
 
         categories = []
         for cat_elem in entry.findall("atom:category", ns):
@@ -183,10 +193,14 @@ class ArxivFetcher:
         doi = doi_elem.text.strip() if doi_elem is not None and doi_elem.text else ""
 
         journal_elem = entry.find("arxiv:journal_ref", ns)
-        journal_ref = journal_elem.text.strip() if journal_elem is not None and journal_elem.text else ""
+        journal_ref = (
+            journal_elem.text.strip() if journal_elem is not None and journal_elem.text else ""
+        )
 
         comment_elem = entry.find("arxiv:comment", ns)
-        comment = comment_elem.text.strip() if comment_elem is not None and comment_elem.text else ""
+        comment = (
+            comment_elem.text.strip() if comment_elem is not None and comment_elem.text else ""
+        )
 
         pdf_url = abs_url.replace("/abs/", "/pdf/") + ".pdf"
 

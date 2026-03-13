@@ -1,22 +1,15 @@
 """Report Generation Agent (ReportAgent).
 
-Aggregates multi-agent evaluation records and generates structured JSON report.
+This agent generates the final evaluation report with variance-aware display.
 
-# TODO: 重构职责
-# - 收集来自 Verifier/Expert/Reader/Corrector 的异构评估数据
-# - 分析数据质量和一致性
-# - 生成结构化 JSON 报告（包含维度评分、文本摘要）
-# - JSON 输出给 Aggregator 节点进行统计渲染
-#
-# 结构化输出格式:
-# {
-#     "dimension_scores": {
-#         "factuality": {"agent": "...", "score": 8.5, "confidence": 0.9, "reasoning": "..."},
-#         ...
-#     },
-#     "text_summary": "综合评估摘要...",
-#     "metadata": {...}
-# }
+According to Plan v2:
+- Aggregator: Pure mathematical aggregation (in src/graph/nodes/aggregator.py)
+- Reporter: Report generation with variance display (this file)
+
+The reporter:
+- Calls aggregate_scores to compute weighted scores
+- Separates deterministic vs LLM-involved metrics
+- Generates markdown with variance visualization
 """
 
 from typing import Any, Dict, Optional
@@ -25,16 +18,17 @@ from src.agents.base import BaseAgent
 from src.core.config import AgentConfig
 from src.core.mcp_client import MCPManager
 from src.core.state import EvaluationRecord, SurveyState
-from src.graph.nodes.aggregator import aggregate_scores
+from src.graph.nodes.aggregator import aggregate_scores, generate_report
 
 
 class ReportAgent(BaseAgent):
     """Agent responsible for final report generation.
 
     This agent:
-    - Collects all evaluation records from other agents
-    - Aggregates scores with confidence-aware weighting
-    - Produces the final markdown report
+    - Calls aggregate_scores for mathematical aggregation
+    - Generates markdown report with variance-aware display
+    - Deterministic metrics shown with solid values
+    - LLM metrics shown with error bars/variance
     """
 
     def __init__(
@@ -70,6 +64,26 @@ class ReportAgent(BaseAgent):
         self,
         state: SurveyState,
     ) -> Dict[str, Any]:
-        """Generate final report from accumulated evaluations."""
-        return await aggregate_scores(state)
+        """Generate final report from accumulated evaluations.
 
+        This method:
+        1. Calls aggregate_scores for mathematical aggregation
+        2. Generates markdown report with variance display
+        3. Returns final state with report and scores
+        """
+        # Step 1: Aggregate scores (pure calculation)
+        aggregation_result = await aggregate_scores(state)
+
+        # Step 2: Generate markdown report with variance display
+        final_report = generate_report(aggregation_result, state)
+
+        # Return combined result
+        return {
+            "final_report_md": final_report,
+            "aggregated_scores": aggregation_result.get("aggregated_scores", {}),
+            "deterministic_score": aggregation_result.get("deterministic_score"),
+            "llm_score": aggregation_result.get("llm_score"),
+            "llm_variance": aggregation_result.get("llm_variance"),
+            "overall_score": aggregation_result.get("overall_score", 0.0),
+            "consensus_reached": aggregation_result.get("consensus_reached", True),
+        }

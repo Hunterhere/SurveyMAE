@@ -1,4 +1,4 @@
-﻿"""Unit tests for citation graph analysis tool."""
+"""Unit tests for citation graph analysis tool."""
 
 from src.tools.citation_graph_analysis import CitationGraphAnalyzer
 

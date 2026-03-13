@@ -840,7 +840,9 @@ class CitationChecker:
         try:
             import fitz  # PyMuPDF
         except Exception as exc:
-            logger.warning("PyMuPDF unavailable, falling back to text-only citation extraction: %s", exc)
+            logger.warning(
+                "PyMuPDF unavailable, falling back to text-only citation extraction: %s", exc
+            )
             return self._extract_citations_with_context_text(pdf_path)
 
         doc = fitz.open(pdf_path)
@@ -850,9 +852,7 @@ class CitationChecker:
         current_section_title: Optional[str] = None
         section_index = 0
         body_font_size = self._estimate_body_font_size(doc)
-        self._heading_threshold = (
-            body_font_size + 1.5 if body_font_size else None
-        )
+        self._heading_threshold = body_font_size + 1.5 if body_font_size else None
         self._heading_candidates = self._extract_markdown_headings(pdf_path)
 
         for page_index, page in enumerate(doc, start=1):
@@ -860,9 +860,7 @@ class CitationChecker:
             paragraphs = self._merge_text_blocks(page_dict.get("blocks", []))
             for blocks in paragraphs:
                 paragraph_index += 1
-                paragraph_text, line_meta, max_font_size = self._build_paragraph_from_blocks(
-                    blocks
-                )
+                paragraph_text, line_meta, max_font_size = self._build_paragraph_from_blocks(blocks)
                 if not paragraph_text.strip():
                     continue
                 heading = self._extract_heading_text(paragraph_text, max_font_size)
@@ -1376,9 +1374,7 @@ class CitationChecker:
         citations: list[CitationSpan],
         references: list[ReferenceEntry],
     ) -> None:
-        ref_by_number = {
-            ref.reference_number: ref for ref in references if ref.reference_number
-        }
+        ref_by_number = {ref.reference_number: ref for ref in references if ref.reference_number}
         ref_by_author_year: dict[str, list[ReferenceEntry]] = {}
         for ref in references:
             key = self._author_year_key(ref.author, ref.year)
@@ -1427,9 +1423,8 @@ class CitationChecker:
             stripped = line.strip()
             if heading_pattern.match(stripped):
                 return "\n".join(lines[idx + 1 :])
-            if (
-                len(stripped) <= 40
-                and re.search(r"\b(%s)\b" % "|".join(self.REFERENCE_HEADINGS), stripped, re.IGNORECASE)
+            if len(stripped) <= 40 and re.search(
+                r"\b(%s)\b" % "|".join(self.REFERENCE_HEADINGS), stripped, re.IGNORECASE
             ):
                 return "\n".join(lines[idx + 1 :])
 
@@ -1866,23 +1861,25 @@ def create_citation_checker_mcp_server():
                         verify_limit=verify_limit,
                     )
                 else:
-                    payload = checker.extract_citations_with_context_from_pdf(
-                        arguments["pdf_path"]
-                    )
+                    payload = checker.extract_citations_with_context_from_pdf(arguments["pdf_path"])
                 return [TextContent(type="text", text=json.dumps(payload))]
 
             else:
-                return [TextContent(
-                    type="text",
-                    text=f"Unknown tool: {name}",
-                    isError=True,
-                )]
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Unknown tool: {name}",
+                        isError=True,
+                    )
+                ]
 
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=str(e),
-                isError=True,
-            )]
+            return [
+                TextContent(
+                    type="text",
+                    text=str(e),
+                    isError=True,
+                )
+            ]
 
     return app

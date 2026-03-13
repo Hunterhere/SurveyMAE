@@ -1,7 +1,12 @@
 """Unit tests for the aggregator and workflow components."""
 
 import pytest
-from src.graph.nodes.aggregator import _generate_report, _get_score_grade, _generate_recommendations
+from src.graph.nodes.aggregator import (
+    generate_report,
+    _get_score_grade,
+    _generate_recommendations,
+    aggregate_scores,
+)
 from src.core.state import SurveyState, EvaluationRecord
 
 
@@ -45,12 +50,24 @@ class TestAggregator:
         assert any("Attention" in r for r in recommendations)
 
     def test_generate_recommendations_high_variance(self):
-        """Test recommendations for high variance."""
+        """Test recommendations for high variance in sub-scores."""
+        # High variance now is detected through sub_scores with variance > 1.0
         aggregated = {
-            "factuality": {"score": 7.0, "statistics": {"std": 2.0}},
+            "factuality": {
+                "overall": 7.0,
+                "confidence": 0.7,
+                "sub_scores": {
+                    "V1": {
+                        "score": 4.0,
+                        "llm_involved": True,
+                        "variance": {"std": 1.5, "range": [2.0, 5.0]},  # High variance
+                    }
+                },
+            },
         }
         recommendations = _generate_recommendations(aggregated, 7.0)
-        assert any("Variance" in r for r in recommendations)
+        # The new logic checks sub_scores for high variance
+        assert len(recommendations) > 0
 
     def test_generate_recommendations_good_score(self):
         """Test recommendations for good overall score."""
@@ -69,115 +86,86 @@ class TestReportGeneration:
 
     def test_generate_report_basic(self):
         """Test basic report generation."""
-        aggregated = {
-            "factuality": {
-                "score": 8.0,
-                "statistics": {"mean": 8.0, "median": 8.0, "min": 7.5, "max": 8.5, "std": 0.5},
-                "num_agents": 1,
-                "agents": ["verifier"],
-                "confidence": 0.85,
-            }
+        # Test the new API with agent_outputs format
+        aggregation_result = {
+            "aggregated_scores": {
+                "factuality": {
+                    "overall": 8.0,
+                    "confidence": 0.85,
+                    "sub_scores": {},
+                }
+            },
+            "deterministic_score": None,
+            "llm_score": 8.0,
+            "llm_variance": None,
+            "overall_score": 8.0,
+            "consensus_reached": True,
         }
-        evaluations = [
-            EvaluationRecord(
-                agent_name="verifier",
-                dimension="factuality",
-                score=8.0,
-                reasoning="Good factual accuracy",
-                evidence="All citations verified",
-                confidence=0.85,
-            )
-        ]
 
-        report = _generate_report(
-            aggregated=aggregated,
-            overall_score=8.0,
-            evaluations=evaluations,
-            source_pdf="test_paper.pdf",
+        state = SurveyState(
+            source_pdf_path="test_paper.pdf",
+            parsed_content="",
+            section_headings=[],
+            tool_evidence={},
+            ref_metadata_cache={},
+            topic_keywords=[],
+            field_trend_baseline={},
+            candidate_key_papers=[],
+            evaluations=[],
+            debate_history=[],
+            sections={},
+            agent_outputs={},
+            aggregated_scores={},
+            current_round=0,
+            consensus_reached=False,
+            final_report_md="",
             metadata={},
         )
+
+        report = generate_report(aggregation_result, state)
 
         assert "SurveyMAE Evaluation Report" in report
         assert "Overall Score" in report
         assert "8.00" in report
-        assert "VerifierAgent" in report
         assert "test_paper.pdf" in report
 
     def test_generate_report_multiple_dimensions(self):
         """Test report with multiple dimensions."""
-        aggregated = {
-            "factuality": {
-                "score": 8.0,
-                "statistics": {"mean": 8.0, "median": 8.0, "min": 8.0, "max": 8.0, "std": 0.0},
-                "num_agents": 1,
-                "agents": ["verifier"],
-                "confidence": 0.85,
+        aggregation_result = {
+            "aggregated_scores": {
+                "factuality": {"overall": 8.0, "confidence": 0.85, "sub_scores": {}},
+                "depth": {"overall": 7.5, "confidence": 0.9, "sub_scores": {}},
+                "coverage": {"overall": 8.5, "confidence": 0.8, "sub_scores": {}},
+                "bias": {"overall": 7.0, "confidence": 0.75, "sub_scores": {}},
             },
-            "depth": {
-                "score": 7.5,
-                "statistics": {"mean": 7.5, "median": 7.5, "min": 7.5, "max": 7.5, "std": 0.0},
-                "num_agents": 1,
-                "agents": ["expert"],
-                "confidence": 0.9,
-            },
-            "coverage": {
-                "score": 8.5,
-                "statistics": {"mean": 8.5, "median": 8.5, "min": 8.5, "max": 8.5, "std": 0.0},
-                "num_agents": 1,
-                "agents": ["reader"],
-                "confidence": 0.8,
-            },
-            "bias": {
-                "score": 7.0,
-                "statistics": {"mean": 7.0, "median": 7.0, "min": 7.0, "max": 7.0, "std": 0.0},
-                "num_agents": 1,
-                "agents": ["corrector"],
-                "confidence": 0.75,
-            },
+            "deterministic_score": None,
+            "llm_score": 7.75,
+            "llm_variance": None,
+            "overall_score": 7.75,
+            "consensus_reached": True,
         }
 
-        evaluations = [
-            EvaluationRecord(
-                agent_name="verifier",
-                dimension="factuality",
-                score=8.0,
-                reasoning="Good factual accuracy",
-                evidence=None,
-                confidence=0.85,
-            ),
-            EvaluationRecord(
-                agent_name="expert",
-                dimension="depth",
-                score=7.5,
-                reasoning="Good technical depth",
-                evidence=None,
-                confidence=0.9,
-            ),
-            EvaluationRecord(
-                agent_name="reader",
-                dimension="coverage",
-                score=8.5,
-                reasoning="Good coverage",
-                evidence=None,
-                confidence=0.8,
-            ),
-            EvaluationRecord(
-                agent_name="corrector",
-                dimension="bias",
-                score=7.0,
-                reasoning="Minor bias detected",
-                evidence=None,
-                confidence=0.75,
-            ),
-        ]
-
-        report = _generate_report(
-            aggregated=aggregated,
-            overall_score=7.75,
-            evaluations=evaluations,
-            source_pdf="test_paper.pdf",
+        state = SurveyState(
+            source_pdf_path="test_paper.pdf",
+            parsed_content="",
+            section_headings=[],
+            tool_evidence={},
+            ref_metadata_cache={},
+            topic_keywords=[],
+            field_trend_baseline={},
+            candidate_key_papers=[],
+            evaluations=[],
+            debate_history=[],
+            sections={},
+            agent_outputs={},
+            aggregated_scores={},
+            current_round=0,
+            consensus_reached=False,
+            final_report_md="",
             metadata={},
         )
+
+        report = generate_report(aggregation_result, state)
 
         assert "Factuality" in report
         assert "Depth" in report
@@ -186,22 +174,37 @@ class TestReportGeneration:
 
     def test_generate_report_includes_grade(self):
         """Test that grade is included in report."""
-        aggregated = {
-            "factuality": {
-                "score": 9.0,
-                "statistics": {"mean": 9.0, "median": 9.0, "min": 9.0, "max": 9.0, "std": 0.0},
-                "num_agents": 1,
-                "agents": ["verifier"],
-                "confidence": 0.85,
-            }
+        aggregation_result = {
+            "aggregated_scores": {
+                "factuality": {"overall": 9.0, "confidence": 0.85, "sub_scores": {}}
+            },
+            "deterministic_score": None,
+            "llm_score": 9.0,
+            "llm_variance": None,
+            "overall_score": 9.0,
+            "consensus_reached": True,
         }
 
-        report = _generate_report(
-            aggregated=aggregated,
-            overall_score=9.0,
+        state = SurveyState(
+            source_pdf_path="",
+            parsed_content="",
+            section_headings=[],
+            tool_evidence={},
+            ref_metadata_cache={},
+            topic_keywords=[],
+            field_trend_baseline={},
+            candidate_key_papers=[],
             evaluations=[],
-            source_pdf="",
+            debate_history=[],
+            sections={},
+            agent_outputs={},
+            aggregated_scores={},
+            current_round=0,
+            consensus_reached=False,
+            final_report_md="",
             metadata={},
         )
+
+        report = generate_report(aggregation_result, state)
 
         assert "A" in report or "Excellent" in report

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 """MCP Server for Citation Graph Analysis Tool.
 
 Run this script to start the Citation Graph Analysis MCP server:

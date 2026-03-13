@@ -1,51 +1,173 @@
 """Score Aggregation Node.
 
-Aggregates multiple evaluation scores into final assessment.
-Generates comprehensive markdown reports.
-
-# TODO: 重构职责
-# - 接收 ReporterAgent 输出的结构化 JSON
-# - 解析 JSON 中的维度评分数据
-# - 进行统计计算（均值、方差、加权平均）
-# - 填充评分表格
-# - 渲染最终 Markdown 报告
-#
-# 新接口设计:
-# async def aggregate_scores(state: SurveyState, reporter_output: dict = None):
-#     # reporter_output 优先，否则回退到 state["evaluations"]
+This module provides:
+1. aggregate_scores - Pure mathematical aggregation (calculates weighted scores,
+   separates deterministic vs LLM-involved metrics, computes variance)
+2. generate_report - Report generation with variance display (deterministic metrics
+   with solid lines, LLM metrics with error bars)
 """
 
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from statistics import mean, median, stdev
 
-from src.core.state import SurveyState, EvaluationRecord
+from src.core.state import SurveyState, EvaluationRecord, AgentOutput
 
 logger = logging.getLogger(__name__)
 
+# Default weights for agent dimensions
+DEFAULT_DIMENSION_WEIGHTS = {
+    "factuality": 1.0,  # Verifier
+    "depth": 1.0,  # Expert
+    "coverage": 1.0,  # Reader
+    "bias": 0.8,  # Corrector
+}
+
 
 async def aggregate_scores(state: SurveyState) -> Dict[str, Any]:
-    """Aggregate evaluation scores into a final report.
+    """Pure mathematical aggregation of evaluation scores.
 
-    This node combines scores from all agents using configured aggregation
-    strategy and generates the final evaluation report.
+    This function:
+    1. Collects agent outputs from state
+    2. Separates deterministic vs LLM-involved metrics
+    3. Calculates weighted scores
+    4. Computes variance for LLM metrics
+    5. Returns aggregated scores WITHOUT generating markdown
 
     Args:
-        state: The current workflow state containing all evaluations.
+        state: The current workflow state containing agent_outputs.
 
     Returns:
-        Updated state with final report and aggregated scores.
+        Dict with aggregated scores, separated deterministic/LLM scores, and variance info.
     """
-    evaluations = state.get("evaluations", [])
-    source_pdf = state.get("source_pdf_path", "")
-    metadata = state.get("metadata", {})
+    # Try to get structured agent outputs first
+    agent_outputs = state.get("agent_outputs", {})
 
-    if not evaluations:
+    # Fallback to legacy evaluations format
+    evaluations = state.get("evaluations", [])
+
+    if not agent_outputs and not evaluations:
         logger.warning("No evaluations to aggregate")
         return {
-            "final_report_md": "# SurveyMAE Evaluation Report\n\nNo evaluations were performed.",
+            "aggregated_scores": {},
+            "deterministic_score": None,
+            "llm_score": None,
+            "overall_score": 0.0,
+            "consensus_reached": True,
+        }
+
+    # Aggregate from new AgentOutput format
+    if agent_outputs:
+        result = _aggregate_from_agent_outputs(agent_outputs)
+    else:
+        # Fallback to legacy format
+        result = _aggregate_from_evaluations(evaluations)
+
+    return result
+
+
+def _aggregate_from_agent_outputs(agent_outputs: Dict[str, AgentOutput]) -> Dict[str, Any]:
+    """Aggregate scores from structured AgentOutput format.
+
+    This separates deterministic metrics from LLM-involved metrics
+    and computes variance for each.
+
+    Args:
+        agent_outputs: Dict of agent_name -> AgentOutput
+
+    Returns:
+        Aggregated scores with separation of deterministic/LLM metrics.
+    """
+    # Collect all sub-scores
+    all_sub_scores = []
+    deterministic_scores = []
+    llm_scores = []
+
+    for agent_name, output in agent_outputs.items():
+        dimension = output.get("dimension", agent_name)
+
+        for sub_id, sub_score in output.get("sub_scores", {}).items():
+            score_data = {
+                "agent": agent_name,
+                "dimension": dimension,
+                "sub_id": sub_id,
+                "score": sub_score.get("score", 5.0),
+                "llm_involved": sub_score.get("llm_involved", True),
+                "variance": sub_score.get("variance"),
+            }
+            all_sub_scores.append(score_data)
+
+            if score_data["llm_involved"]:
+                llm_scores.append(score_data["score"])
+            else:
+                deterministic_scores.append(score_data["score"])
+
+    # Calculate overall scores
+    all_scores = [s["score"] for s in all_sub_scores]
+
+    if not all_scores:
+        return {
+            "aggregated_scores": {},
+            "deterministic_score": None,
+            "llm_score": None,
+            "overall_score": 0.0,
+            "consensus_reached": True,
+        }
+
+    overall_score = mean(all_scores)
+
+    # Calculate deterministic and LLM scores separately
+    deterministic_score = mean(deterministic_scores) if deterministic_scores else None
+    llm_score = mean(llm_scores) if llm_scores else None
+
+    # Compute variance for LLM scores
+    llm_variance = None
+    if len(llm_scores) > 1:
+        llm_variance = {
+            "std": stdev(llm_scores),
+            "range": [min(llm_scores), max(llm_scores)],
+            "n_scores": len(llm_scores),
+        }
+
+    # Group by dimension for detailed report
+    dimension_scores = {}
+    for agent_name, output in agent_outputs.items():
+        dimension = output.get("dimension", agent_name)
+        dimension_scores[dimension] = {
+            "overall": output.get("overall_score", 0.0),
+            "confidence": output.get("confidence", 0.5),
+            "sub_scores": output.get("sub_scores", {}),
+        }
+
+    return {
+        "aggregated_scores": dimension_scores,
+        "deterministic_score": deterministic_score,
+        "llm_score": llm_score,
+        "llm_variance": llm_variance,
+        "overall_score": overall_score,
+        "total_metrics": len(all_sub_scores),
+        "deterministic_count": len(deterministic_scores),
+        "llm_count": len(llm_scores),
+        "consensus_reached": True,
+    }
+
+
+def _aggregate_from_evaluations(evaluations: List[EvaluationRecord]) -> Dict[str, Any]:
+    """Aggregate scores from legacy EvaluationRecord format.
+
+    Args:
+        evaluations: List of EvaluationRecord
+
+    Returns:
+        Aggregated scores.
+    """
+    if not evaluations:
+        return {
+            "aggregated_scores": {},
+            "deterministic_score": None,
+            "llm_score": None,
+            "overall_score": 0.0,
             "consensus_reached": True,
         }
 
@@ -59,6 +181,10 @@ async def aggregate_scores(state: SurveyState) -> Dict[str, Any]:
 
     # Calculate aggregated scores per dimension
     aggregated: Dict[str, Dict] = {}
+    all_scores = []
+    deterministic_scores = []
+    llm_scores = []
+
     for dim, evals in dim_scores.items():
         scores = [e.get("score", 5.0) for e in evals]
         confidences = [e.get("confidence", 0.5) for e in evals]
@@ -81,54 +207,57 @@ async def aggregate_scores(state: SurveyState) -> Dict[str, Any]:
             "score": round(avg_score, 2),
             "statistics": score_stats,
             "num_agents": len(evals),
-            "score_range": {
-                "min": round(min(scores), 2),
-                "max": round(max(scores), 2),
-            },
-            "agents": [e.get("agent_name") for e in evals],
             "confidence": round(mean(confidences), 2),
         }
 
-    # Calculate overall score (weighted by confidence)
-    total_weight = sum(d["confidence"] for d in aggregated.values())
-    overall_score = sum(d["score"] * d["confidence"] for d in aggregated.values()) / total_weight if total_weight > 0 else 0
+        all_scores.append(avg_score)
+        # Legacy format assumes all are LLM-involved
+        llm_scores.append(avg_score)
 
-    # Generate markdown report
-    report = _generate_report(
-        aggregated=aggregated,
-        overall_score=overall_score,
-        evaluations=evaluations,
-        source_pdf=source_pdf,
-        metadata=metadata,
-    )
+    # Calculate overall score
+    overall_score = mean(all_scores) if all_scores else 0.0
+    llm_score = mean(llm_scores) if llm_scores else None
+
+    # Compute variance
+    llm_variance = None
+    if len(llm_scores) > 1:
+        llm_variance = {
+            "std": stdev(llm_scores),
+            "range": [min(llm_scores), max(llm_scores)],
+            "n_scores": len(llm_scores),
+        }
 
     return {
-        "final_report_md": report,
-        "consensus_reached": True,
         "aggregated_scores": aggregated,
-        "overall_score": round(overall_score, 2),
+        "deterministic_score": None,  # Not available in legacy format
+        "llm_score": llm_score,
+        "llm_variance": llm_variance,
+        "overall_score": overall_score,
+        "total_metrics": len(all_scores),
+        "deterministic_count": 0,
+        "llm_count": len(llm_scores),
+        "consensus_reached": True,
     }
 
 
-def _generate_report(
-    aggregated: Dict[str, Dict],
-    overall_score: float,
-    evaluations: List[EvaluationRecord],
-    source_pdf: str,
-    metadata: Dict[str, str],
-) -> str:
-    """Generate a comprehensive markdown evaluation report.
+def generate_report(aggregation_result: Dict[str, Any], state: SurveyState) -> str:
+    """Generate markdown report with variance-aware display.
+
+    This function creates a final report that:
+    1. Shows deterministic metrics with solid values
+    2. Shows LLM metrics with error bars/variance display
+    3. Includes diagnostic information
 
     Args:
-        aggregated: Dictionary of dimension-to-score mappings.
-        overall_score: The overall evaluation score.
-        evaluations: List of individual evaluation records.
-        source_pdf: Source PDF path.
-        metadata: Survey metadata.
+        aggregation_result: Result from aggregate_scores
+        state: Current workflow state
 
     Returns:
-        Markdown formatted report string.
+        Markdown formatted report.
     """
+    source_pdf = state.get("source_pdf_path", "")
+    metadata = state.get("metadata", {})
+
     lines = [
         "# SurveyMAE Evaluation Report",
         "",
@@ -136,122 +265,133 @@ def _generate_report(
         "",
         f"**Source**: {source_pdf or 'N/A'}",
         "",
-        f"## Overall Score: {overall_score:.2f}/10",
-        "",
-        _get_score_grade(overall_score),
-        "",
     ]
 
-    # Score summary table
-    lines.extend([
-        "## Score Summary",
-        "",
-        "| Dimension | Score | Confidence | # Agents |",
-        "|-----------|-------|------------|----------|",
-    ])
+    # Overall score section
+    overall = aggregation_result.get("overall_score", 0.0)
+    lines.append(f"## Overall Score: {overall:.2f}/10")
+    lines.append("")
+    lines.append(_get_score_grade(overall))
+    lines.append("")
 
-    for dim, data in aggregated.items():
-        conf = data.get("confidence", 0)
-        num = data.get("num_agents", 0)
-        lines.append(f"| {dim} | {data['score']:.2f}/10 | {conf:.2f} | {num} |")
-
-    lines.extend(["", "## Detailed Dimension Analysis", ""])
-
-    # Detailed analysis per dimension
-    for dim, data in aggregated.items():
-        lines.extend([
-            f"### {dim.title()}",
+    # Score summary with variance indication
+    lines.extend(
+        [
+            "## Score Summary",
             "",
-            f"**Score**: {data['score']:.2f}/10",
-            "",
-        ])
+            "| Dimension | Score | Confidence | Type |",
+            "|-----------|-------|------------|------|",
+        ]
+    )
 
-        # Statistics
-        stats = data.get("statistics", {})
-        if stats:
-            lines.extend([
-                f"- Mean: {stats.get('mean', 'N/A')}",
-                f"- Median: {stats.get('median', 'N/A')}",
-                f"- Range: [{stats.get('min', 'N/A')} - {stats.get('max', 'N/A')}]",
-                f"- Std Dev: {stats.get('std', 'N/A')}",
+    aggregated = aggregation_result.get("aggregated_scores", {})
+    for dim, data in aggregated.items():
+        score = data.get("overall", data.get("score", 0.0))
+        conf = data.get("confidence", 0.0)
+
+        # Determine if this is deterministic or LLM
+        sub_scores = data.get("sub_scores", {})
+        if sub_scores:
+            has_deterministic = any(not s.get("llm_involved", True) for s in sub_scores.values())
+            has_llm = any(s.get("llm_involved", True) for s in sub_scores.values())
+
+            if has_deterministic and has_llm:
+                metric_type = "Mixed"
+            elif has_deterministic:
+                metric_type = "Deterministic"
+            else:
+                metric_type = "LLM"
+        else:
+            metric_type = "LLM"  # Legacy format
+
+        lines.append(f"| {dim.title()} | {score:.2f}/10 | {conf:.2f} | {metric_type} |")
+
+    lines.append("")
+
+    # Variance section for LLM metrics
+    llm_variance = aggregation_result.get("llm_variance")
+    if llm_variance:
+        lines.extend(
+            [
+                "## LLM Metrics Variance",
                 "",
-            ])
+                f"- **Standard Deviation**: {llm_variance.get('std', 'N/A'):.2f}",
+                f"- **Score Range**: [{llm_variance.get('range', ['N/A', 'N/A'])[0]:.1f} - {llm_variance.get('range', ['N/A', 'N/A'])[1]:.1f}]",
+                f"- **Number of Metrics**: {llm_variance.get('n_scores', 'N/A')}",
+                "",
+            ]
+        )
 
-        # Agent contributions
-        lines.append(f"**Evaluating Agents**: {', '.join(data['agents'])}")
+    # Separate deterministic vs LLM scores if available
+    det_score = aggregation_result.get("deterministic_score")
+    llm_score = aggregation_result.get("llm_score")
+
+    if det_score is not None or llm_score is not None:
+        lines.extend(
+            [
+                "## Score Breakdown",
+                "",
+            ]
+        )
+        if det_score is not None:
+            lines.append(f"- **Deterministic Metrics Score**: {det_score:.2f}/10 (solid value)")
+        if llm_score is not None:
+            var_info = ""
+            if llm_variance:
+                var_info = f" ± {llm_variance.get('std', 0):.2f}"
+            lines.append(f"- **LLM Metrics Score**: {llm_score:.2f}/10{var_info} (with variance)")
         lines.append("")
 
-    # Detailed agent evaluations
-    lines.extend(["", "## Agent Evaluations", ""])
+    # Detailed sub-scores if available
+    has_sub_scores = any(data.get("sub_scores") for data in aggregated.values())
 
-    # Group by agent
-    agent_evals: Dict[str, List[EvaluationRecord]] = {}
-    for eval_record in evaluations:
-        agent = eval_record.get("agent_name", "Unknown")
-        if agent not in agent_evals:
-            agent_evals[agent] = []
-        agent_evals[agent].append(eval_record)
+    if has_sub_scores:
+        lines.extend(["", "## Detailed Sub-Scores", ""])
 
-    for agent, agent_evaluations in agent_evals.items():
-        lines.extend([
-            f"### {agent.title()}Agent",
-            "",
-        ])
+        for dim, data in aggregated.items():
+            sub_scores = data.get("sub_scores", {})
+            if not sub_scores:
+                continue
 
-        for eval_record in agent_evaluations:
-            dim = eval_record.get("dimension", "unknown")
-            score = eval_record.get("score", 0.0)
-            reasoning = eval_record.get("reasoning", "")
-            evidence = eval_record.get("evidence")
-            confidence = eval_record.get("confidence", 0.0)
+            lines.append(f"### {dim.title()}")
+            lines.append("")
 
-            lines.extend([
-                f"#### {dim.title()} (Score: {score:.1f}/10, Confidence: {confidence:.2f})",
-                "",
-            ])
+            for sub_id, sub_data in sub_scores.items():
+                score = sub_data.get("score", 0.0)
+                llm_involved = sub_data.get("llm_involved", True)
+                reasoning = sub_data.get("llm_reasoning", "")
 
-            # Truncate reasoning if too long
-            if reasoning:
-                if len(reasoning) > 1000:
-                    reasoning = reasoning[:1000] + "..."
-                lines.extend([
-                    f"**Assessment**: {reasoning}",
-                    "",
-                ])
+                # Add indicator for metric type
+                indicator = "✓" if not llm_involved else "🤖"
+                lines.append(f"**{indicator} {sub_id}**: {score:.1f}/5")
 
-            if evidence:
-                if len(evidence) > 500:
-                    evidence = evidence[:500] + "..."
-                lines.extend([
-                    f"**Evidence**: {evidence}",
-                    "",
-                ])
+                if reasoning:
+                    # Truncate reasoning
+                    if len(reasoning) > 200:
+                        reasoning = reasoning[:200] + "..."
+                    lines.append(f"  - {reasoning}")
+                lines.append("")
 
     # Recommendations
     lines.extend(["", "## Recommendations", ""])
-    recommendations = _generate_recommendations(aggregated, overall_score)
+    recommendations = _generate_recommendations(aggregated, overall)
     lines.extend(recommendations)
 
     # Footer
-    lines.extend([
-        "",
-        "---",
-        "",
-        "*Report generated by SurveyMAE - Multi-Agent Survey Evaluation Framework*",
-    ])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "*Report generated by SurveyMAE - Multi-Agent Survey Evaluation Framework*",
+        ]
+    )
 
     return "\n".join(lines)
 
 
 def _get_score_grade(score: float) -> str:
-    """Convert numerical score to letter grade and description.
-
-    Args:
-        score: Numerical score [0-10].
-
-    Returns:
-        Grade description string.
-    """
+    """Convert numerical score to letter grade and description."""
     if score >= 9:
         return "**Grade**: A - Excellent\n\nThe survey demonstrates outstanding quality across all evaluation dimensions."
     elif score >= 8:
@@ -261,48 +401,50 @@ def _get_score_grade(score: float) -> str:
     elif score >= 6:
         return "**Grade**: D - Needs Improvement\n\nThe survey has significant issues that should be addressed."
     else:
-        return "**Grade**: F - Unsatisfactory\n\nThe survey fails to meet minimum quality standards."
+        return (
+            "**Grade**: F - Unsatisfactory\n\nThe survey fails to meet minimum quality standards."
+        )
 
 
 def _generate_recommendations(
     aggregated: Dict[str, Dict],
     overall_score: float,
 ) -> List[str]:
-    """Generate recommendations based on evaluation results.
-
-    Args:
-        aggregated: Aggregated dimension scores.
-        overall_score: Overall evaluation score.
-
-    Returns:
-        List of recommendation strings.
-    """
+    """Generate recommendations based on evaluation results."""
     recommendations = []
 
     # Check each dimension for low scores
     low_score_dims = []
     for dim, data in aggregated.items():
-        if data["score"] < 7.0:
-            low_score_dims.append((dim, data["score"]))
+        score = data.get("overall", data.get("score", 0.0))
+        if score < 7.0:
+            low_score_dims.append((dim, score))
 
     if low_score_dims:
         recommendations.append("**Areas Requiring Attention:**")
         for dim, score in low_score_dims:
-            recommendations.append(f"- **{dim.title()}** (Score: {score:.1f}/10) - Consider improving this aspect.")
+            recommendations.append(
+                f"- **{dim.title()}** (Score: {score:.1f}/10) - Consider improving this aspect."
+            )
 
-    # Check for high variance
+    # Check for high variance in sub-scores
     high_variance_dims = []
     for dim, data in aggregated.items():
-        stats = data.get("statistics", {})
-        if stats.get("std", 0) > 1.5:
-            high_variance_dims.append(dim)
+        sub_scores = data.get("sub_scores", {})
+        if sub_scores:
+            # Check for metrics with high variance
+            for sub_id, sub_data in sub_scores.items():
+                variance = sub_data.get("variance")
+                if variance and variance.get("std", 0) > 1.0:
+                    high_variance_dims.append(f"{dim}.{sub_id}")
+                    break
 
     if high_variance_dims:
         recommendations.append("")
         recommendations.append("**High Variance Detected:**")
-        recommendations.append("The following dimensions show high disagreement between evaluators:")
-        for dim in high_variance_dims:
-            recommendations.append(f"- {dim.title()}")
+        recommendations.append("The following metrics show high disagreement between models:")
+        for item in high_variance_dims:
+            recommendations.append(f"- {item}")
 
     # General recommendations
     if overall_score < 7.0:

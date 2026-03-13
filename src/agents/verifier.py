@@ -68,11 +68,16 @@ class VerifierAgent(BaseAgent):
         content = state.get("parsed_content", "")
         source_pdf = state.get("source_pdf_path", "")
 
+        # Get evidence report from state
+        evidence_reports = state.get("evidence_reports", {})
+        evidence_report = evidence_reports.get("verifier", "No evidence report available.")
+
         # Load the verification prompt
         system_prompt = self._load_prompt(
             "verifier",
             agent_name=self.name,
             section=section_name or "entire survey",
+            evidence_report=evidence_report,
         )
 
         # Use citation checker to extract and validate citations
@@ -104,9 +109,7 @@ class VerifierAgent(BaseAgent):
         """
 
         # Call LLM for verification
-        response = await self._call_llm(
-            self._create_messages(system_prompt, user_content)
-        )
+        response = await self._call_llm(self._create_messages(system_prompt, user_content))
 
         # Parse the response to extract scores
         score, reasoning, evidence = self._parse_verification_response(response)
@@ -205,7 +208,9 @@ class VerifierAgent(BaseAgent):
             issues.append("Citations found but no reference list - possible hallucination")
 
         # Add citation analysis to evidence
-        citation_evidence = f"Citation count: {citations_count}, Reference count: {references_count}"
+        citation_evidence = (
+            f"Citation count: {citations_count}, Reference count: {references_count}"
+        )
         if issues:
             citation_evidence += f"\nIssues: {'; '.join(issues)}"
             # Reduce score for citation issues

@@ -3,6 +3,11 @@
 Analyzes and detects systematic biases in the survey.
 Evaluates balance, fairness, and potential viewpoints being over/under-represented.
 Implements multi-vendor model parallel invocation and majority voting.
+
+According to Plan v2, this agent also computes variance for LLM-involved metrics:
+- Takes agent_outputs from Verifier/Expert/Reader
+- For each sub-dimension, computes variance from multi-model sampling
+- Fills in the variance info in the output
 """
 
 import logging
@@ -11,6 +16,7 @@ import statistics
 from typing import Any, Dict, List, Optional
 
 from src.agents.base import BaseAgent, MultiModelConfig
+from src.agents.output_schema import create_sub_score, create_agent_output
 from src.core.config import AgentConfig, LLMConfig
 from src.core.mcp_client import MCPManager
 from src.core.state import SurveyState, EvaluationRecord
@@ -19,11 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 # Default multi-model configuration for bias correction
-DEFAULT_MULTI_MODELS = [
-    LLMConfig(provider="openai", model="gpt-4o", temperature=0.1),
-    LLMConfig(provider="openai", model="gpt-4o-mini", temperature=0.1),
-    LLMConfig(provider="openai", model="gpt-4o", temperature=0.5),
-]
+# Note: This should be loaded from config/models.yaml via builder.py
+DEFAULT_MULTI_MODELS: List[LLMConfig] = []
 
 
 class CorrectorAgent(BaseAgent):
@@ -48,25 +51,25 @@ class CorrectorAgent(BaseAgent):
         self,
         config: Optional[AgentConfig] = None,
         mcp: Optional[MCPManager] = None,
-        multi_model_config: Optional[MultiModelConfig] = None,
     ):
         """Initialize the CorrectorAgent.
 
         Args:
-            config: Agent configuration.
+            config: Agent configuration (includes multi_model from config/models.yaml).
             mcp: Optional MCP manager for reference check tools.
-            multi_model_config: Optional multi-model configuration for parallel voting.
         """
-        # Create default multi-model config if not provided
+        # Ensure config has multi_model from models.yaml
+        if config is None:
+            config = AgentConfig(name="corrector")
+
+        # Use multi_model from config if available, otherwise fall back to single model mode
+        multi_model_config = config.multi_model
         if multi_model_config is None:
-            multi_model_config = MultiModelConfig(
-                models=DEFAULT_MULTI_MODELS,
-                use_parallel=True,
-            )
+            multi_model_config = MultiModelConfig(models=[], use_parallel=False)
 
         super().__init__(
             name="corrector",
-            config=config or AgentConfig(name="corrector"),
+            config=config,
             mcp=mcp,
             multi_model_config=multi_model_config,
         )
@@ -89,11 +92,23 @@ class CorrectorAgent(BaseAgent):
         """
         content = state.get("parsed_content", "")
 
+        # Get agent outputs from state
+        agent_outputs = state.get("agent_outputs", {})
+
+        # Format outputs from each agent for the prompt
+        import json
+        verifier_output = json.dumps(agent_outputs.get("verifier", {}), indent=2)
+        expert_output = json.dumps(agent_outputs.get("expert", {}), indent=2)
+        reader_output = json.dumps(agent_outputs.get("reader", {}), indent=2)
+
         # Load the bias correction prompt
         system_prompt = self._load_prompt(
             "corrector",
             agent_name=self.name,
             section=section_name or "entire survey",
+            verifier_output=verifier_output or "No verifier output available.",
+            expert_output=expert_output or "No expert output available.",
+            reader_output=reader_output or "No reader output available.",
         )
 
         user_content = f"""
@@ -221,6 +236,7 @@ class CorrectorAgent(BaseAgent):
 
         # Count occurrences
         from collections import Counter
+
         counter = Counter(rounded)
 
         # Get the most common score
@@ -286,7 +302,9 @@ class CorrectorAgent(BaseAgent):
             base_reasoning = reasonings[0]
 
         # Add note about multi-model voting
-        vote_info = f"[Based on {len(scores)} model evaluations with majority voting. Scores: {scores}]"
+        vote_info = (
+            f"[Based on {len(scores)} model evaluations with majority voting. Scores: {scores}]"
+        )
 
         return f"{base_reasoning}\n\n{vote_info}"
 
@@ -339,8 +357,142 @@ class CorrectorAgent(BaseAgent):
                     except ValueError:
                         pass
 
-            if any(kw in line_lower for kw in ["over-represented", "under-represented", "bias", "imbalance"]):
+            if any(
+                kw in line_lower
+                for kw in ["over-represented", "under-represented", "bias", "imbalance"]
+            ):
                 if evidence is None:
                     evidence = line
 
         return score, reasoning, evidence
+
+    async def compute_variance(
+        self,
+        agent_outputs: Dict[str, Any],
+        state: SurveyState,
+    ) -> Dict[str, Any]:
+        """Compute variance for LLM-involved metrics across agents.
+
+        This method:
+        1. Takes agent_outputs from Verifier/Expert/Reader
+        2. For each sub-dimension, calls multiple models to re-score
+        3. Computes variance statistics
+        4. Returns updated agent_outputs with variance info
+
+        Args:
+            agent_outputs: Dict of agent_name -> AgentOutput
+            state: Current workflow state
+
+        Returns:
+            Updated agent_outputs with variance information filled in.
+        """
+        if not self._llm_pool:
+            logger.warning("No LLM pool configured, skipping variance computation")
+            return agent_outputs
+
+        # Collect all sub-scores that need variance computation
+        subscores_to_compute = []
+        for agent_name, output in agent_outputs.items():
+            for sub_id, sub_score in output.get("sub_scores", {}).items():
+                if sub_score.get("llm_involved", True):
+                    subscores_to_compute.append(
+                        {
+                            "agent": agent_name,
+                            "sub_id": sub_id,
+                            "sub_score": sub_score,
+                        }
+                    )
+
+        if not subscores_to_compute:
+            logger.info("No LLM-involved sub-scores to compute variance for")
+            return agent_outputs
+
+        logger.info(f"Computing variance for {len(subscores_to_compute)} sub-scores")
+
+        # For each sub-score, call multiple models to compute variance
+        for item in subscores_to_compute:
+            agent_name = item["agent"]
+            sub_id = item["sub_id"]
+            sub_score = item["sub_score"]
+
+            # Build prompt for re-scoring
+            prompt = self._build_rescore_prompt(
+                agent_name=agent_name,
+                sub_id=sub_id,
+                sub_score=sub_score,
+                state=state,
+            )
+
+            messages = self._create_messages(
+                self._load_prompt(
+                    "corrector", agent_name="corrector", section="variance_computation"
+                ),
+                prompt,
+            )
+
+            # Call multiple models
+            results = await self._call_llm_pool(messages)
+
+            # Extract scores from each model
+            scores = []
+            for result in results:
+                if "error" in result:
+                    continue
+                try:
+                    parsed = self._parse_corrector_response(result.get("response", ""))
+                    scores.append(parsed[0])
+                except Exception as e:
+                    logger.warning(f"Failed to parse model response: {e}")
+
+            if len(scores) >= 2:
+                # Compute variance
+                variance_info = {
+                    "models_used": [r.get("model", "unknown") for r in results if "error" not in r],
+                    "scores": scores,
+                    "aggregated": statistics.median(scores),
+                    "std": statistics.stdev(scores) if len(scores) > 1 else 0.0,
+                    "range": [min(scores), max(scores)],
+                }
+
+                # Update the sub_score with variance
+                agent_outputs[agent_name]["sub_scores"][sub_id]["variance"] = variance_info
+
+        return agent_outputs
+
+    def _build_rescore_prompt(
+        self,
+        agent_name: str,
+        sub_id: str,
+        sub_score: Dict[str, Any],
+        state: SurveyState,
+    ) -> str:
+        """Build a prompt for re-scoring a sub-dimension.
+
+        Args:
+            agent_name: Original agent name (verifier, expert, reader)
+            sub_id: Sub-dimension ID (e.g., V1, E1, R1)
+            sub_score: Current sub-score data
+            state: Current workflow state
+
+        Returns:
+            Prompt string for re-scoring.
+        """
+        # Get relevant evidence
+        tool_evidence = sub_score.get("tool_evidence", {})
+        llm_reasoning = sub_score.get("llm_reasoning", "")
+
+        prompt = f"""Please re-evaluate the following sub-dimension:
+
+Agent: {agent_name}
+Sub-dimension: {sub_id}
+
+Previous reasoning:
+{llm_reasoning}
+
+Tool evidence used:
+{tool_evidence}
+
+Please provide a score from 1-5 for this sub-dimension and explain your reasoning.
+Output in JSON format: {{"score": <number>, "reasoning": "<explanation>"}}
+"""
+        return prompt

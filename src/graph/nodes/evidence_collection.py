@@ -1,0 +1,539 @@
+"""Evidence Collection Node (Full Implementation).
+
+This node executes the complete tool chain to collect evidence for agent evaluation:
+1. Citation extraction and validation (C3, C5, ref_metadata_cache)
+2. Keyword extraction (topic_keywords)
+3. Field trend baseline retrieval (T2, T5)
+4. Candidate key papers retrieval (G4)
+5. Temporal analysis (T1-T5, S1-S4)
+6. Citation graph analysis (G1-G6, S5)
+7. Foundational coverage analysis (G4)
+"""
+
+import logging
+from typing import Any, Dict, List, Optional
+import re
+
+from src.core.state import SurveyState
+from src.core.config import load_config
+from src.tools.citation_checker import CitationChecker
+from src.tools.citation_analysis import CitationAnalyzer
+
+
+def _convert_numpy_types(obj: Any) -> Any:
+    """Recursively convert numpy types to Python native types for serialization.
+
+    Args:
+        obj: Any object that might contain numpy types
+
+    Returns:
+        Object with numpy types converted to Python native types
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return obj
+
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: _convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_numpy_types(item) for item in obj]
+    return obj
+from src.tools.citation_graph_analysis import CitationGraphAnalyzer
+from src.tools.keyword_extractor import KeywordExtractor
+from src.tools.literature_search import LiteratureSearch
+from src.tools.foundational_coverage import FoundationalCoverageAnalyzer
+
+logger = logging.getLogger(__name__)
+
+
+def _load_evidence_config() -> Dict[str, Any]:
+    """Load evidence configuration from config file."""
+    try:
+        cfg = load_config()
+        return {
+            "foundational_top_k": cfg.evidence.foundational_top_k,
+            "foundational_match_threshold": cfg.evidence.foundational_match_threshold,
+            "trend_query_count": cfg.evidence.trend_query_count,
+            "trend_year_range": cfg.evidence.trend_year_range,
+            "clustering_algorithm": cfg.evidence.clustering_algorithm,
+            "clustering_seed": cfg.evidence.clustering_seed,
+            "citation_sample_size": cfg.evidence.citation_sample_size,
+            "api_timeout_seconds": cfg.evidence.api_timeout_seconds,
+            "fallback_order": cfg.evidence.fallback_order,
+        }
+    except Exception as e:
+        logger.warning(f"Failed to load config, using defaults: {e}")
+        return {}
+
+
+# Load config at module level for reuse
+_EVIDENCE_CONFIG = _load_evidence_config()
+
+# Default configuration values (fallback if config not available)
+DEFAULT_VERIFY_SOURCES = _EVIDENCE_CONFIG.get("fallback_order", ["semantic_scholar", "openalex"])
+DEFAULT_VERIFY_LIMIT = 50
+DEFAULT_TOP_K = _EVIDENCE_CONFIG.get("foundational_top_k", 30)
+DEFAULT_TREND_YEAR_RANGE = (2015, 2025)
+
+
+def _extract_title_and_abstract(parsed_content: str) -> tuple[str, str]:
+    """Extract title and abstract from parsed PDF content.
+
+    Args:
+        parsed_content: Parsed PDF content in markdown format.
+
+    Returns:
+        Tuple of (title, abstract).
+    """
+    lines = parsed_content.split("\n")
+
+    # Extract title (first heading or bold text)
+    title = ""
+    for line in lines[:10]:
+        line = line.strip()
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+        if line.startswith("**") and "**" in line[2:]:
+            # Try to find the title in bold format
+            match = re.search(r"\*\*(.+?)\*\*", line)
+            if match:
+                title = match.group(1).strip()
+                break
+
+    # Extract abstract
+    abstract = ""
+    in_abstract = False
+    abstract_lines = []
+    for line in lines:
+        line_upper = line.strip().upper()
+        if "ABSTRACT" in line_upper and len(line_upper) < 20:
+            in_abstract = True
+            continue
+        if in_abstract:
+            if line.strip() and not line.startswith("#") and not line.startswith("**"):
+                if line.strip().endswith(".") or line.strip().endswith(","):
+                    abstract_lines.append(line.strip())
+                elif len(abstract_lines) > 0 and abstract_lines[-1]:
+                    abstract_lines.append(line.strip())
+                    if len(abstract_lines) > 3:
+                        break
+            elif line.strip().startswith("#") or line.startswith("1.") or line.startswith("Keywords"):
+                break
+
+    abstract = " ".join(abstract_lines[:10])  # Limit abstract length
+
+    return title, abstract
+
+
+def _build_ref_metadata_cache(references: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Build metadata cache from validated references.
+
+    Args:
+        references: List of reference dictionaries from CitationChecker.
+
+    Returns:
+        Dictionary mapping ref_id to metadata.
+    """
+    cache = {}
+    for ref in references:
+        ref_id = ref.get("key", ref.get("ref_id", ""))
+        if not ref_id:
+            continue
+
+        # Extract available metadata
+        metadata = {
+            "key": ref_id,
+            "title": ref.get("title", ""),
+            "year": ref.get("year"),
+            "authors": ref.get("authors", []),
+            "doi": ref.get("doi", ""),
+            "venue": ref.get("venue", ""),
+        }
+
+        # Add validation data if available
+        validation = ref.get("validation", {})
+        if validation:
+            metadata["citation_count"] = validation.get("citation_count", 0)
+            metadata["external_ids"] = validation.get("external_ids", {})
+            metadata["verified"] = validation.get("verified", False)
+
+            # Extract reference_targets for citation edge building
+            # This is used by _build_citation_edges as fallback
+            validation_meta = validation.get("metadata", {})
+            if isinstance(validation_meta, dict):
+                targets = validation_meta.get("reference_targets", [])
+                if targets:
+                    # Extract target keys from reference_targets
+                    target_keys = []
+                    for target in targets:
+                        if isinstance(target, dict):
+                            key = target.get("key", "")
+                            if key:
+                                target_keys.append(key)
+                    if target_keys:
+                        metadata["references"] = target_keys
+
+        cache[ref_id] = metadata
+
+    return cache
+
+
+def _build_citation_edges(ref_metadata_cache: Dict[str, Dict[str, Any]]) -> List[tuple]:
+    """Build citation edges from reference metadata cache.
+
+    Args:
+        ref_metadata_cache: Cache of reference metadata.
+
+    Returns:
+        List of (source_ref_id, target_ref_id) tuples.
+    """
+    edges = []
+
+    for ref_id, metadata in ref_metadata_cache.items():
+        # Look for references field in metadata (from external APIs)
+        refs = metadata.get("references", [])
+        if isinstance(refs, list):
+            for target_id in refs:
+                if target_id in ref_metadata_cache:
+                    edges.append((ref_id, target_id))
+
+    return edges
+
+
+async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
+    """Execute complete evidence collection pipeline.
+
+    This function orchestrates all tool calls to collect comprehensive evidence
+    for agent evaluation, including:
+    - Citation validation (C3, C5)
+    - Keyword extraction for retrieval
+    - Field trend baseline
+    - Temporal analysis (T1-T5)
+    - Citation graph analysis (G1-G6)
+    - Foundational coverage (G4)
+
+    Args:
+        state: The current workflow state.
+
+    Returns:
+        State updates with tool_evidence and related data.
+    """
+    parsed_content = state.get("parsed_content", "")
+    source_pdf = state.get("source_pdf_path", "")
+    section_headings = state.get("section_headings", [])
+
+    if not parsed_content:
+        logger.warning("No parsed content available")
+        return {
+            "tool_evidence": {},
+            "ref_metadata_cache": {},
+            "topic_keywords": [],
+            "field_trend_baseline": {},
+            "candidate_key_papers": [],
+        }
+
+    try:
+        # =========================================================================
+        # Step 1: Citation Extraction and Validation
+        # =========================================================================
+        logger.info("Step 1: Extracting and validating citations...")
+        checker = CitationChecker()
+
+        # Extract citations with context
+        if source_pdf:
+            # Use async version to enable verification
+            extraction = await checker.extract_citations_with_context_from_pdf_async(
+                source_pdf,
+                verify_references=True,
+                sources=DEFAULT_VERIFY_SOURCES,
+                verify_limit=DEFAULT_VERIFY_LIMIT,
+            )
+            references = extraction.get("references", [])
+        else:
+            extraction = {"citations": [], "references": []}
+            references = []
+
+        # Build ref_metadata_cache from validated references
+        ref_metadata_cache = _build_ref_metadata_cache(references)
+
+        # Calculate C3 (orphan_ref_rate) - references not cited in text
+        cited_ref_keys = set()
+        for citation in extraction.get("citations", []):
+            ref_key = citation.get("ref_key", "")
+            if ref_key:
+                cited_ref_keys.add(ref_key)
+
+        total_refs = len(references)
+        uncited_refs = sum(1 for r in references if r.get("key", "") not in cited_ref_keys)
+        orphan_ref_rate = uncited_refs / total_refs if total_refs > 0 else 0.0
+
+        # Calculate C5 (metadata_verify_rate) - verified references ratio
+        verified_count = 0
+        for r in references:
+            validation = r.get("validation")
+            if validation and isinstance(validation, dict):
+                if validation.get("verified", False):
+                    verified_count += 1
+        metadata_verify_rate = verified_count / total_refs if total_refs > 0 else 0.0
+
+        logger.info(f"  C3 (orphan_ref_rate): {orphan_ref_rate:.2%}")
+        logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%}")
+
+        # =========================================================================
+        # Step 2: Keyword Extraction
+        # =========================================================================
+        logger.info("Step 2: Extracting keywords...")
+        title, abstract = _extract_title_and_abstract(parsed_content)
+
+        extractor = KeywordExtractor()
+        kw_result = await extractor.extract_keywords(
+            title=title,
+            abstract=abstract,
+            section_headings=section_headings if section_headings else None,
+        )
+        topic_keywords = kw_result.keywords
+
+        if not topic_keywords:
+            # Fallback: generate keywords from title
+            topic_keywords = [title] if title else []
+
+        logger.info(f"  Extracted keywords: {topic_keywords[:3]}")
+
+        # =========================================================================
+        # Step 3: Field Trend Baseline Retrieval
+        # =========================================================================
+        logger.info("Step 3: Retrieving field trend baseline...")
+        lit_search = LiteratureSearch()
+
+        field_trend_baseline: Dict[str, int] = {}
+
+        for kw in topic_keywords[:3]:  # Use top 3 keywords
+            try:
+                result = lit_search.search_field_trend(
+                    kw,
+                    year_range=DEFAULT_TREND_YEAR_RANGE,
+                )
+                yearly_counts = result.get("yearly_counts", {})
+                for year, count in yearly_counts.items():
+                    field_trend_baseline[year] = field_trend_baseline.get(year, 0) + count
+            except Exception as e:
+                logger.warning(f"  Failed to search field trend for '{kw}': {e}")
+                continue
+
+        logger.info(f"  Field trend baseline: {len(field_trend_baseline)} years")
+
+        # =========================================================================
+        # Step 4: Candidate Key Papers Retrieval
+        # =========================================================================
+        logger.info("Step 4: Retrieving candidate key papers...")
+        candidate_key_papers = []
+
+        for kw in topic_keywords[:3]:
+            try:
+                papers = await lit_search.search_top_cited(kw, top_k=DEFAULT_TOP_K)
+                candidate_key_papers.extend(papers)
+            except Exception as e:
+                logger.warning(f"  Failed to search top cited for '{kw}': {e}")
+                continue
+
+        # Deduplicate
+        seen_titles = set()
+        unique_papers = []
+        for paper in candidate_key_papers:
+            title_lower = paper.get("title", "").lower()
+            if title_lower and title_lower not in seen_titles:
+                seen_titles.add(title_lower)
+                unique_papers.append(paper)
+
+        candidate_key_papers = unique_papers
+        logger.info(f"  Found {len(candidate_key_papers)} candidate papers")
+
+        # =========================================================================
+        # Step 5: Temporal Analysis (T1-T5)
+        # =========================================================================
+        logger.info("Step 5: Computing temporal metrics...")
+        analyzer = CitationAnalyzer()
+
+        # Convert references to dict format for analyzer
+        ref_dicts = []
+        for ref in references:
+            ref_dict = {
+                "key": ref.get("key", ""),
+                "title": ref.get("title", ""),
+                "year": ref.get("year"),
+            }
+            ref_dicts.append(ref_dict)
+
+        # Compute T1-T5
+        temporal_metrics = analyzer.compute_temporal_metrics(
+            ref_dicts,
+            field_trend_baseline={"yearly_counts": field_trend_baseline}
+        )
+
+        # Compute S1-S4 (structural metrics)
+        # Build section-citation counts from extraction
+        section_ref_counts: Dict[str, Dict[str, int]] = {}
+        for citation in extraction.get("citations", []):
+            section = citation.get("section_title", "Unknown")
+            ref_key = citation.get("ref_key", "")
+            if section not in section_ref_counts:
+                section_ref_counts[section] = {}
+            section_ref_counts[section][ref_key] = section_ref_counts[section].get(ref_key, 0) + 1
+
+        structural_metrics = analyzer.compute_structural_metrics(
+            section_ref_counts,
+            total_paragraphs=len(parsed_content) // 500,  # Rough estimate
+        )
+
+        logger.info(f"  T1 (year_span): {temporal_metrics.get('T1_year_span')}")
+        logger.info(f"  T5 (trend_alignment): {temporal_metrics.get('T5_trend_alignment')}")
+
+        # =========================================================================
+        # Step 6: Citation Graph Analysis (G1-G6, S5)
+        # =========================================================================
+        logger.info("Step 6: Computing citation graph metrics...")
+        graph_analyzer = CitationGraphAnalyzer()
+
+        # Build edges from real citation data (verified by citation checker)
+        # Use real_citation_edges from extraction if available, otherwise fallback to old method
+        real_edges = extraction.get("real_citation_edges", [])
+        if real_edges:
+            edges = real_edges
+            logger.info(f"  Using {len(edges)} real citation edges from verification")
+        else:
+            # Fallback: try to build edges from reference metadata
+            edges = _build_citation_edges(ref_metadata_cache)
+            if not edges:
+                logger.warning("  No citation edges found, graph metrics may be limited")
+
+        # Build graph config from evidence config
+        graph_config = {
+            "clustering_algorithm": _EVIDENCE_CONFIG.get("clustering_algorithm", "cocitation"),
+            "clustering_seed": _EVIDENCE_CONFIG.get("clustering_seed"),
+        }
+
+        # Analyze graph
+        try:
+            graph_result = graph_analyzer.analyze(
+                references=ref_dicts,
+                edges=edges,
+                config=graph_config,
+            )
+        except Exception as e:
+            logger.warning(f"  Graph analysis failed: {e}")
+            graph_result = {}
+
+        # Get cluster evidence for S5 calculation
+        summary = graph_result.get("summary", {})
+        cluster_summary = summary.get("cocitation_clustering", {})
+        cluster_evidence = cluster_summary.get("cluster_evidence", [])
+        clustering_method = cluster_summary.get("clustering_method", "cocitation")
+
+        # Compute S5 (section-cluster alignment)
+        try:
+            s5_result = graph_analyzer.compute_section_cluster_alignment(
+                section_ref_counts=section_ref_counts,
+                references=ref_dicts,
+                cluster_evidence=cluster_evidence,
+            )
+        except Exception as e:
+            logger.warning(f"  S5 computation failed: {e}")
+            s5_result = {}
+
+        # =========================================================================
+        # Step 7: Foundational Coverage Analysis (G4)
+        # =========================================================================
+        logger.info("Step 7: Computing foundational coverage...")
+        g4_analyzer = FoundationalCoverageAnalyzer()
+
+        try:
+            g4_result = await g4_analyzer.analyze(
+                topic_keywords=topic_keywords,
+                survey_references=ref_dicts,
+                ref_metadata_cache=ref_metadata_cache,
+            )
+            g4_coverage = g4_result.coverage_rate
+            missing_papers = g4_result.missing_key_papers
+            suspicious_papers = g4_result.suspicious_centrality
+        except Exception as e:
+            logger.warning(f"  G4 analysis failed: {e}")
+            g4_coverage = None
+            missing_papers = []
+            suspicious_papers = []
+
+        logger.info(f"  G4 (foundational_coverage_rate): {g4_coverage}")
+
+        # =========================================================================
+        # Assemble Tool Evidence
+        # =========================================================================
+        tool_evidence = {
+            "extraction": extraction,
+            "validation": {
+                "orphan_ref_rate": orphan_ref_rate,
+                "metadata_verify_rate": metadata_verify_rate,
+                "references": references,
+                "verified_count": verified_count,
+                "total_refs": total_refs,
+            },
+            "analysis": {
+                # Temporal (T1-T5)
+                "T1_year_span": temporal_metrics.get("T1_year_span"),
+                "T2_foundational_retrieval_gap": temporal_metrics.get("T2_foundational_retrieval_gap"),
+                "T3_peak_year_ratio": temporal_metrics.get("T3_peak_year_ratio"),
+                "T4_temporal_continuity": temporal_metrics.get("T4_temporal_continuity"),
+                "T5_trend_alignment": temporal_metrics.get("T5_trend_alignment"),
+                "year_distribution": temporal_metrics.get("year_distribution"),
+                # Structural (S1-S4)
+                "S1_section_count": structural_metrics.get("S1_section_count"),
+                "S2_citation_density": structural_metrics.get("S2_citation_density"),
+                "S3_citation_gini": structural_metrics.get("S3_citation_gini"),
+                "S4_zero_citation_section_rate": structural_metrics.get("S4_zero_citation_section_rate"),
+            },
+            "graph_analysis": {
+                # Graph metrics (G1-G6)
+                "G1_density": summary.get("density_connectivity", {}).get("density_global"),
+                "G2_components": summary.get("density_connectivity", {}).get("n_weak_components"),
+                "G3_lcc_frac": summary.get("density_connectivity", {}).get("lcc_frac"),
+                "G4_coverage_rate": g4_coverage,
+                "G5_clusters": summary.get("cocitation_clustering", {}).get("n_clusters"),
+                "G6_isolates": summary.get("density_connectivity", {}).get("n_isolates"),
+                # Section-cluster alignment (S5)
+                "S5_nmi": s5_result.get("nmi"),
+                "S5_ari": s5_result.get("ari"),
+                # Additional data for agents
+                "missing_key_papers": missing_papers,
+                "suspicious_centrality": suspicious_papers,
+            },
+        }
+
+        logger.info(f"Evidence collection complete: {total_refs} references, {len(topic_keywords)} keywords")
+
+        # Convert numpy types to Python native types for msgpack serialization
+        tool_evidence = _convert_numpy_types(tool_evidence)
+        candidate_key_papers = _convert_numpy_types(candidate_key_papers)
+
+        return {
+            "tool_evidence": tool_evidence,
+            "ref_metadata_cache": ref_metadata_cache,
+            "topic_keywords": topic_keywords,
+            "field_trend_baseline": {"yearly_counts": field_trend_baseline},
+            "candidate_key_papers": candidate_key_papers,
+        }
+
+    except Exception as e:
+        logger.error(f"Evidence collection failed: {e}", exc_info=True)
+        return {
+            "tool_evidence": {},
+            "ref_metadata_cache": {},
+            "topic_keywords": [],
+            "field_trend_baseline": {},
+            "candidate_key_papers": [],
+        }

@@ -37,6 +37,24 @@
 | CorrectorAgent | 平衡性 | 偏见检测、观点平衡 | 多模型投票 (Multi-Model Voting) |
 | ReporterAgent | 报告生成 | 评估结果聚合与报告生成 | 评分聚合、雷达图生成 |
 
+#### 评测指标体系
+
+项目实现了完整的评测指标体系，详见 `docs/SurveyMAE_Plan_v2.md`。
+
+**指标分类：**
+
+| 类型 | 说明 |
+|------|------|
+| 确定性指标 | 由工具计算产出 (llm_involved=false) |
+| LLM 指标 | Agent 基于证据的判断 (llm_involved=true) |
+
+**Agent 子维度：**
+
+- **VerifierAgent**: V1-V4 (引用存在性、支持性、准确性、内部一致性)
+- **ExpertAgent**: E1-E4 (核心文献覆盖、方法分类、技术准确性、批判性分析)
+- **ReaderAgent**: R1-R4 (时效性、信息分布均衡性、结构清晰度、文字质量)
+- **CorrectorAgent**: 多模型投票 + 波动范围计算
+
 ---
 
 ## 快速开始
@@ -141,35 +159,33 @@ SurveyMAE/
 PDF 输入
     │
     ▼
-┌─────────────┐
-│ Parse PDF   │  ──→ parsed_content
-└──────┬──────┘
-       │
-       ▼
-┌──────────────────────────────────────────┐
-│         并行评估阶段                      │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐     │
-│  │Verifier │ │ Expert  │ │ Reader  │ ... │
-│  └────┬────┘ └────┬────┘ └────┬────┘     │
-│       │           │           │           │
-│       └───────────┴───────────┘           │
-└────────────────┬───────────────────────────┘
-                │
-                ▼
-┌──────────────────────────────────────────┐
-│         辩论/共识机制                     │
-│  如果评分差异 > 阈值，进入辩论阶段         │
-│  多轮讨论直至达成共识或达到最大轮数       │
-└────────────────┬──────────────────────────┘
-                │
-                ▼
-┌──────────────────────────────────────────┐
-│         评分聚合                         │
-│  加权平均/投票产生最终评分               │
-└────────────────┬──────────────────────────┘
-                │
-                ▼
-Markdown 报告
+[parse_pdf] ─────────── parsed_content, section_headings, citations, references
+    │
+    ▼
+[evidence_collection] ── 统一执行所有工具，产出结构化证据
+    │
+    ▼
+[evidence_dispatch] ──── 组装Evidence Report
+    │
+    ├──→ [verifier_eval] ── VerifierAgent + 验证证据 → verifier_output
+    ├──→ [expert_eval] ──── ExpertAgent + 图分析 → expert_output
+    └──→ [reader_eval] ──── ReaderAgent + 时序/结构统计 → reader_output
+    │
+    ▼
+[corrector_eval] ─────── 多模型投票 + 波动范围计算 → corrector_output
+    │
+    ▼
+[should_debate?] ─────── 检查评分差异是否超过阈值
+    │         │
+    │(yes)    │(no)
+    ▼         │
+[debate] ──→  │
+    │         │
+    ▼         ▼
+[aggregator] ──────────── 加权聚合所有评分 → aggregated_scores
+    │
+    ▼
+[reporter] ───────────── 生成Markdown诊断报告（含波动范围）
 ```
 
 ---
@@ -369,6 +385,27 @@ providers:
     base_url: https://ark.cn-beijing.volces.com/api/v3
     models: [doubao-pro-32k, doubao-lite-32k]
 ```
+
+**多模型投票配置：**
+
+`corrector` 智能体支持多模型投票功能，可在 `models.yaml` 中配置：
+
+```yaml
+corrector:
+  provider: qwen
+  model: qwen-turbo
+  multi_model:
+    enabled: true
+    models:
+      - provider: qwen
+        model: qwen3.5-flash
+      - provider: deepseek
+        model: deepseek-chat
+      - provider: qwen
+        model: qwen3.5-flash
+```
+
+配置后，多模型配置通过 `AgentConfig.multi_model` 字段自动加载到 CorrectorAgent。
 
 ### Prompt 模板 (config/prompts/)
 
@@ -628,6 +665,40 @@ output/runs/<run_id>/
 - `run.json` 会记录自定义工具参数（`tool_params`），便于后续复现配置。
 - `index.json` 记录每篇文献的状态与更新时间，便于批处理索引。
 - 测试中若使用 `tmp_path`，结果会写入 pytest 临时目录（测试结束后自动清理）。
+
+**工作流步骤自动记录：**
+
+LangGraph 工作流节点自动将每步的输入、输出和运行参数保存到 `output/runs/`：
+
+```
+output/runs/{timestamp}_{hash}/papers/{paper_hash}/
+├── 01_parse_pdf.json           # PDF 解析结果
+├── 02_evidence_collection.json  # 证据收集结果
+├── 03_evidence_dispatch.json   # 证据分发结果
+├── 04_verifier.json           # Verifier 评估
+├── 04_expert.json            # Expert 评估
+├── 04_reader.json            # Reader 评估
+├── 04_corrector.json        # Corrector 评估
+└── 04_reporter.json         # 最终报告
+```
+
+每个 JSON 文件包含：
+
+```json
+{
+  "step": "04_verifier",
+  "timestamp": "2026-03-12T10:21:41+00:00",
+  "source_pdf": "test_survey2.pdf",
+  "input": { ... },      // 输入状态
+  "output": { ... },     // 输出数据
+  "run_params": {        // 运行参数
+    "node": "verifier",
+    "agent_class": "VerifierAgent"
+  }
+}
+```
+
+最终 Markdown 报告保存到 `output/reports/{pdf_name}_{timestamp}.md`。
 
 ### 引用元数据比较工具
 

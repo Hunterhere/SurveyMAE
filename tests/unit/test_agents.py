@@ -15,7 +15,7 @@ from src.core.state import SurveyState, EvaluationRecord
 
 def create_mock_agent(agent_class):
     """Create an agent with mocked LLM."""
-    with patch('src.agents.base.ChatOpenAI') as mock_llm:
+    with patch("src.agents.base.ChatOpenAI") as mock_llm:
         mock_instance = MagicMock()
         mock_llm.return_value = mock_instance
         agent = agent_class()

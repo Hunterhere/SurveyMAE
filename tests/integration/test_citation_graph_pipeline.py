@@ -1,4 +1,4 @@
-﻿import json
+import json
 import math
 import os
 from pathlib import Path
@@ -221,7 +221,9 @@ def _render_pyvis_html(
                 options = dist_to_center.get(node, {})
                 if not options:
                     continue
-                best_center = min(options.items(), key=lambda item: (item[1], center_rank[item[0]]))[0]
+                best_center = min(
+                    options.items(), key=lambda item: (item[1], center_rank[item[0]])
+                )[0]
                 cluster_map[node] = center_rank[best_center]
 
             for _ in range(3):
@@ -296,9 +298,7 @@ def _render_pyvis_html(
     for src, dst in dedup_edges:
         src_cluster = cluster_map.get(src)
         edge_color = (
-            f"{palette[src_cluster % len(palette)]}66"
-            if src_cluster is not None
-            else "#94a3b866"
+            f"{palette[src_cluster % len(palette)]}66" if src_cluster is not None else "#94a3b866"
         )
         net.add_edge(src, dst, color=edge_color, width=1)
 
@@ -517,10 +517,13 @@ async def test_citation_graph_full_pipeline_with_test_paper(tmp_path: Path):
 
     index_data = json.loads((run_dir / "index.json").read_text(encoding="utf-8"))
     assert index_data.get("papers"), "Expected papers in ResultStore index"
-    assert any(
-        entry.get("status") == "graph_analyzed"
-        for entry in index_data.get("papers", {}).values()
-    ) or edges == []
+    assert (
+        any(
+            entry.get("status") == "graph_analyzed"
+            for entry in index_data.get("papers", {}).values()
+        )
+        or edges == []
+    )
 
     validation_files = list((run_dir / "papers").glob("*/validation.json"))
     assert validation_files, "Expected validation.json persisted in ResultStore"
@@ -541,7 +544,9 @@ async def test_citation_graph_full_pipeline_with_test_paper(tmp_path: Path):
     print("Verification sources:", sources)
     print("Verified references count:", len(verified))
     if graph_report:
-        print("Graph nodes/edges:", graph_report["meta"]["n_nodes"], graph_report["meta"]["n_edges"])
+        print(
+            "Graph nodes/edges:", graph_report["meta"]["n_nodes"], graph_report["meta"]["n_edges"]
+        )
     else:
         print("Graph metrics status: failed (NO_REAL_EDGES)")
     print("Real citation edges count:", len(real_edges))
@@ -559,11 +564,7 @@ async def test_citation_graph_full_pipeline_with_test_paper(tmp_path: Path):
 
     # Visualization preview for quick inspection in integration logs.
     node_keys = sorted(
-        {
-            str(ref.get("key", "")).strip()
-            for ref in references
-            if str(ref.get("key", "")).strip()
-        }
+        {str(ref.get("key", "")).strip() for ref in references if str(ref.get("key", "")).strip()}
     )
     mermaid_text, mermaid_edges, mermaid_nodes = _render_mermaid(
         edges,

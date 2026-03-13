@@ -135,9 +135,7 @@ class PDFParser:
         """
         path = self._validate_path(pdf_path)
         output_file = (
-            Path(output_path)
-            if output_path
-            else self._default_output_path(path, cache_dir)
+            Path(output_path) if output_path else self._default_output_path(path, cache_dir)
         )
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -343,16 +341,20 @@ def create_pdf_parser_mcp_server():
                 )
                 return [TextContent(type="text", text=output_path)]
             else:
-                return [TextContent(
-                    type="text",
-                    text=f"Unknown tool: {name}",
-                    isError=True,
-                )]
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Unknown tool: {name}",
+                        isError=True,
+                    )
+                ]
         except Exception as e:
-            return [TextContent(
-                type="text",
-                text=str(e),
-                isError=True,
-            )]
+            return [
+                TextContent(
+                    type="text",
+                    text=str(e),
+                    isError=True,
+                )
+            ]
 
     return app

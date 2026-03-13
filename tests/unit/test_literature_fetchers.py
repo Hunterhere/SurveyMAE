@@ -136,9 +136,7 @@ def test_literature_search_aggregates_sources():
         def search_by_title(self, title: str, max_results: int = 5):
             return crossref_meta
 
-    searcher = LiteratureSearch(
-        fetchers={"arxiv": DummyArxiv(), "crossref": DummyCrossRef()}
-    )
+    searcher = LiteratureSearch(fetchers={"arxiv": DummyArxiv(), "crossref": DummyCrossRef()})
     results = searcher.search_by_title("Test", sources=["arxiv", "crossref"])
     sources = [r.source for r in results]
     assert sources == ["arxiv", "crossref"]

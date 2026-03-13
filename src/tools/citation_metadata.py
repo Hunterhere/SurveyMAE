@@ -2,6 +2,7 @@
 
 This module adapts BibGuard's metadata comparison logic for SurveyMAE.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +17,7 @@ from typing import Any, Iterable, Optional
 import httpx
 
 from src.core.search_config import load_search_engine_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -548,9 +550,7 @@ class MetadataComparator:
 
         is_match = title_match and author_match
         confidence = (
-            title_similarity * 0.5
-            + author_similarity * 0.3
-            + (1.0 if year_match else 0.5) * 0.2
+            title_similarity * 0.5 + author_similarity * 0.3 + (1.0 if year_match else 0.5) * 0.2
         )
 
         return ComparisonResult(
@@ -997,11 +997,7 @@ class SemanticScholarFetcher:
             year = paper_data.get("year")
             year_str = str(year) if year else ""
             external_ids = paper_data.get("externalIds") or {}
-            doi = str(
-                external_ids.get("DOI")
-                or external_ids.get("doi")
-                or ""
-            ).strip()
+            doi = str(external_ids.get("DOI") or external_ids.get("doi") or "").strip()
             arxiv_id = str(
                 external_ids.get("ArXiv")
                 or external_ids.get("arXiv")
@@ -1009,9 +1005,7 @@ class SemanticScholarFetcher:
                 or ""
             ).strip()
             openalex_id = str(
-                external_ids.get("OpenAlex")
-                or external_ids.get("openalex")
-                or ""
+                external_ids.get("OpenAlex") or external_ids.get("openalex") or ""
             ).strip()
             reference_targets: list[dict[str, str]] = []
             for ref in paper_data.get("references", []) or []:
@@ -1023,9 +1017,7 @@ class SemanticScholarFetcher:
                     target["semantic_scholar_id"] = ref_pid
                 ref_external_ids = ref.get("externalIds") or {}
                 ref_doi = str(
-                    ref_external_ids.get("DOI")
-                    or ref_external_ids.get("doi")
-                    or ""
+                    ref_external_ids.get("DOI") or ref_external_ids.get("doi") or ""
                 ).strip()
                 if ref_doi:
                     target["doi"] = ref_doi
@@ -1038,9 +1030,7 @@ class SemanticScholarFetcher:
                 if ref_arxiv:
                     target["arxiv_id"] = ref_arxiv
                 ref_openalex = str(
-                    ref_external_ids.get("OpenAlex")
-                    or ref_external_ids.get("openalex")
-                    or ""
+                    ref_external_ids.get("OpenAlex") or ref_external_ids.get("openalex") or ""
                 ).strip()
                 if ref_openalex:
                     target["openalex_id"] = ref_openalex
@@ -1298,9 +1288,7 @@ class CitationMetadataChecker:
             author_threshold=author_threshold,
         )
         self.arxiv_fetcher = ArxivFetcher()
-        self.crossref_fetcher = CrossRefFetcher(
-            mailto=crossref_mailto or "surveymae@example.com"
-        )
+        self.crossref_fetcher = CrossRefFetcher(mailto=crossref_mailto or "surveymae@example.com")
         self.semantic_scholar_fetcher = SemanticScholarFetcher(api_key=semantic_scholar_api_key)
         self.openalex_fetcher = OpenAlexFetcher(email=openalex_email)
         self.dblp_fetcher = DBLPFetcher()

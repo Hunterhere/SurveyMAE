@@ -39,10 +39,12 @@ class MultiModelConfig(BaseModel):
     Attributes:
         enabled: Whether to enable multi-model voting.
         models: List of model configurations for voting.
+        use_parallel: Whether to use parallel calls for voting.
     """
 
     enabled: bool = False
     models: List[LLMConfig] = Field(default_factory=list)
+    use_parallel: bool = True
 
 
 class AgentModelConfig(BaseModel):
@@ -164,6 +166,7 @@ class AgentConfig(BaseModel):
         tools: List of tool names this agent can use.
         retry_attempts: Number of retry attempts on failure.
         timeout: Timeout in seconds for agent execution.
+        multi_model: Multi-model voting configuration (for CorrectorAgent).
     """
 
     name: str
@@ -172,6 +175,7 @@ class AgentConfig(BaseModel):
     tools: List[str] = Field(default_factory=list)
     retry_attempts: int = 3
     timeout: int = 120
+    multi_model: Optional[MultiModelConfig] = None
 
 
 class MCPServerConfig(BaseModel):
@@ -205,13 +209,15 @@ class DebateConfig(BaseModel):
     max_rounds: int = 3
     score_threshold: float = 2.0
     aggregator: str = "weighted"
-    weights: Dict[str, float] = Field(default_factory=lambda: {
-        "verifier": 1.0,
-        "expert": 1.2,
-        "reader": 1.0,
-        "corrector": 0.8,
-        "reporter": 1.0,
-    })
+    weights: Dict[str, float] = Field(
+        default_factory=lambda: {
+            "verifier": 1.0,
+            "expert": 1.2,
+            "reader": 1.0,
+            "corrector": 0.8,
+            "reporter": 1.0,
+        }
+    )
 
 
 class ReportConfig(BaseModel):
@@ -246,6 +252,32 @@ class CitationConfig(BaseModel):
     grobid_consolidate: bool = False
 
 
+class EvidenceConfig(BaseModel):
+    """Configuration for evidence collection.
+
+    Attributes:
+        foundational_top_k: Number of top-cited papers to retrieve for G4.
+        foundational_match_threshold: Title matching threshold for G4 (0-1).
+        trend_query_count: Number of query groups for field trend retrieval.
+        trend_year_range: Year range for trend retrieval.
+        clustering_algorithm: Clustering algorithm for S5 ("louvain", "spectral", "leiden").
+        clustering_seed: Random seed for clustering.
+        citation_sample_size: Number of citation-claim pairs to sample.
+        api_timeout_seconds: Timeout for API requests.
+        fallback_order: Ordered list of sources for fallback.
+    """
+
+    foundational_top_k: int = 30
+    foundational_match_threshold: float = 0.85
+    trend_query_count: int = 5
+    trend_year_range: tuple[int, int] = (2015, 2025)
+    clustering_algorithm: str = "louvain"
+    clustering_seed: int = 42
+    citation_sample_size: int = 15
+    api_timeout_seconds: int = 30
+    fallback_order: list[str] = field(default_factory=lambda: ["semantic_scholar", "openalex"])
+
+
 class SurveyMAEConfig(BaseModel):
     """Main configuration class for SurveyMAE.
 
@@ -268,6 +300,7 @@ class SurveyMAEConfig(BaseModel):
     debate: DebateConfig = Field(default_factory=DebateConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
     citation: CitationConfig = Field(default_factory=CitationConfig)
+    evidence: EvidenceConfig = Field(default_factory=EvidenceConfig)
 
     @classmethod
     def from_yaml(cls, config_path: str) -> "SurveyMAEConfig":
@@ -312,6 +345,9 @@ class SurveyMAEConfig(BaseModel):
 
         if "citation" in data and isinstance(data["citation"], dict):
             data["citation"] = CitationConfig(**data["citation"])
+
+        if "evidence" in data and isinstance(data["evidence"], dict):
+            data["evidence"] = EvidenceConfig(**data["evidence"])
 
         return cls(**data)
 

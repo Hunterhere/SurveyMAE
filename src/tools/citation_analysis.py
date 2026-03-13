@@ -2,6 +2,7 @@
 
 Provides basic statistics over extracted references, such as counts by year.
 """
+
 from __future__ import annotations
 
 import logging
@@ -114,9 +115,7 @@ class CitationAnalyzer:
         """Analyze citation distribution across paragraphs."""
         ref_by_key = {ref.get("key"): ref for ref in references if ref.get("key")}
         ref_by_number = {
-            ref.get("reference_number"): ref
-            for ref in references
-            if ref.get("reference_number")
+            ref.get("reference_number"): ref for ref in references if ref.get("reference_number")
         }
 
         paragraph_map: dict[int, list[dict[str, Any]]] = {}
@@ -128,7 +127,7 @@ class CitationAnalyzer:
 
         paragraph_indices = sorted(paragraph_map.keys())
         if max_paragraphs is not None:
-            paragraph_indices = paragraph_indices[: max_paragraphs]
+            paragraph_indices = paragraph_indices[:max_paragraphs]
 
         paragraph_entries = []
         paragraph_ref_sets: dict[int, set[str]] = {}
@@ -228,7 +227,9 @@ class CitationAnalyzer:
                 if sec_index is None:
                     continue
                 root_index = _find_root(sec_index) or sec_index
-                root_title = section_title_map.get(root_index, sec.get("section_title") or "Unknown")
+                root_title = section_title_map.get(
+                    root_index, sec.get("section_title") or "Unknown"
+                )
                 root_kind = section_kind_by_index.get(root_index, "main")
                 section_kind_map.setdefault((root_index, root_title), root_kind)
 
@@ -276,8 +277,14 @@ class CitationAnalyzer:
             if not section_kind:
                 section_kind = section_kind_by_index.get(root_index)
             if not section_kind:
-                section_kind = _infer_kind_from_title(root_title) or _infer_kind_from_title(leaf_title)
-            leaf_kind = section_kind_by_index.get(leaf_index) or _infer_kind_from_title(leaf_title) or section_kind
+                section_kind = _infer_kind_from_title(root_title) or _infer_kind_from_title(
+                    leaf_title
+                )
+            leaf_kind = (
+                section_kind_by_index.get(leaf_index)
+                or _infer_kind_from_title(leaf_title)
+                or section_kind
+            )
             leaf_number = section_number_map.get(leaf_index)
             leaf_level = section_level_map.get(leaf_index)
 
@@ -653,6 +660,219 @@ class CitationAnalyzer:
 
         return result
 
+    def compute_temporal_metrics(
+        self,
+        references: list[dict[str, Any]],
+        field_trend_baseline: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Compute T-series temporal metrics (T1-T5).
+
+        This method computes:
+        - T1: year_span
+        - T2: foundational_retrieval_gap (requires field_trend_baseline)
+        - T3: peak_year_ratio
+        - T4: temporal_continuity
+        - T5: trend_alignment (requires field_trend_baseline)
+
+        Args:
+            references: List of reference dictionaries.
+            field_trend_baseline: Field trend baseline from LiteratureSearch.
+
+        Returns:
+            Dict with T1-T5 metrics.
+        """
+        # Extract years
+        numeric_years: list[int] = []
+        for ref in references:
+            year = ref.get("year")
+            if year:
+                try:
+                    numeric_years.append(int(year))
+                except (ValueError, TypeError):
+                    continue
+
+        if not numeric_years:
+            return {
+                "T1_year_span": None,
+                "T2_foundational_retrieval_gap": None,
+                "T3_peak_year_ratio": None,
+                "T4_temporal_continuity": None,
+                "T5_trend_alignment": None,
+                "status": "no_valid_years",
+            }
+
+        # T1: year_span
+        min_year = min(numeric_years)
+        max_year = max(numeric_years)
+        year_span = max_year - min_year
+
+        # T2: foundational_retrieval_gap
+        foundational_gap = None
+        if field_trend_baseline:
+            baseline_years = field_trend_baseline.get("yearly_counts", {})
+            # Find earliest year with significant publications
+            significant_years = [
+                int(y)
+                for y, c in baseline_years.items()
+                if c and isinstance(c, (int, float)) and c > 0
+            ]
+            if significant_years:
+                earliest_foundation_year = min(significant_years)
+                foundational_gap = min_year - earliest_foundation_year
+
+        # T3: peak_year_ratio (ratio of citations in last 3 years)
+        import datetime as _dt
+
+        current_year = _dt.datetime.now().year
+        recent_years = [y for y in numeric_years if y >= current_year - 2]
+        peak_year_ratio = len(recent_years) / len(numeric_years) if numeric_years else 0
+
+        # T4: temporal_continuity (longest gap in years with no citations)
+        unique_years = sorted(set(numeric_years))
+        max_gap = 0
+        for i in range(len(unique_years) - 1):
+            gap = unique_years[i + 1] - unique_years[i]
+            if gap > max_gap:
+                max_gap = gap
+
+        # T5: trend_alignment (Pearson correlation)
+        trend_alignment = None
+        if field_trend_baseline:
+            baseline_counts = field_trend_baseline.get("yearly_counts", {})
+            # Build aligned year-count pairs
+            survey_counts: dict[int, int] = {}
+            for y in numeric_years:
+                survey_counts[y] = survey_counts.get(y, 0) + 1
+
+            # Find overlapping years
+            common_years = []
+            survey_values = []
+            baseline_values = []
+
+            for year_str, baseline_count in baseline_counts.items():
+                if year_str.isdigit():
+                    year = int(year_str)
+                    if year in survey_counts and baseline_count:
+                        common_years.append(year)
+                        survey_values.append(survey_counts[year])
+                        baseline_values.append(baseline_count)
+
+            if len(common_years) >= 3:
+                try:
+                    from scipy.stats import pearsonr
+
+                    correlation, _ = pearsonr(survey_values, baseline_values)
+                    trend_alignment = correlation
+                except ImportError:
+                    # Fallback: simple correlation calculation
+                    trend_alignment = self._simple_correlation(survey_values, baseline_values)
+
+        # Build year distribution for report
+        year_distribution = {}
+        for year in numeric_years:
+            year_distribution[year] = year_distribution.get(year, 0) + 1
+
+        return {
+            "T1_year_span": year_span,
+            "T2_foundational_retrieval_gap": foundational_gap,
+            "T3_peak_year_ratio": round(peak_year_ratio, 3),
+            "T4_temporal_continuity": max_gap,
+            "T5_trend_alignment": round(trend_alignment, 3)
+            if trend_alignment is not None
+            else None,
+            "year_distribution": year_distribution,
+            "earliest_year": min_year,
+            "latest_year": max_year,
+            "status": "success" if numeric_years else "no_data",
+        }
+
+    def _simple_correlation(self, x: list[float], y: list[float]) -> float:
+        """Calculate simple Pearson correlation without scipy."""
+        if len(x) != len(y) or len(x) < 2:
+            return 0.0
+
+        n = len(x)
+        mean_x = sum(x) / n
+        mean_y = sum(y) / n
+
+        numerator = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
+        denominator_x = sum((x[i] - mean_x) ** 2 for i in range(n))
+        denominator_y = sum((y[i] - mean_y) ** 2 for i in range(n))
+
+        denominator = (denominator_x * denominator_y) ** 0.5
+        if denominator == 0:
+            return 0.0
+
+        return numerator / denominator
+
+    def compute_structural_metrics(
+        self,
+        section_ref_counts: dict[str, dict[str, int]],
+        total_paragraphs: int = 0,
+    ) -> dict[str, Any]:
+        """Compute S-series structural metrics (S1-S5).
+
+        This method computes:
+        - S1: section_count
+        - S2: citation_density
+        - S3: citation_gini
+        - S4: zero_citation_section_rate
+
+        Args:
+            section_ref_counts: Dict mapping section titles to {ref_key: count}.
+            total_paragraphs: Total number of paragraphs (for density calculation).
+
+        Returns:
+            Dict with S1-S4 metrics.
+        """
+        # S1: section_count
+        section_count = len(section_ref_counts)
+
+        # S2: citation_density
+        total_citations = sum(
+            sum(ref_counts.values()) for ref_counts in section_ref_counts.values()
+        )
+        citation_density = total_citations / total_paragraphs if total_paragraphs > 0 else 0
+
+        # S3: citation_gini
+        citation_counts = [sum(ref_counts.values()) for ref_counts in section_ref_counts.values()]
+        gini = self._compute_gini(citation_counts)
+
+        # S4: zero_citation_section_rate
+        zero_citation_sections = sum(1 for count in citation_counts if count == 0)
+        zero_citation_rate = zero_citation_sections / section_count if section_count > 0 else 0
+
+        return {
+            "S1_section_count": section_count,
+            "S2_citation_density": round(citation_density, 3),
+            "S3_citation_gini": round(gini, 3),
+            "S4_zero_citation_section_rate": round(zero_citation_rate, 3),
+            "total_citations": total_citations,
+            "total_paragraphs": total_paragraphs,
+        }
+
+    def _compute_gini(self, values: list[float]) -> float:
+        """Compute Gini coefficient for a list of values."""
+        if not values:
+            return 0.0
+
+        # Remove zeros and sort
+        values = sorted([v for v in values if v > 0])
+        if not values:
+            return 0.0
+
+        n = len(values)
+        cumsum = 0
+        for i, v in enumerate(values):
+            cumsum += (i + 1) * v
+
+        total = sum(values)
+        if total == 0:
+            return 0.0
+
+        gini = (2 * cumsum) / (n * total) - (n + 1) / n
+        return max(0.0, min(1.0, gini))
+
     def _merge_validation_metadata(
         self,
         references: list[dict[str, Any]],
@@ -684,9 +904,7 @@ class CitationAnalyzer:
         summary = data.get("summary", {})
         paragraphs = data.get("paragraphs", [])
         sections = data.get("sections", [])
-        ordered_paragraphs = sorted(
-            paragraphs, key=lambda item: (item.get("paragraph_index") or 0)
-        )
+        ordered_paragraphs = sorted(paragraphs, key=lambda item: (item.get("paragraph_index") or 0))
 
         lines = [
             "### Paragraph Citation Distribution",
@@ -748,9 +966,7 @@ class CitationAnalyzer:
         summary = data.get("summary", {})
         paragraphs = data.get("paragraphs", [])
         sections = data.get("sections", [])
-        ordered_paragraphs = sorted(
-            paragraphs, key=lambda item: (item.get("paragraph_index") or 0)
-        )
+        ordered_paragraphs = sorted(paragraphs, key=lambda item: (item.get("paragraph_index") or 0))
 
         lines = [
             "Paragraph Citation Distribution",
@@ -912,9 +1128,7 @@ class CitationAnalyzer:
                 continue
             window_years = years[idx + 1 - window : idx + 1]
             window_sum = sum(counts[y] for y in window_years)
-            moving_average.append(
-                {"year": year, "window": window, "value": window_sum / window}
-            )
+            moving_average.append({"year": year, "window": window, "value": window_sum / window})
 
         return {
             "year_counts": yearly_counts,

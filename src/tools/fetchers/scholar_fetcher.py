@@ -160,9 +160,7 @@ class ScholarFetcher:
                 author_part = parts[0].strip()
 
                 if year:
-                    author_part = re.sub(
-                        r",?\s*" + re.escape(year) + r".*$", "", author_part
-                    )
+                    author_part = re.sub(r",?\s*" + re.escape(year) + r".*$", "", author_part)
 
                 author_part = re.sub(
                     r"\s+the\s+(journal|proceedings|conference|symposium|workshop|transactions|magazine|review|annals)\s+.*$",

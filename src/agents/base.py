@@ -18,29 +18,17 @@ from langchain_openai import ChatOpenAI
 # Optional Anthropic support
 try:
     from anthropic import AsyncAnthropic
+
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
     AsyncAnthropic = None
 
-from src.core.config import AgentConfig, LLMConfig
+from src.core.config import AgentConfig, LLMConfig, MultiModelConfig
 from src.core.mcp_client import MCPManager
 from src.core.state import SurveyState, EvaluationRecord
 
 logger = logging.getLogger(__name__)
-
-
-class MultiModelConfig:
-    """Configuration for multiple LLM models.
-
-    Attributes:
-        models: List of model configurations.
-        use_parallel: Whether to use parallel calls for voting.
-    """
-
-    def __init__(self, models: Optional[List[LLMConfig]] = None, use_parallel: bool = True):
-        self.models = models or []
-        self.use_parallel = use_parallel
 
 
 class BaseAgent(ABC):
@@ -154,7 +142,9 @@ class BaseAgent(ABC):
 
         # Return a wrapper that makes it compatible with LangChain
         class AnthropicWrapper:
-            def __init__(self, client: AsyncAnthropic, model: str, temperature: float, max_tokens: int):
+            def __init__(
+                self, client: AsyncAnthropic, model: str, temperature: float, max_tokens: int
+            ):
                 self.client = client
                 self.model = model
                 self.temperature = temperature
@@ -267,9 +257,7 @@ class BaseAgent(ABC):
 
             except Exception as e:
                 attempt += 1
-                logger.warning(
-                    f"LLM call attempt {attempt}/{max_attempts} failed: {e}"
-                )
+                logger.warning(f"LLM call attempt {attempt}/{max_attempts} failed: {e}")
                 if attempt >= max_attempts:
                     logger.error(f"All {max_attempts} attempts failed")
                     raise
@@ -359,10 +347,7 @@ class BaseAgent(ABC):
         prompt_paths = [
             Path(f"config/prompts/{prompt_name}.yaml"),
             Path(f"../config/prompts/{prompt_name}.yaml"),
-            Path(__file__).parent.parent.parent
-            / "config"
-            / "prompts"
-            / f"{prompt_name}.yaml",
+            Path(__file__).parent.parent.parent / "config" / "prompts" / f"{prompt_name}.yaml",
         ]
 
         for prompt_path in prompt_paths:
@@ -431,13 +416,119 @@ class BaseAgent(ABC):
         Returns:
             A dictionary of state updates to be merged.
         """
+        from src.core.state import AgentOutput, AgentSubScore
+        import json
+        import re
+
+        def extract_json(text: str) -> dict:
+            """Extract JSON object from text that may have extra content."""
+            if not text:
+                return {}
+            text = text.strip()
+            # Try direct parse first
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+            # Try to find JSON in markdown code blocks
+            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
+            # Try to find any {...} pattern
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    pass
+            return {}
+
         try:
             record = await self.evaluate(state)
+
+            # Handle case where evaluate() returns a dict (including TypedDict)
+            # TypedDict doesn't support isinstance() with the TypedDict type,
+            # so we check if it's a dict and then create a proper EvaluationRecord
+            # TypedDict instances are dict subclasses at runtime
+            if hasattr(record, 'get') and hasattr(record, 'keys'):
+                # It's dict-like - convert to EvaluationRecord
+                try:
+                    record = EvaluationRecord(
+                        agent_name=record.get("agent_name", self.name),
+                        dimension=record.get("dimension", "unknown"),
+                        score=record.get("score", record.get("overall_score", 5.0)),
+                        reasoning=str(record.get("reasoning", record.get("evidence_summary", ""))),
+                        evidence=record.get("evidence", record.get("evidence_summary")),
+                        confidence=record.get("confidence", 0.5),
+                    )
+                except Exception:
+                    # If conversion fails, create default
+                    record = EvaluationRecord(
+                        agent_name=self.name,
+                        dimension="unknown",
+                        score=5.0,
+                        reasoning="Evaluation conversion failed",
+                        evidence=None,
+                        confidence=0.5,
+                    )
+
+            # Now record should be an EvaluationRecord
+            # Convert EvaluationRecord to AgentOutput format
+            # Parse the JSON from reasoning if possible
+            # Note: TypedDict is dict at runtime, use dict access pattern
+            sub_scores = {}
+            reasoning_text = str(record.get("reasoning", "")) if record.get("reasoning") else ""
+            parsed = extract_json(reasoning_text)
+            if parsed and "sub_scores" in parsed:
+                # Convert parsed sub_scores to AgentSubScore format
+                for key, value in parsed["sub_scores"].items():
+                    sub_scores[key] = AgentSubScore(
+                        score=value.get("score", record.get("score", 5.0)),
+                        llm_involved=value.get("llm_involved", True),
+                        tool_evidence=value.get("tool_evidence", {}),
+                        llm_reasoning=value.get("llm_reasoning", ""),
+                        flagged_items=value.get("flagged_items"),
+                        variance=value.get("variance"),
+                    )
+            else:
+                # Create a simple sub_score from the overall record
+                reasoning_str = str(record.get("reasoning", ""))[:500] if record.get("reasoning") else ""
+                sub_scores = {
+                    f"{record.get('dimension', 'unknown')}_overall": AgentSubScore(
+                        score=record.get("score", 5.0),
+                        llm_involved=True,
+                        tool_evidence={},
+                        llm_reasoning=reasoning_str,
+                        flagged_items=None,
+                        variance=None,
+                    )
+                }
+
+            # Ensure record attributes are strings
+            agent_name = str(record.get("agent_name", "")) if record.get("agent_name") else self.name
+            dimension = str(record.get("dimension", "")) if record.get("dimension") else "unknown"
+            evidence_summary = str(record.get("evidence", "")) if record.get("evidence") else ""
+
+            agent_output = AgentOutput(
+                agent_name=agent_name,
+                dimension=dimension,
+                sub_scores=sub_scores,
+                overall_score=float(record.get("score", 5.0)) if record.get("score") else 5.0,
+                confidence=float(record.get("confidence", 0.5)) if record.get("confidence") else 0.5,
+                evidence_summary=evidence_summary,
+            )
+
             return {
                 "evaluations": [record],
+                "agent_outputs": {self.name: agent_output},
             }
         except Exception as e:
+            import traceback
             logger.error(f"Agent {self.name} evaluation failed: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 "evaluations": [
                     EvaluationRecord(
@@ -449,6 +540,16 @@ class BaseAgent(ABC):
                         confidence=0.0,
                     )
                 ],
+                "agent_outputs": {
+                    self.name: AgentOutput(
+                        agent_name=self.name,
+                        dimension="error",
+                        sub_scores={},
+                        overall_score=0.0,
+                        confidence=0.0,
+                        evidence_summary=f"Evaluation failed: {str(e)}",
+                    )
+                },
             }
 
     def __repr__(self) -> str:

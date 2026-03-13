@@ -261,6 +261,7 @@ async def load_mcp_config(config_path: str) -> List[MCPServerConfig]:
             config_data = json.load(f)
     else:
         import yaml
+
         with open(path, "r", encoding="utf-8") as f:
             config_data = yaml.safe_load(f)
 

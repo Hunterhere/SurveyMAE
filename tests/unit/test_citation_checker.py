@@ -126,10 +126,12 @@ Brown, T. et al. (2020). Language Models are Few-Shot Learners.
         """Test PDF reference extraction on test_paper.pdf."""
         try:
             import pymupdf4llm  # noqa: F401
+
             pdf_ready = True
         except Exception:
             try:
                 import pypdf  # noqa: F401
+
                 pdf_ready = True
             except Exception:
                 pdf_ready = False

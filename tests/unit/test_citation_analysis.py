@@ -122,4 +122,3 @@ def test_concentration_top_years():
     assert top_years[1]["year"] == 2020
     assert top_years[1]["count"] == 2
     assert summary["top_k_share"] == 5 / 6
-

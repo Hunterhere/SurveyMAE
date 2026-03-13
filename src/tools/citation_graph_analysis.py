@@ -1,4 +1,4 @@
-﻿"""Citation graph analysis tool.
+"""Citation graph analysis tool.
 
 Builds structural metrics over a citation graph constructed from a survey's
 reference set. Outputs a stable schema suitable for MCP and ResultStore usage.
@@ -39,6 +39,10 @@ class GraphAnalysisConfig:
     recency_windows_years: list[int] = field(default_factory=lambda: [2, 5])
     core_topk_for_recency: int = 50
     compute_on_lcc_only_for_heavy_metrics: bool = True
+    # Clustering algorithm: cocitation (default), louvain, spectral
+    clustering_algorithm: str = "cocitation"
+    # Random seed for deterministic clustering
+    clustering_seed: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: Optional[dict[str, Any]]) -> "GraphAnalysisConfig":
@@ -48,14 +52,14 @@ class GraphAnalysisConfig:
             topk_papers=int(data.get("topk_papers", 20)),
             topk_clusters=int(data.get("topk_clusters", 10)),
             compute_betweenness=bool(data.get("compute_betweenness", False)),
-            cocitation_edge_weight_threshold=int(
-                data.get("cocitation_edge_weight_threshold", 2)
-            ),
+            cocitation_edge_weight_threshold=int(data.get("cocitation_edge_weight_threshold", 2)),
             recency_windows_years=list(data.get("recency_windows_years", [2, 5])),
             core_topk_for_recency=int(data.get("core_topk_for_recency", 50)),
             compute_on_lcc_only_for_heavy_metrics=bool(
                 data.get("compute_on_lcc_only_for_heavy_metrics", True)
             ),
+            clustering_algorithm=str(data.get("clustering_algorithm", "cocitation")),
+            clustering_seed=data.get("clustering_seed"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -67,6 +71,8 @@ class GraphAnalysisConfig:
             "recency_windows_years": self.recency_windows_years,
             "core_topk_for_recency": self.core_topk_for_recency,
             "compute_on_lcc_only_for_heavy_metrics": self.compute_on_lcc_only_for_heavy_metrics,
+            "clustering_algorithm": self.clustering_algorithm,
+            "clustering_seed": self.clustering_seed,
         }
 
 
@@ -126,14 +132,36 @@ class CitationGraphAnalyzer:
             topk=cfg.topk_papers,
         )
 
-        cocitation = self._cocitation_clustering(
-            nodes=nodes,
-            out_adj=out_adj,
-            pagerank=pagerank,
-            threshold=cfg.cocitation_edge_weight_threshold,
-            topk_clusters=cfg.topk_clusters,
-            topk_papers=cfg.topk_papers,
-        )
+        # Select clustering algorithm based on config
+        clustering_alg = cfg.clustering_algorithm.lower() if cfg.clustering_algorithm else "cocitation"
+        if clustering_alg == "louvain":
+            cocitation = self._louvain_clustering(
+                nodes=nodes,
+                out_adj=out_adj,
+                pagerank=pagerank,
+                topk_clusters=cfg.topk_clusters,
+                topk_papers=cfg.topk_papers,
+                seed=cfg.clustering_seed,
+            )
+        elif clustering_alg == "spectral":
+            cocitation = self._spectral_clustering(
+                nodes=nodes,
+                out_adj=out_adj,
+                pagerank=pagerank,
+                topk_clusters=cfg.topk_clusters,
+                topk_papers=cfg.topk_papers,
+                seed=cfg.clustering_seed,
+            )
+        else:
+            # Default: cocitation clustering
+            cocitation = self._cocitation_clustering(
+                nodes=nodes,
+                out_adj=out_adj,
+                pagerank=pagerank,
+                threshold=cfg.cocitation_edge_weight_threshold,
+                topk_clusters=cfg.topk_clusters,
+                topk_papers=cfg.topk_papers,
+            )
 
         temporal = self._temporal_metrics(
             nodes=nodes,
@@ -205,7 +233,6 @@ class CitationGraphAnalyzer:
 
         if self.result_store:
             self._persist_result(run_id, output, references)
-
         return output
 
     def _generate_run_id(
@@ -554,6 +581,235 @@ class CitationGraphAnalyzer:
             "evidence": cluster_evidence,
         }
 
+    def _louvain_clustering(
+        self,
+        *,
+        nodes: list[str],
+        out_adj: dict[str, set[str]],
+        pagerank: dict[str, float],
+        topk_clusters: int,
+        topk_papers: int,
+        seed: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Louvain community detection algorithm.
+
+        Args:
+            nodes: List of node IDs.
+            out_adj: Outgoing adjacency dict.
+            pagerank: Pagerank scores for ranking.
+            topk_clusters: Maximum number of clusters to return.
+            topk_papers: Number of top papers per cluster.
+            seed: Random seed for deterministic results.
+
+        Returns:
+            Dict with summary and evidence.
+        """
+        try:
+            import networkx as nx
+            from community import community_louvain
+        except ImportError:
+            logger.warning("networkx or python-louvain not available, falling back to cocitation")
+            return self._cocitation_clustering(
+                nodes=nodes,
+                out_adj=out_adj,
+                pagerank=pagerank,
+                threshold=2,
+                topk_clusters=topk_clusters,
+                topk_papers=topk_papers,
+            )
+
+        # Build undirected graph for community detection
+        G = nx.Graph()
+        for node in nodes:
+            G.add_node(node)
+        for src, targets in out_adj.items():
+            for dst in targets:
+                if src in nodes and dst in nodes:
+                    G.add_edge(src, dst)
+
+        if G.number_of_edges() == 0:
+            # No edges, each node is its own cluster
+            clusters = [[n] for n in nodes]
+        else:
+            # Run Louvain algorithm
+            partition = community_louvain.best_partition(G, random_state=seed)
+
+            # Group nodes by community
+            communities: dict[int, list[str]] = {}
+            for node, comm_id in partition.items():
+                communities.setdefault(comm_id, []).append(node)
+            clusters = list(communities.values())
+
+        cluster_sizes = sorted((len(c) for c in clusters), reverse=True)
+
+        # Build cluster evidence
+        cluster_evidence = []
+        for cluster_id, cluster_nodes in enumerate(sorted(clusters, key=len, reverse=True)):
+            if cluster_id >= topk_clusters:
+                break
+            top_nodes = sorted(
+                [(node, pagerank.get(node, 0.0)) for node in cluster_nodes],
+                key=lambda item: (-item[1], item[0]),
+            )[:topk_papers]
+            cluster_evidence.append(
+                {
+                    "cluster_id": cluster_id,
+                    "size": len(cluster_nodes),
+                    "top_papers": [
+                        {"paper_id": node, "score": float(score)} for node, score in top_nodes
+                    ],
+                }
+            )
+
+        cluster_stats = {
+            "max": cluster_sizes[0] if cluster_sizes else 0,
+            "p90": self._percentile(cluster_sizes, 90) if cluster_sizes else 0,
+            "p50": self._percentile(cluster_sizes, 50) if cluster_sizes else 0,
+            "min": cluster_sizes[-1] if cluster_sizes else 0,
+        }
+
+        return {
+            "summary": {
+                "n_clusters": len(clusters),
+                "clustering_method": "louvain",
+                "cluster_size_stats": cluster_stats,
+            },
+            "evidence": cluster_evidence,
+        }
+
+    def _spectral_clustering(
+        self,
+        *,
+        nodes: list[str],
+        out_adj: dict[str, set[str]],
+        pagerank: dict[str, float],
+        topk_clusters: int,
+        topk_papers: int,
+        seed: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Spectral clustering algorithm.
+
+        Args:
+            nodes: List of node IDs.
+            out_adj: Outgoing adjacency dict.
+            pagerank: Pagerank scores for ranking.
+            topk_clusters: Maximum number of clusters to return.
+            topk_papers: Number of top papers per cluster.
+            seed: Random seed for deterministic results.
+
+        Returns:
+            Dict with summary and evidence.
+        """
+        try:
+            from sklearn.cluster import SpectralClustering
+        except ImportError:
+            logger.warning("sklearn not available, falling back to cocitation")
+            return self._cocitation_clustering(
+                nodes=nodes,
+                out_adj=out_adj,
+                pagerank=pagerank,
+                threshold=2,
+                topk_clusters=topk_clusters,
+                topk_papers=topk_papers,
+            )
+
+        n_nodes = len(nodes)
+        if n_nodes < 2:
+            clusters = [[n] for n in nodes]
+        else:
+            # Build adjacency matrix
+            node_idx = {node: i for i, node in enumerate(nodes)}
+            import numpy as np
+
+            # Determine number of clusters (use min of topk_clusters or n_nodes//2)
+            n_clusters = min(topk_clusters, max(1, n_nodes // 2))
+
+            # Build affinity matrix (symmetric)
+            affinity = np.zeros((n_nodes, n_nodes))
+            for src, targets in out_adj.items():
+                if src not in node_idx:
+                    continue
+                i = node_idx[src]
+                for dst in targets:
+                    if dst not in node_idx:
+                        continue
+                    j = node_idx[dst]
+                    affinity[i, j] = 1.0
+                    affinity[j, i] = 1.0
+
+            # If no edges, fall back to cocitation
+            if affinity.sum() == 0:
+                return self._cocitation_clustering(
+                    nodes=nodes,
+                    out_adj=out_adj,
+                    pagerank=pagerank,
+                    threshold=2,
+                    topk_clusters=topk_clusters,
+                    topk_papers=topk_papers,
+                )
+
+            try:
+                clustering = SpectralClustering(
+                    n_clusters=n_clusters,
+                    affinity="precomputed",
+                    random_state=seed,
+                    assign_labels="kmeans",
+                )
+                labels = clustering.fit_predict(affinity)
+            except Exception as e:
+                logger.warning(f"Spectral clustering failed: {e}, falling back to cocitation")
+                return self._cocitation_clustering(
+                    nodes=nodes,
+                    out_adj=out_adj,
+                    pagerank=pagerank,
+                    threshold=2,
+                    topk_clusters=topk_clusters,
+                    topk_papers=topk_papers,
+                )
+
+            # Group nodes by cluster
+            communities: dict[int, list[str]] = {}
+            for i, label in enumerate(labels):
+                communities.setdefault(int(label), []).append(nodes[i])
+            clusters = list(communities.values())
+
+        cluster_sizes = sorted((len(c) for c in clusters), reverse=True)
+
+        # Build cluster evidence
+        cluster_evidence = []
+        for cluster_id, cluster_nodes in enumerate(sorted(clusters, key=len, reverse=True)):
+            if cluster_id >= topk_clusters:
+                break
+            top_nodes = sorted(
+                [(node, pagerank.get(node, 0.0)) for node in cluster_nodes],
+                key=lambda item: (-item[1], item[0]),
+            )[:topk_papers]
+            cluster_evidence.append(
+                {
+                    "cluster_id": cluster_id,
+                    "size": len(cluster_nodes),
+                    "top_papers": [
+                        {"paper_id": node, "score": float(score)} for node, score in top_nodes
+                    ],
+                }
+            )
+
+        cluster_stats = {
+            "max": cluster_sizes[0] if cluster_sizes else 0,
+            "p90": self._percentile(cluster_sizes, 90) if cluster_sizes else 0,
+            "p50": self._percentile(cluster_sizes, 50) if cluster_sizes else 0,
+            "min": cluster_sizes[-1] if cluster_sizes else 0,
+        }
+
+        return {
+            "summary": {
+                "n_clusters": len(clusters),
+                "clustering_method": "spectral",
+                "cluster_size_stats": cluster_stats,
+            },
+            "evidence": cluster_evidence,
+        }
+
     def _connected_components(
         self,
         nodes: list[str],
@@ -577,6 +833,118 @@ class CitationGraphAnalyzer:
             components.append(comp)
         components.sort(key=len, reverse=True)
         return components
+
+    def compute_section_cluster_alignment(
+        self,
+        *,
+        section_ref_counts: dict[str, dict[str, int]],
+        references: list[dict[str, Any]],
+        cluster_evidence: list[dict[str, Any]],
+        canonical_map: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        """Compute S5: section-cluster alignment (NMI/ARI).
+
+        This metric measures how well the section organization matches the
+        citation graph clustering structure.
+
+        Args:
+            section_ref_counts: Dict mapping section titles to {ref_key: count}.
+            references: List of reference dictionaries.
+            cluster_evidence: Cluster information from _cocitation_clustering.
+            canonical_map: Optional mapping of reference keys to canonical ids.
+
+        Returns:
+            Dict with nmi, ari, and details.
+        """
+        try:
+            from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
+        except ImportError:
+            logger.warning("sklearn not available, S5 alignment will be skipped")
+            return {
+                "nmi": None,
+                "ari": None,
+                "status": "sklearn_unavailable",
+                "message": "sklearn required for NMI/ARI calculation",
+            }
+
+        # Build canonical map for references
+        canonical_map = canonical_map or {}
+        ref_to_canonical = {}
+        for ref in references:
+            ref_key = str(ref.get("key") or ref.get("id") or "").strip()
+            if ref_key:
+                canonical = canonical_map.get(ref_key, ref_key)
+                ref_to_canonical[ref_key] = canonical
+
+        # Determine primary section for each reference
+        ref_to_section: dict[str, str] = {}
+        for section_title, ref_counts in section_ref_counts.items():
+            if not ref_counts:
+                continue
+            # Find the reference with highest count in this section
+            primary_ref = max(ref_counts.items(), key=lambda x: x[1])[0]
+            # Map to canonical form
+            canonical_ref = ref_to_canonical.get(primary_ref, primary_ref)
+            ref_to_section[canonical_ref] = section_title
+
+        # Build cluster assignment for each reference
+        ref_to_cluster: dict[str, int] = {}
+        for cluster_info in cluster_evidence:
+            cluster_id = cluster_info.get("cluster_id")
+            for paper in cluster_info.get("top_papers", []):
+                paper_id = paper.get("paper_id")
+                if paper_id:
+                    ref_to_cluster[paper_id] = cluster_id
+
+        # Find common references (have both section and cluster assignments)
+        common_refs = set(ref_to_section.keys()) & set(ref_to_cluster.keys())
+
+        if len(common_refs) < 2:
+            return {
+                "nmi": None,
+                "ari": None,
+                "status": "insufficient_data",
+                "message": f"Only {len(common_refs)} common references, need at least 2",
+                "common_ref_count": len(common_refs),
+            }
+
+        # Build aligned label arrays
+        section_labels = []
+        cluster_labels = []
+        for ref in sorted(common_refs):
+            section_labels.append(ref_to_section.get(ref, "unknown"))
+            cluster_labels.append(ref_to_cluster.get(ref, -1))
+
+        try:
+            nmi = normalized_mutual_info_score(section_labels, cluster_labels)
+            ari = adjusted_rand_score(section_labels, cluster_labels)
+        except Exception as e:
+            logger.warning(f"Failed to compute NMI/ARI: {e}")
+            return {
+                "nmi": None,
+                "ari": None,
+                "status": "computation_error",
+                "message": str(e),
+            }
+
+        # Build detailed breakdown
+        section_clusters: dict[str, set[int]] = {}
+        for ref in sorted(common_refs):
+            section = ref_to_section.get(ref, "unknown")
+            cluster = ref_to_cluster.get(ref, -1)
+            if section not in section_clusters:
+                section_clusters[section] = set()
+            section_clusters[section].add(cluster)
+
+        return {
+            "nmi": float(nmi),
+            "ari": float(ari),
+            "status": "success",
+            "common_ref_count": len(common_refs),
+            "section_clusters": {
+                section: list(clusters) for section, clusters in section_clusters.items()
+            },
+        }
 
     def _temporal_metrics(
         self,
@@ -638,9 +1006,9 @@ class CitationGraphAnalyzer:
         lag_p90 = self._percentile(citation_lags_sorted, 90) if citation_lags_sorted else None
         neg_ratio = (neg_count / len(citation_lags_sorted)) if citation_lags_sorted else None
 
-        core_nodes = sorted(
-            pagerank.items(), key=lambda item: (-item[1], item[0])
-        )[: min(core_topk, len(pagerank))]
+        core_nodes = sorted(pagerank.items(), key=lambda item: (-item[1], item[0]))[
+            : min(core_topk, len(pagerank))
+        ]
         core_years = [node_years.get(node) for node, _ in core_nodes]
         core_years = [year for year in core_years if year is not None]
 
@@ -679,9 +1047,7 @@ class CitationGraphAnalyzer:
         missing = sum(1 for node in nodes if node_years.get(node) is None)
         return missing / len(nodes)
 
-    def _component_evidence(
-        self, components: list[list[str]], topk: int
-    ) -> list[dict[str, Any]]:
+    def _component_evidence(self, components: list[list[str]], topk: int) -> list[dict[str, Any]]:
         evidence = []
         for idx, comp in enumerate(components[:topk]):
             sample = sorted(comp)[:10]
@@ -772,7 +1138,10 @@ class CitationGraphAnalyzer:
                     {"n_isolates": n_isolates},
                 )
 
-        if temporal_summary.get("recency", {}).get("median_age") is None and missing_year_ratio > 0.30:
+        if (
+            temporal_summary.get("recency", {}).get("median_age") is None
+            and missing_year_ratio > 0.30
+        ):
             _add(
                 "TEMPORAL_METRICS_DEGRADED",
                 "info",
@@ -804,7 +1173,9 @@ class CitationGraphAnalyzer:
             paper_id = self.result_store.register_paper(source_path)
             analysis_payload = self._merge_existing_analysis(paper_id, output)
             self.result_store.save_analysis(paper_id, analysis_payload)
-            self.result_store.update_index(paper_id, status="graph_analyzed", source_path=source_path)
+            self.result_store.update_index(
+                paper_id, status="graph_analyzed", source_path=source_path
+            )
         except Exception as exc:
             logger.warning("Failed to persist citation graph analysis: %s", exc)
 

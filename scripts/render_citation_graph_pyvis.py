@@ -133,7 +133,9 @@ def _collect_nodes(
     return ordered
 
 
-def _build_degree_maps(nodes: list[str], edges: list[tuple[str, str]]) -> tuple[dict[str, int], dict[str, int]]:
+def _build_degree_maps(
+    nodes: list[str], edges: list[tuple[str, str]]
+) -> tuple[dict[str, int], dict[str, int]]:
     in_degree = {node: 0 for node in nodes}
     out_degree = {node: 0 for node in nodes}
     node_set = set(nodes)
@@ -189,7 +191,9 @@ def _elbow_center_count(degrees_desc: list[int], k_min: int, k_max: int) -> int:
     return max(1, min(m, max(k_min, k)))
 
 
-def _compute_communities(nodes: list[str], edges: list[tuple[str, str]]) -> tuple[dict[str, int], dict[str, Any]]:
+def _compute_communities(
+    nodes: list[str], edges: list[tuple[str, str]]
+) -> tuple[dict[str, int], dict[str, Any]]:
     """Cluster by authority centers on directed citation graph."""
     try:
         import networkx as nx
@@ -213,11 +217,7 @@ def _compute_communities(nodes: list[str], edges: list[tuple[str, str]]) -> tupl
     except Exception:
         pagerank = {node: 0.0 for node in g.nodes}
 
-    candidates = [
-        node
-        for node in non_isolates
-        if in_degree[node] >= _AUTHORITY_CENTER_MIN_IN_DEG
-    ]
+    candidates = [node for node in non_isolates if in_degree[node] >= _AUTHORITY_CENTER_MIN_IN_DEG]
     if not candidates:
         candidates = list(non_isolates)
     candidates.sort(key=lambda n: (in_degree[n], pagerank.get(n, 0.0)), reverse=True)
@@ -328,7 +328,9 @@ def _node_color(in_deg: int, out_deg: int, cluster_id: int | None) -> str:
 def _node_size(in_deg: int, out_deg: int) -> float:
     """Slow-growth node size scaling, avoids giant hubs and tiny tails."""
     score = 2.2 * in_deg + 1.0 * out_deg
-    size = 10.0 + 5.2 * math.log1p(score) #TODO: Tune these constants for better visual spread on typical citation graphs. Goal is to keep most nodes in 8-40 size range, with good differentiation for hubs vs non-hubs.
+    size = (
+        10.0 + 5.2 * math.log1p(score)
+    )  # TODO: Tune these constants for better visual spread on typical citation graphs. Goal is to keep most nodes in 8-40 size range, with good differentiation for hubs vs non-hubs.
     return max(8.0, min(40.0, size))
 
 
@@ -339,7 +341,9 @@ def _stable_pair(name: str) -> tuple[float, float]:
     return a, b
 
 
-def _node_xy(node: str, cluster_id: int | None, rank: dict[int, int], n_clusters: int) -> tuple[float, float]:
+def _node_xy(
+    node: str, cluster_id: int | None, rank: dict[int, int], n_clusters: int
+) -> tuple[float, float]:
     a, b = _stable_pair(node)
     if cluster_id is None or n_clusters <= 0:
         theta = 2.0 * math.pi * b
@@ -367,12 +371,12 @@ def render_pyvis(
     try:
         from pyvis.network import Network
     except Exception as exc:  # pragma: no cover - runtime dependency guard
-        raise RuntimeError(
-            "pyvis is not installed. Install with: `uv add pyvis`"
-        ) from exc
+        raise RuntimeError("pyvis is not installed. Install with: `uv add pyvis`") from exc
 
     validation_payload = _load_json(validation_path)
-    extraction_payload = _load_json(extraction_path) if extraction_path and extraction_path.exists() else None
+    extraction_payload = (
+        _load_json(extraction_path) if extraction_path and extraction_path.exists() else None
+    )
 
     edges = _normalize_edges(validation_payload, edge_limit=edge_limit)
     nodes = _collect_nodes(

@@ -8,8 +8,8 @@ general:
 
 # LLM Configuration (can be overridden by environment variables)
 llm:
-  provider: openai
-  model: gpt-4o
+  provider: qwen
+  model: qwen-turbo
   temperature: 0.0
   max_tokens: 4096
   # api_key is loaded from OPENAI_API_KEY env var
@@ -22,6 +22,30 @@ citation:
   grobid_url: http://localhost:8070
   grobid_timeout_s: 30
   grobid_consolidate: false
+
+# Evidence Collection Configuration
+evidence:
+  # G4 (Foundational Coverage) related
+  foundational_top_k: 30
+  foundational_match_threshold: 0.85
+
+  # T-series (Temporal) related
+  trend_query_count: 5
+  trend_year_range: [2015, 2025]
+
+  # S5 (Section-Cluster Alignment) related
+  clustering_algorithm: cocitation # cocitation, louvain, or spectral
+  clustering_seed: 42
+
+  # Sampling related
+  citation_sample_size: 15
+
+  # Fallback/Degradation settings
+  api_timeout_seconds: 30
+  fallback_order:
+    - semantic_scholar
+    - openalex
+    - crossref
 
 # Agent Configurations
 agents:

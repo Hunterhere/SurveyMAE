@@ -12,7 +12,7 @@ from src.agents.base import BaseAgent
 from src.core.config import AgentConfig, LLMConfig
 from src.core.mcp_client import MCPManager
 from src.core.state import SurveyState, EvaluationRecord
-from src.tools.citation_checker import CitationChecker
+from src.tools.citation_checker import CitationChecker, ReferenceEntry
 from src.tools.citation_graph_analysis import CitationGraphAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -72,11 +72,16 @@ class ExpertAgent(BaseAgent):
         content = state.get("parsed_content", "")
         source_pdf = state.get("source_pdf_path", "")
 
+        # Get evidence report from state
+        evidence_reports = state.get("evidence_reports", {})
+        evidence_report = evidence_reports.get("expert", "No evidence report available.")
+
         # Load the expert evaluation prompt
         system_prompt = self._load_prompt(
             "expert",
             agent_name=self.name,
             section=section_name or "entire survey",
+            evidence_report=evidence_report,
         )
 
         # Get citation graph analysis results
@@ -108,9 +113,7 @@ class ExpertAgent(BaseAgent):
         Provide specific examples and evidence for your assessment.
         """
 
-        response = await self._call_llm(
-            self._create_messages(system_prompt, user_content)
-        )
+        response = await self._call_llm(self._create_messages(system_prompt, user_content))
 
         score, reasoning, evidence = self._parse_expert_response(response)
 
@@ -154,8 +157,18 @@ class ExpertAgent(BaseAgent):
             if not references:
                 return {"error": "No references found in PDF"}
 
+            # Convert dict references to ReferenceEntry objects for build_real_citation_edges
+            ref_entries = [ReferenceEntry(**ref) for ref in references]
+
+            # Build citation edges from references
+            edge_result = self._citation_checker.build_real_citation_edges(ref_entries)
+            edges = edge_result.get("edges", [])
+
             # Analyze citation graph
-            graph_result = self._graph_analyzer.analyze(references)
+            graph_result = self._graph_analyzer.analyze(
+                references=references,
+                edges=edges,
+            )
 
             # Extract key metrics for the agent
             return {
@@ -197,7 +210,9 @@ class ExpertAgent(BaseAgent):
         density = graph_analysis.get("density", 0)
 
         # Build evidence string
-        graph_evidence = f"Citation Graph: {node_count} nodes, {edge_count} edges, density: {density:.3f}"
+        graph_evidence = (
+            f"Citation Graph: {node_count} nodes, {edge_count} edges, density: {density:.3f}"
+        )
 
         # Add centrality info if available
         centrality = graph_analysis.get("centrality", {})

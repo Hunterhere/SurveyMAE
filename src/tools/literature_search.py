@@ -37,6 +37,7 @@ class LiteratureResult:
     url: str = ""
     abstract: str = ""
     citation_count: Optional[int] = None
+    venue: Optional[str] = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -216,6 +217,214 @@ class LiteratureSearch:
                     results.append(normalized)
 
         return results
+
+    def search_by_keywords(
+        self,
+        keywords: str,
+        *,
+        sources: Optional[Iterable[str]] = None,
+        max_results: int = 20,
+        sort_by: str = "citation_count",
+        include_scholar: bool = False,
+    ) -> list[LiteratureResult]:
+        """Search for papers by keywords across sources.
+
+        Args:
+            keywords: Keyword query string.
+            sources: List of sources to query (default: semantic_scholar, openalex).
+            max_results: Maximum results per source.
+            sort_by: Sort order - "citation_count" or "relevance".
+            include_scholar: Whether to include Google Scholar (slow).
+
+        Returns:
+            List of literature results sorted by citation count.
+        """
+        if not keywords:
+            raise ValueError("keywords is required")
+
+        # Default to sources that support citation sorting
+        if sources is None:
+            sources = ["semantic_scholar", "openalex"]
+
+        resolved = self._resolve_sources(sources, include_scholar=include_scholar)
+        results: list[LiteratureResult] = []
+
+        for source in resolved:
+            fetcher = self.fetchers[source]
+            raw = None
+            try:
+                # Use search endpoint with keywords
+                if source == "semantic_scholar":
+                    # Semantic Scholar search uses query param
+                    raw = fetcher.search_by_title(keywords, max_results=max_results)
+                elif source == "openalex":
+                    # OpenAlex search uses 'search' param
+                    url = f"{fetcher.BASE_URL}/works"
+                    params = {"search": keywords, "per-page": max_results}
+                    import requests as _requests
+
+                    response = _requests.get(url, params=params, timeout=10)
+                    response.raise_for_status()
+                    data = response.json()
+                    raw = data.get("results", []) if isinstance(data, dict) else []
+                elif source == "crossref":
+                    raw = fetcher.search_by_title(keywords, max_results=max_results)
+                elif source == "dblp":
+                    raw = fetcher.search_by_title(keywords)
+                elif source == "arxiv":
+                    raw = fetcher.search_by_title(keywords, max_results=max_results)
+                elif source == "scholar":
+                    raw = fetcher.search_by_title(keywords)
+            except Exception as exc:
+                logger.warning("Keyword search failed for %s: %s", source, exc)
+                continue
+
+            for item in self._ensure_list(raw):
+                normalized = self._normalize_result(source, item)
+                if normalized:
+                    results.append(normalized)
+
+        # Sort by citation count if requested
+        if sort_by == "citation_count":
+            results.sort(key=lambda x: x.citation_count or 0, reverse=True)
+
+        # Deduplicate by title (case-insensitive)
+        seen_titles: set[str] = set()
+        deduplicated: list[LiteratureResult] = []
+        for r in results:
+            title_lower = r.title.lower().strip()
+            if title_lower not in seen_titles:
+                seen_titles.add(title_lower)
+                deduplicated.append(r)
+
+        return deduplicated[:max_results]
+
+    def search_field_trend(
+        self,
+        keywords: str,
+        year_range: Optional[tuple[int, int]] = None,
+        *,
+        sources: Optional[Iterable[str]] = None,
+    ) -> dict[str, Any]:
+        """Search for paper counts by year to build field trend baseline.
+
+        This is used for T5 (trend_alignment) metric calculation.
+
+        Args:
+            keywords: Keyword query for the field.
+            year_range: (start_year, end_year) tuple.
+            sources: Sources to query.
+
+        Returns:
+            Dict with year -> count mapping.
+        """
+        if year_range is None:
+            import datetime as _dt
+
+            current_year = _dt.datetime.now().year
+            year_range = (max(2000, current_year - 25), current_year)
+
+        start_year, end_year = year_range
+
+        # Use Semantic Scholar or OpenAlex for year-based search
+        if sources is None:
+            sources = ["semantic_scholar", "openalex"]
+
+        resolved = self._resolve_sources(sources)
+        yearly_counts: dict[str, int] = {str(y): 0 for y in range(start_year, end_year + 1)}
+
+        for source in resolved:
+            try:
+                if source == "semantic_scholar":
+                    fetcher = self.fetchers[source]
+                    # Semantic Scholar doesn't have direct year filter, search broadly
+                    # and filter results by year
+                    results = fetcher.search_by_title(keywords, max_results=50)
+                    for r in self._ensure_list(results):
+                        if r.year:
+                            year_str = r.year if isinstance(r.year, str) else str(r.year)
+                            if year_str.isdigit():
+                                y = int(year_str)
+                                if start_year <= y <= end_year:
+                                    yearly_counts[year_str] += 1
+                elif source == "openalex":
+                    fetcher = self.fetchers[source]
+                    import requests as _requests
+
+                    # OpenAlex supports year filtering via filter param
+                    for year in range(start_year, end_year + 1):
+                        url = f"{fetcher.BASE_URL}/works"
+                        params = {
+                            "search": keywords,
+                            "filter": f"publication_year:{year}",
+                            "per-page": 1,  # We only need count
+                        }
+                        try:
+                            response = _requests.get(url, params=params, timeout=10)
+                            if response.ok:
+                                data = response.json()
+                                count = (
+                                    data.get("meta", {}).get("count", 0)
+                                    if isinstance(data, dict)
+                                    else 0
+                                )
+                                yearly_counts[str(year)] += count
+                        except Exception:
+                            continue
+            except Exception as exc:
+                logger.warning("Field trend search failed for %s: %s", source, exc)
+                continue
+
+        return {
+            "yearly_counts": yearly_counts,
+            "year_range": {"start": start_year, "end": end_year},
+            "keywords": keywords,
+        }
+
+    async def search_top_cited(
+        self,
+        keywords: str | list[str],
+        top_k: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Search for top-cited papers by keywords.
+
+        This is used for G4 (foundational_coverage_rate) metric calculation.
+
+        Args:
+            keywords: Keyword query string or list of keywords.
+            top_k: Number of top-cited papers to retrieve.
+
+        Returns:
+            List of paper dicts with title, citation_count, year, venue, etc.
+        """
+        # Handle both string and list input
+        if isinstance(keywords, list):
+            keywords = " ".join(keywords[:3])  # Use first 3 keywords
+
+        # Use search_by_keywords which already sorts by citation_count
+        results = self.search_by_keywords(
+            keywords=keywords,
+            max_results=top_k,
+            sort_by="citation_count",
+        )
+
+        # Convert to dict format for foundational coverage analysis
+        papers = []
+        for r in results:
+            papers.append(
+                {
+                    "title": r.title,
+                    "authors": r.authors,
+                    "year": r.year,
+                    "citation_count": r.citation_count or 0,
+                    "venue": r.venue or "",
+                    "doi": r.doi or "",
+                    "url": r.url or "",
+                    "abstract": r.abstract or "",
+                }
+            )
+
+        return papers
 
     def _resolve_sources(
         self,
@@ -514,9 +723,7 @@ def create_literature_search_mcp_server():
                 )
                 return [TextContent(type="text", text=json.dumps(_serialize(results)))]
 
-            return [
-                TextContent(type="text", text=f"Unknown tool: {name}", isError=True)
-            ]
+            return [TextContent(type="text", text=f"Unknown tool: {name}", isError=True)]
         except Exception as exc:
             return [TextContent(type="text", text=str(exc), isError=True)]
 

@@ -73,11 +73,16 @@ class ReaderAgent(BaseAgent):
         content = state.get("parsed_content", "")
         source_pdf = state.get("source_pdf_path", "")
 
+        # Get evidence report from state
+        evidence_reports = state.get("evidence_reports", {})
+        evidence_report = evidence_reports.get("reader", "No evidence report available.")
+
         # Load the reader simulation prompt
         system_prompt = self._load_prompt(
             "reader",
             agent_name=self.name,
             section=section_name or "entire survey",
+            evidence_report=evidence_report,
         )
 
         # Get citation temporal and section-level analysis
@@ -90,10 +95,10 @@ class ReaderAgent(BaseAgent):
         ---
 
         Citation Temporal Analysis Results:
-        {citation_analysis.get('temporal', 'N/A')}
+        {citation_analysis.get("temporal", "N/A")}
 
         Section-level Citation Distribution:
-        {citation_analysis.get('section_distribution', 'N/A')}
+        {citation_analysis.get("section_distribution", "N/A")}
 
         Please simulate a reader's experience with this survey:
         1. Generate 3-5 key questions a reader might ask about this topic
@@ -107,9 +112,7 @@ class ReaderAgent(BaseAgent):
         Format your response with the questions, answers, and coverage score.
         """
 
-        response = await self._call_llm(
-            self._create_messages(system_prompt, user_content)
-        )
+        response = await self._call_llm(self._create_messages(system_prompt, user_content))
 
         score, reasoning, evidence = self._parse_reader_response(response)
 
@@ -149,6 +152,7 @@ class ReaderAgent(BaseAgent):
             # Extract citations and references from PDF
             extraction = self._citation_checker.extract_citations_with_context_from_pdf(pdf_path)
             references = extraction.get("references", [])
+            citations = extraction.get("citations", [])
 
             if not references:
                 return {"error": "No references found"}
@@ -157,7 +161,10 @@ class ReaderAgent(BaseAgent):
             temporal = self._citation_analyzer.analyze_references(references)
 
             # Get section-level distribution (paragraph distribution)
-            section_dist = self._citation_analyzer.analyze_paragraph_distribution(pdf_path)
+            section_dist = self._citation_analyzer.analyze_paragraph_distribution(
+                citations=citations,
+                references=references,
+            )
 
             return {
                 "temporal": temporal,
@@ -241,7 +248,7 @@ class ReaderAgent(BaseAgent):
                         if pct_match:
                             pct = float(pct_match.group(1))
                             # Only divide by 10 if there's an actual % sign
-                            if '%' in pct_match.group(0):
+                            if "%" in pct_match.group(0):
                                 score = pct / 10.0  # Convert percentage to 0-10 scale
                             else:
                                 score = max(0.0, min(10.0, pct))

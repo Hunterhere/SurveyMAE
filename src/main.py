@@ -53,13 +53,21 @@ async def run_evaluation(
     parser = PDFParser()
     parsed_content = parser.parse(pdf_path)
 
-    # Initialize state
+    # Initialize state with all required fields for Phase 2 workflow
     initial_state: SurveyState = {
         "source_pdf_path": pdf_path,
         "parsed_content": parsed_content,
+        "section_headings": [],  # Will be populated by PDF parser or later nodes
+        "tool_evidence": {},  # Populated by evidence_collection node
+        "ref_metadata_cache": {},  # Populated by evidence_collection node
+        "topic_keywords": [],  # Populated by evidence_collection node
+        "field_trend_baseline": {},  # Populated by evidence_collection node
+        "candidate_key_papers": [],  # Populated by evidence_collection node
         "evaluations": [],
         "debate_history": [],
         "sections": {},
+        "agent_outputs": {},  # Populated by agents
+        "aggregated_scores": {},  # Populated by aggregator
         "current_round": 0,
         "consensus_reached": False,
         "final_report_md": "",
@@ -67,6 +75,12 @@ async def run_evaluation(
             "source": pdf_path,
             "domain": "general",  # Could be extracted or provided
         },
+        # Phase 2 new fields
+        "evidence_reports": {},  # Populated by evidence_dispatch
+        "evidence_report": {},  # Populated by evidence_dispatch (for compatibility)
+        "verifier_evidence": {},  # Populated by evidence_dispatch
+        "expert_evidence": {},  # Populated by evidence_dispatch
+        "reader_evidence": {},  # Populated by evidence_dispatch
     }
 
     # Create and compile the workflow
@@ -81,12 +95,18 @@ async def run_evaluation(
 
     report = final_state.get("final_report_md", "")
 
-    # Save report if output path specified
-    if output_path:
-        output_file = Path(output_path)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text(report, encoding="utf-8")
-        logger.info(f"Report saved to: {output_path}")
+    # Save report - default to output directory
+    if output_path is None:
+        # Default output path: output/reports/{pdf_name}_{timestamp}.md
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        pdf_name = Path(pdf_path).stem
+        output_path = f"./output/reports/{pdf_name}_{timestamp}.md"
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(report, encoding="utf-8")
+    logger.info(f"Report saved to: {output_path}")
 
     return report
 
@@ -104,19 +124,22 @@ def main():
     )
 
     parser.add_argument(
-        "-c", "--config",
+        "-c",
+        "--config",
         help="Path to configuration file",
         default=None,
     )
 
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         help="Path to save the evaluation report",
         default=None,
     )
 
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         help="Enable verbose logging",
         action="store_true",
     )
@@ -139,16 +162,25 @@ def main():
 
     # Run evaluation
     try:
-        report = asyncio.run(run_evaluation(
-            pdf_path=args.pdf_path,
-            config=config,
-            output_path=args.output,
-        ))
+        report = asyncio.run(
+            run_evaluation(
+                pdf_path=args.pdf_path,
+                config=config,
+                output_path=args.output,
+            )
+        )
 
         print("\n" + "=" * 60)
         print("EVALUATION COMPLETE")
         print("=" * 60)
-        print(report)
+        # Use safe print to avoid encoding issues on Windows
+        try:
+            print(report)
+        except UnicodeEncodeError:
+            # Fallback: write to stdout with errors='replace'
+            import sys
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            print(report)
 
     except Exception as e:
         logger.error(f"Evaluation failed: {e}", exc_info=True)
