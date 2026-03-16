@@ -4,7 +4,6 @@ Provides centralized configuration loading using pydantic-settings.
 All configuration is separated from code per Document 4 engineering standards.
 """
 
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
@@ -265,6 +264,7 @@ class EvidenceConfig(BaseModel):
         citation_sample_size: Number of citation-claim pairs to sample.
         api_timeout_seconds: Timeout for API requests.
         fallback_order: Ordered list of sources for fallback.
+        verify_limit: Maximum number of references to verify.
     """
 
     foundational_top_k: int = 30
@@ -276,6 +276,7 @@ class EvidenceConfig(BaseModel):
     citation_sample_size: int = 15
     api_timeout_seconds: int = 30
     fallback_order: list[str] = field(default_factory=lambda: ["semantic_scholar", "openalex"])
+    verify_limit: int = 50
 
 
 class SurveyMAEConfig(BaseModel):
@@ -301,6 +302,20 @@ class SurveyMAEConfig(BaseModel):
     report: ReportConfig = Field(default_factory=ReportConfig)
     citation: CitationConfig = Field(default_factory=CitationConfig)
     evidence: EvidenceConfig = Field(default_factory=EvidenceConfig)
+
+    def get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Get environment variable value with fallback to default.
+
+        Args:
+            key: Environment variable name (e.g., 'OPENAI_API_KEY').
+            default: Default value if not found in environment.
+
+        Returns:
+            Environment variable value or default.
+        """
+        import os
+
+        return os.getenv(key, default)
 
     @classmethod
     def from_yaml(cls, config_path: str) -> "SurveyMAEConfig":

@@ -474,33 +474,27 @@ class CitationChecker:
         content = self.parse_pdf(pdf_path)
         return self.extract_citations(content)
 
-    def extract_citations_with_context_from_pdf(self, pdf_path: str) -> dict[str, Any]:
-        """Extract citations with sentence and location context from PDF.
-
-        Args:
-            pdf_path: Path to the PDF file.
-
-        Returns:
-            Structured dict with citations, references, backend, and errors.
-        """
-        result = self._extract_citations_with_context_mupdf(pdf_path)
-        references, backend, errors = self._extract_references_with_backend(pdf_path)
-        citation_backend = result.backend or "mupdf"
-        result.references = references
-        result.backend = f"citations:{citation_backend};references:{backend}"
-        result.errors.extend(errors)
-        self._link_citations_to_references(result.citations, result.references)
-        self._persist_extraction(pdf_path, result)
-        return result.to_dict()
-
-    async def extract_citations_with_context_from_pdf_async(
+    async def extract_citations_with_context_from_pdf(
         self,
         pdf_path: str,
         verify_references: bool = False,
         sources: Optional[Iterable[str]] = None,
         verify_limit: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Async version with optional reference verification."""
+        """Extract citations with sentence and location context from PDF.
+
+        This is the unified async version. Use verify_references=True to enable
+        reference verification and real citation edge building.
+
+        Args:
+            pdf_path: Path to the PDF file.
+            verify_references: Whether to verify references via external APIs.
+            sources: Sources to use for verification.
+            verify_limit: Maximum number of references to verify.
+
+        Returns:
+            Structured dict with citations, references, backend, and errors.
+        """
         base = self._extract_citations_with_context_mupdf(pdf_path)
         references, backend, errors = self._extract_references_with_backend(pdf_path)
         citation_backend = base.backend or "mupdf"
@@ -526,6 +520,9 @@ class CitationChecker:
             )
 
         return base.to_dict()
+
+    # Backwards compatibility alias (deprecated, use extract_citations_with_context_from_pdf)
+    extract_citations_with_context_from_pdf_async = extract_citations_with_context_from_pdf
 
     def extract_references_from_text(self, text: str) -> List[Dict[str, Any]]:
         """Extract reference entries from PDF text.
@@ -1853,15 +1850,13 @@ def create_citation_checker_mcp_server():
                 verify = bool(arguments.get("verify_references", False))
                 sources = arguments.get("verify_sources")
                 verify_limit = arguments.get("verify_limit")
-                if verify:
-                    payload = await checker.extract_citations_with_context_from_pdf_async(
-                        arguments["pdf_path"],
-                        verify_references=True,
-                        sources=sources,
-                        verify_limit=verify_limit,
-                    )
-                else:
-                    payload = checker.extract_citations_with_context_from_pdf(arguments["pdf_path"])
+                # Unified async interface - always use await
+                payload = await checker.extract_citations_with_context_from_pdf(
+                    arguments["pdf_path"],
+                    verify_references=verify,
+                    sources=sources,
+                    verify_limit=verify_limit,
+                )
                 return [TextContent(type="text", text=json.dumps(payload))]
 
             else:

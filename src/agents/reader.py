@@ -149,8 +149,8 @@ class ReaderAgent(BaseAgent):
             if not pdf_path:
                 return {"error": "No PDF path provided"}
 
-            # Extract citations and references from PDF
-            extraction = self._citation_checker.extract_citations_with_context_from_pdf(pdf_path)
+            # Extract citations and references from PDF (async)
+            extraction = await self._citation_checker.extract_citations_with_context_from_pdf(pdf_path)
             references = extraction.get("references", [])
             citations = extraction.get("citations", [])
 

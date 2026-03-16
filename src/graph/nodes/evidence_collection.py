@@ -67,6 +67,7 @@ def _load_evidence_config() -> Dict[str, Any]:
             "citation_sample_size": cfg.evidence.citation_sample_size,
             "api_timeout_seconds": cfg.evidence.api_timeout_seconds,
             "fallback_order": cfg.evidence.fallback_order,
+            "verify_limit": cfg.evidence.verify_limit,
         }
     except Exception as e:
         logger.warning(f"Failed to load config, using defaults: {e}")
@@ -78,9 +79,9 @@ _EVIDENCE_CONFIG = _load_evidence_config()
 
 # Default configuration values (fallback if config not available)
 DEFAULT_VERIFY_SOURCES = _EVIDENCE_CONFIG.get("fallback_order", ["semantic_scholar", "openalex"])
-DEFAULT_VERIFY_LIMIT = 50
+DEFAULT_VERIFY_LIMIT = _EVIDENCE_CONFIG.get("verify_limit", 50)
 DEFAULT_TOP_K = _EVIDENCE_CONFIG.get("foundational_top_k", 30)
-DEFAULT_TREND_YEAR_RANGE = (2015, 2025)
+DEFAULT_TREND_YEAR_RANGE = _EVIDENCE_CONFIG.get("trend_year_range", (2015, 2025))
 
 
 def _extract_title_and_abstract(parsed_content: str) -> tuple[str, str]:
@@ -206,6 +207,243 @@ def _build_citation_edges(ref_metadata_cache: Dict[str, Dict[str, Any]]) -> List
                     edges.append((ref_id, target_id))
 
     return edges
+
+
+# =============================================================================
+# Evidence Collection Sub-functions
+# =============================================================================
+
+
+async def _collect_citation_extraction(
+    source_pdf: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]], float, float]:
+    """Step 1: Extract and validate citations from PDF.
+
+    This collects evidence for VerifierAgent:
+    - C3 (orphan_ref_rate): references not cited in text
+    - C5 (metadata_verify_rate): verified references ratio
+
+    Args:
+        source_pdf: Path to the PDF file.
+
+    Returns:
+        Tuple of (extraction, references, orphan_ref_rate, metadata_verify_rate)
+    """
+    logger.info("Step 1: Extracting and validating citations...")
+    checker = CitationChecker()
+
+    extraction: dict[str, Any] = {"citations": [], "references": []}
+    references: list[dict[str, Any]] = []
+
+    if source_pdf:
+        extraction = await checker.extract_citations_with_context_from_pdf(
+            source_pdf,
+            verify_references=True,
+            sources=DEFAULT_VERIFY_SOURCES,
+            verify_limit=DEFAULT_VERIFY_LIMIT,
+        )
+        references = extraction.get("references", [])
+
+    # Calculate C3 (orphan_ref_rate)
+    cited_ref_keys = set()
+    for citation in extraction.get("citations", []):
+        ref_key = citation.get("ref_key", "")
+        if ref_key:
+            cited_ref_keys.add(ref_key)
+
+    total_refs = len(references)
+    uncited_refs = sum(1 for r in references if r.get("key", "") not in cited_ref_keys)
+    orphan_ref_rate = uncited_refs / total_refs if total_refs > 0 else 0.0
+
+    # Calculate C5 (metadata_verify_rate)
+    verified_count = sum(
+        1 for r in references
+        if r.get("validation") and r["validation"].get("verified", False)
+    )
+    metadata_verify_rate = verified_count / total_refs if total_refs > 0 else 0.0
+
+    logger.info(f"  C3 (orphan_ref_rate): {orphan_ref_rate:.2%}")
+    logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%}")
+
+    return extraction, references, orphan_ref_rate, metadata_verify_rate
+
+
+async def _collect_temporal_and_structural(
+    references: list[dict[str, Any]],
+    extraction: dict[str, Any],
+    parsed_content: str,
+    field_trend_baseline: dict[str, int],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Step 5: Compute temporal and structural metrics.
+
+    This collects evidence for ReaderAgent:
+    - T1-T5 (temporal metrics)
+    - S1-S4 (structural metrics)
+
+    Args:
+        references: List of reference dictionaries.
+        extraction: Citation extraction result.
+        parsed_content: Parsed PDF content.
+        field_trend_baseline: Field trend baseline counts.
+
+    Returns:
+        Tuple of (temporal_metrics, structural_metrics)
+    """
+    logger.info("Step 5: Computing temporal metrics...")
+    analyzer = CitationAnalyzer()
+
+    # Convert references to dict format
+    ref_dicts = [
+        {"key": ref.get("key", ""), "title": ref.get("title", ""), "year": ref.get("year")}
+        for ref in references
+    ]
+
+    # Compute T1-T5
+    temporal_metrics = analyzer.compute_temporal_metrics(
+        ref_dicts,
+        field_trend_baseline={"yearly_counts": field_trend_baseline},
+    )
+
+    # Compute S1-S4 (structural metrics)
+    section_ref_counts: Dict[str, Dict[str, int]] = {}
+    for citation in extraction.get("citations", []):
+        section = citation.get("section_title", "Unknown")
+        ref_key = citation.get("ref_key", "")
+        if section not in section_ref_counts:
+            section_ref_counts[section] = {}
+        section_ref_counts[section][ref_key] = section_ref_counts[section].get(ref_key, 0) + 1
+
+    structural_metrics = analyzer.compute_structural_metrics(
+        section_ref_counts,
+        total_paragraphs=len(parsed_content) // 500,
+    )
+
+    logger.info(f"  T1 (year_span): {temporal_metrics.get('T1_year_span')}")
+    logger.info(f"  T5 (trend_alignment): {temporal_metrics.get('T5_trend_alignment')}")
+
+    return temporal_metrics, structural_metrics
+
+
+async def _collect_citation_graph(
+    references: list[dict[str, Any]],
+    ref_metadata_cache: Dict[str, Dict[str, Any]],
+    extraction: dict[str, Any],
+    section_ref_counts: Dict[str, Dict[str, int]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Step 6: Compute citation graph metrics.
+
+    This collects evidence for ExpertAgent:
+    - G1-G6 (graph metrics)
+    - S5 (section-cluster alignment)
+
+    Args:
+        references: List of reference dictionaries.
+        ref_metadata_cache: Metadata cache for references.
+        extraction: Citation extraction result.
+        section_ref_counts: Section-citation counts.
+
+    Returns:
+        Tuple of (graph_result, s5_result)
+    """
+    logger.info("Step 6: Computing citation graph metrics...")
+    graph_analyzer = CitationGraphAnalyzer()
+
+    # Build edges from real citation data
+    real_edges = extraction.get("real_citation_edges", [])
+    if real_edges:
+        edges = real_edges
+        logger.info(f"  Using {len(edges)} real citation edges from verification")
+    else:
+        edges = _build_citation_edges(ref_metadata_cache)
+        if not edges:
+            logger.warning("  No citation edges found, graph metrics may be limited")
+
+    # Build graph config
+    graph_config = {
+        "clustering_algorithm": _EVIDENCE_CONFIG.get("clustering_algorithm", "cocitation"),
+        "clustering_seed": _EVIDENCE_CONFIG.get("clustering_seed"),
+    }
+
+    # Analyze graph
+    ref_dicts = [
+        {"key": ref.get("key", ""), "title": ref.get("title", ""), "year": ref.get("year")}
+        for ref in references
+    ]
+
+    try:
+        graph_result = graph_analyzer.analyze(
+            references=ref_dicts,
+            edges=edges,
+            config=graph_config,
+        )
+    except Exception as e:
+        logger.warning(f"  Graph analysis failed: {e}")
+        graph_result = {}
+
+    # Compute S5 (section-cluster alignment)
+    summary = graph_result.get("summary", {})
+    cluster_summary = summary.get("cocitation_clustering", {})
+    cluster_evidence = cluster_summary.get("cluster_evidence", [])
+
+    try:
+        s5_result = graph_analyzer.compute_section_cluster_alignment(
+            section_ref_counts=section_ref_counts,
+            references=ref_dicts,
+            cluster_evidence=cluster_evidence,
+        )
+    except Exception as e:
+        logger.warning(f"  S5 computation failed: {e}")
+        s5_result = {}
+
+    return graph_result, s5_result
+
+
+async def _collect_foundational_coverage(
+    topic_keywords: list[str],
+    references: list[dict[str, Any]],
+    ref_metadata_cache: Dict[str, Dict[str, Any]],
+) -> tuple[Optional[float], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Step 7: Compute foundational coverage analysis (G4).
+
+    This collects evidence for ExpertAgent:
+    - G4 (foundational_coverage_rate)
+    - missing_key_papers
+    - suspicious_centrality
+
+    Args:
+        topic_keywords: List of topic keywords.
+        references: List of reference dictionaries.
+        ref_metadata_cache: Metadata cache for references.
+
+    Returns:
+        Tuple of (coverage_rate, missing_papers, suspicious_papers)
+    """
+    logger.info("Step 7: Computing foundational coverage...")
+    g4_analyzer = FoundationalCoverageAnalyzer()
+
+    ref_dicts = [
+        {"key": ref.get("key", ""), "title": ref.get("title", ""), "year": ref.get("year")}
+        for ref in references
+    ]
+
+    try:
+        g4_result = await g4_analyzer.analyze(
+            topic_keywords=topic_keywords,
+            survey_references=ref_dicts,
+            ref_metadata_cache=ref_metadata_cache,
+        )
+        coverage_rate = g4_result.coverage_rate
+        missing_papers = g4_result.missing_key_papers
+        suspicious_papers = g4_result.suspicious_centrality
+    except Exception as e:
+        logger.warning(f"  G4 analysis failed: {e}")
+        coverage_rate = None
+        missing_papers = []
+        suspicious_papers = []
+
+    logger.info(f"  G4 (foundational_coverage_rate): {coverage_rate}")
+
+    return coverage_rate, missing_papers, suspicious_papers
 
 
 async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:

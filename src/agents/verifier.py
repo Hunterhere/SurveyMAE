@@ -145,8 +145,8 @@ class VerifierAgent(BaseAgent):
         """
         try:
             if pdf_path:
-                # Use the PDF-based citation extraction
-                result = self._citation_checker.extract_citations_with_context_from_pdf(pdf_path)
+                # Use the PDF-based citation extraction (async)
+                result = await self._citation_checker.extract_citations_with_context_from_pdf(pdf_path)
                 return {
                     "citations_count": len(result.get("citations", [])),
                     "references_count": len(result.get("references", [])),

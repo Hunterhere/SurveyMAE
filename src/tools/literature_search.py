@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Any, Iterable, Optional
+from functools import wraps
+from typing import Any, Callable, Iterable, Optional, TypeVar
 
 from src.core.search_config import load_search_engine_config
 from src.tools.fetchers.arxiv_fetcher import ArxivFetcher, ArxivMetadata
@@ -22,6 +24,68 @@ from src.tools.fetchers.semantic_scholar_fetcher import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_DELAY = 1.0  # seconds
+DEFAULT_RETRY_BACKOFF = 2.0  # exponential backoff multiplier
+
+T = TypeVar("T")
+
+
+def with_retry(
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    delay: float = DEFAULT_RETRY_DELAY,
+    backoff: float = DEFAULT_RETRY_BACKOFF,
+    exceptions: tuple = (Exception,),
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """Decorator to retry a function on failure with exponential backoff.
+
+    Args:
+        max_retries: Maximum number of retry attempts.
+        delay: Initial delay between retries in seconds.
+        backoff: Multiplier for exponential backoff.
+        exceptions: Tuple of exceptions to catch and retry on.
+
+    Returns:
+        Decorated function with retry logic.
+    """
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> T:
+            last_exception: Optional[Exception] = None
+            current_delay = delay
+
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        logger.warning(
+                            "Attempt %d/%d failed for %s: %s. Retrying in %.1fs...",
+                            attempt + 1,
+                            max_retries + 1,
+                            func.__name__,
+                            e,
+                            current_delay,
+                        )
+                        time.sleep(current_delay)
+                        current_delay *= backoff
+                    else:
+                        logger.error(
+                            "All %d attempts failed for %s: %s",
+                            max_retries + 1,
+                            func.__name__,
+                            e,
+                        )
+            # This should never happen but satisfies type checker
+            raise last_exception if last_exception else Exception("Retry failed")
+
+        return wrapper
+
+    return decorator
 
 
 @dataclass
@@ -332,54 +396,107 @@ class LiteratureSearch:
 
         resolved = self._resolve_sources(sources)
         yearly_counts: dict[str, int] = {str(y): 0 for y in range(start_year, end_year + 1)}
+        failed_sources: list[str] = []
 
         for source in resolved:
             try:
                 if source == "semantic_scholar":
-                    fetcher = self.fetchers[source]
-                    # Semantic Scholar doesn't have direct year filter, search broadly
-                    # and filter results by year
-                    results = fetcher.search_by_title(keywords, max_results=50)
-                    for r in self._ensure_list(results):
-                        if r.year:
-                            year_str = r.year if isinstance(r.year, str) else str(r.year)
-                            if year_str.isdigit():
-                                y = int(year_str)
-                                if start_year <= y <= end_year:
-                                    yearly_counts[year_str] += 1
+                    # Apply retry to semantic scholar search
+                    count = self._search_field_trend_semantic_scholar(
+                        fetcher=self.fetchers[source],
+                        keywords=keywords,
+                        start_year=start_year,
+                        end_year=end_year,
+                    )
+                    for year_str, c in count.items():
+                        yearly_counts[year_str] += c
                 elif source == "openalex":
-                    fetcher = self.fetchers[source]
-                    import requests as _requests
-
-                    # OpenAlex supports year filtering via filter param
-                    for year in range(start_year, end_year + 1):
-                        url = f"{fetcher.BASE_URL}/works"
-                        params = {
-                            "search": keywords,
-                            "filter": f"publication_year:{year}",
-                            "per-page": 1,  # We only need count
-                        }
-                        try:
-                            response = _requests.get(url, params=params, timeout=10)
-                            if response.ok:
-                                data = response.json()
-                                count = (
-                                    data.get("meta", {}).get("count", 0)
-                                    if isinstance(data, dict)
-                                    else 0
-                                )
-                                yearly_counts[str(year)] += count
-                        except Exception:
-                            continue
+                    # Apply retry to openalex search
+                    count = self._search_field_trend_openalex(
+                        fetcher=self.fetchers[source],
+                        keywords=keywords,
+                        start_year=start_year,
+                        end_year=end_year,
+                    )
+                    for year_str, c in count.items():
+                        yearly_counts[year_str] += c
             except Exception as exc:
                 logger.warning("Field trend search failed for %s: %s", source, exc)
+                failed_sources.append(source)
                 continue
+
+        # Log summary of failures
+        if failed_sources:
+            logger.warning(
+                "Field trend search failed for all retries on sources: %s. "
+                "Results may be incomplete.",
+                failed_sources,
+            )
+
+        # Check if all sources failed
+        if len(failed_sources) == len(resolved) and not any(
+            yearly_counts.values()
+        ):
+            logger.error(
+                "All sources failed for field trend search. Returning empty results."
+            )
 
         return {
             "yearly_counts": yearly_counts,
             "year_range": {"start": start_year, "end": end_year},
             "keywords": keywords,
+            "failed_sources": failed_sources,
         }
+
+    @with_retry(max_retries=2, delay=0.5)
+    def _search_field_trend_semantic_scholar(
+        self,
+        fetcher: SemanticScholarFetcher,
+        keywords: str,
+        start_year: int,
+        end_year: int,
+    ) -> dict[str, int]:
+        """Search Semantic Scholar for field trend with retry."""
+        yearly_counts: dict[str, int] = {}
+        results = fetcher.search_by_title(keywords, max_results=50)
+        for r in self._ensure_list(results):
+            if r.year:
+                year_str = r.year if isinstance(r.year, str) else str(r.year)
+                if year_str.isdigit():
+                    y = int(year_str)
+                    if start_year <= y <= end_year:
+                        yearly_counts[year_str] = yearly_counts.get(year_str, 0) + 1
+        return yearly_counts
+
+    @with_retry(max_retries=2, delay=0.5)
+    def _search_field_trend_openalex(
+        self,
+        fetcher: OpenAlexFetcher,
+        keywords: str,
+        start_year: int,
+        end_year: int,
+    ) -> dict[str, int]:
+        """Search OpenAlex for field trend with retry."""
+        import requests as _requests
+
+        yearly_counts: dict[str, int] = {}
+        for year in range(start_year, end_year + 1):
+            url = f"{fetcher.BASE_URL}/works"
+            params = {
+                "search": keywords,
+                "filter": f"publication_year:{year}",
+                "per-page": 1,
+            }
+            response = _requests.get(url, params=params, timeout=10)
+            if response.ok:
+                data = response.json()
+                count = (
+                    data.get("meta", {}).get("count", 0)
+                    if isinstance(data, dict)
+                    else 0
+                )
+                yearly_counts[str(year)] = count
+        return yearly_counts
 
     async def search_top_cited(
         self,

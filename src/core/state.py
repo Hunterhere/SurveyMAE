@@ -8,6 +8,8 @@ from typing import TypedDict, List, Annotated, Optional, Literal, Dict, Any
 import operator
 from typing import Callable
 
+from pydantic import BaseModel, Field
+
 
 def dict_merge(left: dict, right: dict) -> dict:
     """Merge two dictionaries for LangGraph state updates.
@@ -141,6 +143,45 @@ class EvaluationRecord(TypedDict):
     reasoning: str
     evidence: Optional[str]
     confidence: float
+
+
+class EvaluationRecordModel(BaseModel):
+    """Pydantic model for EvaluationRecord with validation.
+
+    This provides stricter validation than the TypedDict version,
+    including score range validation and required field enforcement.
+
+    Attributes:
+        agent_name: The identifier of the agent (required).
+        dimension: The evaluation dimension (required).
+        score: Numerical score in range [0.0, 10.0] (required).
+        reasoning: Detailed explanation for the score (required).
+        evidence: Supporting evidence such as quotes or search results (optional).
+        confidence: Confidence level of the evaluation [0.0, 1.0] (required).
+    """
+
+    agent_name: str = Field(..., description="The identifier of the agent")
+    dimension: str = Field(..., description="The evaluation dimension")
+    score: float = Field(..., ge=0.0, le=10.0, description="Score in range [0.0, 10.0]")
+    reasoning: str = Field(..., description="Detailed explanation for the score")
+    evidence: str | None = Field(default=None, description="Supporting evidence")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level [0.0, 1.0]")
+
+    def to_typed_dict(self) -> EvaluationRecord:
+        """Convert to TypedDict for LangGraph compatibility."""
+        return EvaluationRecord(
+            agent_name=self.agent_name,
+            dimension=self.dimension,
+            score=self.score,
+            reasoning=self.reasoning,
+            evidence=self.evidence,
+            confidence=self.confidence,
+        )
+
+    @classmethod
+    def from_typed_dict(cls, record: EvaluationRecord) -> "EvaluationRecordModel":
+        """Create from TypedDict."""
+        return cls(**record)
 
 
 class DebateMessage(TypedDict):

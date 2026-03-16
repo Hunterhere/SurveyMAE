@@ -168,7 +168,8 @@ def _sanitize_output_for_logging(data: dict) -> dict:
                     result[key] = json_str[:10000] + "...[truncated]"
                 else:
                     result[key] = json.loads(json_str)  # Parse back to dict
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to serialize state value for key '{key}': {e}")
                 result[key] = str(value)[:1000]
         else:
             result[key] = value

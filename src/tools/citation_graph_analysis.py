@@ -27,6 +27,33 @@ def _utc_year() -> int:
     return datetime.now(timezone.utc).year
 
 
+def _convert_numpy_types(obj: Any) -> Any:
+    """Recursively convert numpy types to Python native types for JSON serialization.
+
+    Args:
+        obj: Any object that might contain numpy types
+
+    Returns:
+        Object with numpy types converted to Python native types
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return obj
+
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: _convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_numpy_types(item) for item in obj]
+    return obj
+
+
 
 @dataclass
 class GraphAnalysisConfig:
@@ -233,7 +260,8 @@ class CitationGraphAnalyzer:
 
         if self.result_store:
             self._persist_result(run_id, output, references)
-        return output
+        # Convert numpy types to Python native types for JSON serialization
+        return _convert_numpy_types(output)
 
     def _generate_run_id(
         self,
