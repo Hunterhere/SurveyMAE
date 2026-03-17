@@ -739,6 +739,270 @@ class CitationChecker:
             stats["failure_reason"] = "NO_REAL_EDGES"
         return {"edges": edges, "stats": stats}
 
+    async def analyze_citation_sentence_alignment(
+        self,
+        citations: list[dict[str, Any]],
+        references: list[ReferenceEntry],
+        batch_size: int = 10,
+        model_name: str = "qwen3.5-flash",
+        max_concurrency: int = 5,
+        contradiction_threshold: float = 0.05,
+    ) -> dict[str, Any]:
+        """Analyze citation-sentence alignment (C6 metric).
+
+        For each citation-sentence pair, determines whether the sentence's claim
+        is supported, contradicted, or insufficiently evidenced by the cited paper's abstract.
+
+        Args:
+            citations: List of citation dicts from extraction (with sentence context).
+            references: List of ReferenceEntry objects with validation metadata.
+            batch_size: Number of pairs to process per LLM call.
+            model_name: Model to use for batch processing.
+            max_concurrency: Maximum concurrent batch calls.
+            contradiction_threshold: Threshold for auto-fail.
+
+        Returns:
+            Dict with C6 metrics including contradiction_rate and auto_fail flag.
+        """
+        from langchain_core.messages import HumanMessage
+        from langchain_openai import ChatOpenAI
+        import asyncio
+
+        logger.info(f"Starting C6 citation-sentence alignment analysis...")
+
+        # Build reference lookup with abstract
+        ref_lookup: dict[str, dict[str, Any]] = {}
+        for ref in references:
+            ref_lookup[ref.key] = {
+                "title": ref.title or "",
+                "abstract": ref.validation.get("metadata", {}).get("abstract", "") if ref.validation else "",
+                "key": ref.key,
+            }
+
+        # Build citation-sentence pairs
+        pairs: list[dict[str, Any]] = []
+        for citation in citations:
+            ref_keys = citation.get("ref_keys", [])
+            sentence = citation.get("sentence", "")
+            if not sentence or not ref_keys:
+                continue
+
+            # One pair per cited reference
+            for ref_key in ref_keys:
+                ref_data = ref_lookup.get(ref_key, {})
+                abstract = ref_data.get("abstract", "")
+
+                pairs.append({
+                    "citation_marker": citation.get("marker", ""),
+                    "sentence": sentence,
+                    "ref_key": ref_key,
+                    "ref_title": ref_data.get("title", ""),
+                    "abstract": abstract,
+                    "has_abstract": bool(abstract),
+                })
+
+        logger.info(f"Built {len(pairs)} citation-sentence pairs")
+
+        if not pairs:
+            return {
+                "metric_id": "C6",
+                "llm_involved": True,
+                "hallucination_risk": "low",
+                "total_pairs": 0,
+                "support": 0,
+                "contradict": 0,
+                "insufficient": 0,
+                "contradiction_rate": 0.0,
+                "auto_fail": False,
+                "contradictions": [],
+                "status": "no_pairs",
+            }
+
+        # Mark pairs without abstract as insufficient
+        insufficient_pairs = [p for p in pairs if not p["has_abstract"]]
+        pairs_with_abstract = [p for p in pairs if p["has_abstract"]]
+
+        logger.info(f"Pairs with abstract: {len(pairs_with_abstract)}, without: {len(insufficient_pairs)}")
+
+        # Initialize LLM
+        try:
+            llm = ChatOpenAI(model=model_name, temperature=0.1)
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM: {e}")
+            return {
+                "metric_id": "C6",
+                "llm_involved": True,
+                "hallucination_risk": "low",
+                "total_pairs": len(pairs),
+                "support": 0,
+                "contradict": 0,
+                "insufficient": len(pairs),
+                "contradiction_rate": 0.0,
+                "auto_fail": False,
+                "contradictions": [],
+                "status": "llm_error",
+                "error": str(e),
+            }
+
+        # Create batches
+        batches = [
+            pairs_with_abstract[i:i + batch_size]
+            for i in range(0, len(pairs_with_abstract), batch_size)
+        ]
+
+        logger.info(f"Processing {len(batches)} batches with max concurrency {max_concurrency}")
+
+        async def process_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Process a single batch of pairs."""
+            prompt = self._build_c6_prompt(batch)
+            try:
+                response = await llm.ainvoke([HumanMessage(content=prompt)])
+                content = response.content if hasattr(response, "content") else str(response)
+                return self._parse_c6_response(content, batch)
+            except Exception as e:
+                logger.warning(f"Batch processing failed: {e}")
+                # Mark all as insufficient on error
+                return [
+                    {
+                        "citation_marker": p["citation_marker"],
+                        "sentence": p["sentence"][:200],
+                        "ref_abstract": p["abstract"][:500],
+                        "llm_judgment": "insufficient",
+                        "note": f"LLM error: {e}",
+                    }
+                    for p in batch
+                ]
+
+        # Process batches with concurrency limit
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def bounded_process(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            async with semaphore:
+                return await process_batch(batch)
+
+        results = await asyncio.gather(*[bounded_process(b) for b in batches])
+        batch_results = [item for sublist in results for item in sublist]
+
+        # Add insufficient pairs (no abstract)
+        for p in insufficient_pairs:
+            batch_results.append({
+                "citation_marker": p["citation_marker"],
+                "sentence": p["sentence"][:200],
+                "ref_abstract": "[ABSTRACT NOT AVAILABLE]",
+                "llm_judgment": "insufficient",
+                "note": "Abstract not available in metadata",
+            })
+
+        # Count results
+        support = sum(1 for r in batch_results if r.get("llm_judgment") == "support")
+        contradict = sum(1 for r in batch_results if r.get("llm_judgment") == "contradict")
+        insufficient = sum(1 for r in batch_results if r.get("llm_judgment") == "insufficient")
+
+        # Calculate contradiction rate (excluding insufficient)
+        valid_count = support + contradict
+        contradiction_rate = contradict / valid_count if valid_count > 0 else 0.0
+        auto_fail = contradiction_rate >= contradiction_threshold
+
+        # Collect contradictions
+        contradictions = [
+            {
+                "citation": r.get("citation_marker", ""),
+                "sentence": r.get("sentence", ""),
+                "ref_abstract": r.get("ref_abstract", ""),
+                "llm_judgment": r.get("llm_judgment", ""),
+                "note": r.get("note", ""),
+            }
+            for r in batch_results
+            if r.get("llm_judgment") == "contradict"
+        ]
+
+        logger.info(
+            f"C6 complete: {support} support, {contradict} contradict, {insufficient} insufficient, "
+            f"contradiction_rate={contradiction_rate:.3f}, auto_fail={auto_fail}"
+        )
+
+        return {
+            "metric_id": "C6",
+            "llm_involved": True,
+            "hallucination_risk": "low",
+            "total_pairs": len(pairs),
+            "support": support,
+            "contradict": contradict,
+            "insufficient": insufficient,
+            "contradiction_rate": round(contradiction_rate, 4),
+            "auto_fail": auto_fail,
+            "contradictions": contradictions[:50],  # Limit to 50 for report size
+            "missing_abstract_count": len(insufficient_pairs),
+            "status": "ok" if not auto_fail else "auto_fail",
+        }
+
+    def _build_c6_prompt(self, pairs: list[dict[str, Any]]) -> str:
+        """Build prompt for C6 batch processing."""
+        items = []
+        for i, p in enumerate(pairs, 1):
+            items.append(f"""### Pair {i}
+Citation: [{p['citation_marker']}]
+Sentence: {p['sentence'][:300]}
+Abstract: {p['abstract'][:500]}""")
+
+        prompt = f"""You are evaluating whether a sentence's claim about a cited paper is supported by the paper's abstract.
+
+For each pair, classify as:
+- "support": The sentence's claim is consistent with the abstract
+- "contradict": The sentence's claim contradicts or misrepresents the abstract
+- "insufficient": The abstract doesn't provide enough information to judge
+
+Output in this format (one per line):
+Pair N: support/contradict/insufficient
+[If contradict, add a brief note in parentheses]
+
+{"=".join(items)}
+
+Output:"""
+        return prompt
+
+    def _parse_c6_response(self, response: str, pairs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Parse LLM response for C6 results."""
+        results = []
+        lines = response.strip().split("\n")
+
+        for i, p in enumerate(pairs):
+            judgment = "insufficient"
+            note = ""
+
+            # Find matching line
+            for line in lines:
+                line_lower = line.lower().strip()
+                if f"pair {i+1}" in line_lower or f"pair{i+1}" in line_lower:
+                    if "support" in line_lower and "contradict" not in line_lower:
+                        judgment = "support"
+                    elif "contradict" in line_lower:
+                        judgment = "contradict"
+                        # Extract note if present
+                        if "(" in line and ")" in line:
+                            note = line[line.index("(") + 1:line.index(")")].strip()
+                    break
+                elif "support" in line_lower and "contradict" not in line_lower and any(
+                    f"pair {j}" in line_lower for j in range(1, len(pairs) + 1)
+                ):
+                    judgment = "support"
+                    break
+                elif "contradict" in line_lower and any(
+                    f"pair {j}" in line_lower for j in range(1, len(pairs) + 1)
+                ):
+                    judgment = "contradict"
+                    break
+
+            results.append({
+                "citation_marker": p["citation_marker"],
+                "sentence": p["sentence"][:200],
+                "ref_abstract": p["abstract"][:500],
+                "llm_judgment": judgment,
+                "note": note,
+            })
+
+        return results
+
     def _reference_identity_tokens(self, ref: ReferenceEntry) -> set[str]:
         tokens: set[str] = set()
         if ref.key:

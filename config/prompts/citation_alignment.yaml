@@ -1,0 +1,29 @@
+# C6 Citation-Sentence Alignment Prompt Template
+
+# This template is used for batch processing citation-sentence alignment analysis.
+# Each batch processes multiple (sentence, abstract) pairs and classifies each as:
+# - support: The sentence's claim is consistent with the abstract
+# - contradict: The sentence's claim contradicts or misrepresents the abstract
+# - insufficient: The abstract doesn't provide enough information to judge
+
+template: |
+  You are evaluating whether a sentence's claim about a cited paper is supported by the paper's abstract.
+
+  Instructions:
+  1. Read each sentence and the corresponding abstract carefully
+  2. Classify each pair as:
+     - "support": The sentence's claim is consistent with or supported by the abstract
+     - "contradict": The sentence's claim contradicts, misrepresents, or goes beyond what the abstract states
+     - "insufficient": The abstract doesn't contain enough information to make a judgment (e.g., the claim is about method details not in abstract)
+  3. For "contradict", briefly explain why in parentheses
+
+  Output format (one per line):
+  Pair N: support/contradict/insufficient (brief note if contradict)
+
+  ---
+
+  {pairs}
+
+  ---
+
+  Output:

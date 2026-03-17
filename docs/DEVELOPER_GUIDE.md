@@ -261,6 +261,47 @@ citation:
   grobid_consolidate: false
 ```
 
+### Evidence Collection 配置
+
+`evidence` 配置段包含证据收集的各项参数，包括 C6 引用-对齐分析的配置：
+
+```yaml
+evidence:
+  # G4 (Foundational Coverage)
+  foundational_top_k: 30
+  foundational_match_threshold: 0.85
+
+  # T-series (Temporal)
+  trend_query_count: 5
+  trend_year_range: [2015, 2025]
+
+  # S5 (Section-Cluster Alignment)
+  clustering_algorithm: cocitation
+  clustering_seed: 42
+
+  # C6 (Citation-Sentence Alignment) - 新增
+  c6_batch_size: 10
+  c6_model: "qwen3.5-flash"
+  c6_max_concurrency: 5
+  contradiction_threshold: 0.05
+
+  # V2 scoring thresholds - 新增
+  v2_score_5_threshold: 0.01
+  v2_score_4_threshold: 0.02
+  v2_score_3_threshold: 0.03
+  v2_score_2_threshold: 0.05
+
+  # Sampling
+  citation_sample_size: 15
+
+  # Fallback
+  api_timeout_seconds: 30
+  fallback_order:
+    - semantic_scholar
+    - openalex
+    - crossref
+```
+
 ### 环境变量 (.env)
 
 项目统一使用 `python-dotenv` 加载环境变量。
@@ -295,6 +336,21 @@ def load_test_env(env_file: str = None) -> bool:
 
 # 导入时自动加载
 load_test_env()
+```
+
+#### 统一环境变量读取
+
+项目推荐使用 `SurveyMAEConfig.get_env()` 方法统一读取环境变量：
+
+```python
+from src.core.config import load_config
+
+# 推荐方式
+config = load_config()
+api_key = config.get_env("OPENAI_API_KEY")
+
+# 带默认值
+timeout = config.get_env("API_TIMEOUT", "30")
 ```
 
 #### 环境变量列表

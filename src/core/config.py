@@ -265,6 +265,10 @@ class EvidenceConfig(BaseModel):
         api_timeout_seconds: Timeout for API requests.
         fallback_order: Ordered list of sources for fallback.
         verify_limit: Maximum number of references to verify.
+        c6_batch_size: Number of sentence-abstract pairs per batch for C6.
+        c6_model: Model to use for C6 batch processing.
+        c6_max_concurrency: Maximum concurrent batches for C6.
+        contradiction_threshold: Threshold for auto-fail (0-1).
     """
 
     foundational_top_k: int = 30
@@ -277,6 +281,16 @@ class EvidenceConfig(BaseModel):
     api_timeout_seconds: int = 30
     fallback_order: list[str] = field(default_factory=lambda: ["semantic_scholar", "openalex"])
     verify_limit: int = 50
+    c6_batch_size: int = 10
+    c6_model: str = "qwen3.5-flash"
+    c6_max_concurrency: int = 5
+    contradiction_threshold: float = 0.05
+
+    # V2 (Citation-Assertion Alignment) scoring thresholds
+    v2_score_5_threshold: float = 0.01   # <1% -> score 5
+    v2_score_4_threshold: float = 0.02   # 1-2% -> score 4
+    v2_score_3_threshold: float = 0.03   # 2-3% -> score 3
+    v2_score_2_threshold: float = 0.05   # 3-5% -> score 2
 
 
 class SurveyMAEConfig(BaseModel):

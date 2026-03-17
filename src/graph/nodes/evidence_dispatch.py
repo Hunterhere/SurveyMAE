@@ -27,6 +27,12 @@ VERIFIER_METRICS = {
         "description": "Proportion of references verified via external academic API. Higher is better.",
         "llm_involved": False,
     },
+    "C6": {
+        "name": "citation_sentence_alignment",
+        "description": "Contradiction rate between survey sentences and cited paper abstracts. Lower is better.",
+        "llm_involved": True,
+        "hallucination_risk": "low",
+    },
 }
 
 EXPERT_METRICS = {
@@ -140,16 +146,31 @@ def build_verifier_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
         Formatted evidence report.
     """
     validation = evidence.get("validation", {})
+    graph_analysis = evidence.get("graph_analysis", {})
 
     # Extract C3, C5
     orphan_rate = validation.get("orphan_ref_rate")
     verify_rate = validation.get("metadata_verify_rate")
+
+    # Extract C6 (citation_sentence_alignment)
+    c6_result = graph_analysis.get("C6", {})
 
     # Build warnings
     warnings = []
     if verify_rate is not None and verify_rate < 0.7:
         warnings.append(
             f"⚠ C5 only {verify_rate:.0%}, {int((1 - verify_rate) * len(validation.get('references', [])))} unverified references need review"
+        )
+
+    # C6 auto_fail check
+    c6_auto_fail = c6_result.get("auto_fail", False)
+    contradiction_rate = c6_result.get("contradiction_rate", 0.0)
+    contradictions = c6_result.get("contradictions", [])
+
+    if c6_auto_fail:
+        warnings.append(
+            f"🚨 C6 auto_fail triggered: contradiction_rate={contradiction_rate:.1%} >= threshold. "
+            f"V2 dimension will be auto-scored as 1 (minimum)."
         )
 
     # Get unverified references for sampling
@@ -165,9 +186,19 @@ def build_verifier_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
                 "value": verify_rate,
                 "definition": VERIFIER_METRICS["C5"]["description"],
             },
+            "C6": {
+                "value": c6_result.get("contradiction_rate"),
+                "definition": VERIFIER_METRICS["C6"]["description"],
+                "auto_fail": c6_auto_fail,
+                "support": c6_result.get("support", 0),
+                "contradict": c6_result.get("contradict", 0),
+                "insufficient": c6_result.get("insufficient", 0),
+            },
         },
         "warnings": warnings,
         "unverified_references": unverified_refs[:10],  # Sample for agent
+        "c6_auto_fail": c6_auto_fail,
+        "c6_contradictions": contradictions[:10],  # Sample for agent review
     }
 
 

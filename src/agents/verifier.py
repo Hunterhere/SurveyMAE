@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, Optional
 
 from src.agents.base import BaseAgent
-from src.core.config import AgentConfig, LLMConfig
+from src.core.config import AgentConfig, LLMConfig, load_config
 from src.core.mcp_client import MCPManager
 from src.core.state import SurveyState, EvaluationRecord
 from src.tools.citation_checker import CitationChecker
@@ -58,6 +58,11 @@ class VerifierAgent(BaseAgent):
     ) -> EvaluationRecord:
         """Evaluate the factuality and citation accuracy of survey content.
 
+        This agent evaluates three sub-dimensions:
+        - V1: Citation existence (based on C5 metadata_verify_rate)
+        - V2: Citation-assertion alignment (based on C6, with auto-fail shortcut)
+        - V4: Internal consistency (LLM-based analysis)
+
         Args:
             state: The current workflow state.
             section_name: Optional section to focus on.
@@ -72,7 +77,51 @@ class VerifierAgent(BaseAgent):
         evidence_reports = state.get("evidence_reports", {})
         evidence_report = evidence_reports.get("verifier", "No evidence report available.")
 
-        # Load the verification prompt
+        # Extract C6 result from evidence_report for V2 scoring
+        c6_result = evidence_report.get("C6", {}) if isinstance(evidence_report, dict) else {}
+        c6_auto_fail = c6_result.get("auto_fail", False)
+        contradiction_rate = c6_result.get("contradiction_rate", 0.0)
+        contradictions = c6_result.get("c6_contradictions", [])
+
+        # Calculate V2 score based on C6 results
+        v2_score: float = 0.0
+        v2_reasoning: str = ""
+
+        # Load V2 scoring thresholds from config
+        cfg = load_config()
+        v2_thresholds = {
+            "score_5": cfg.evidence.v2_score_5_threshold,
+            "score_4": cfg.evidence.v2_score_4_threshold,
+            "score_3": cfg.evidence.v2_score_3_threshold,
+            "score_2": cfg.evidence.v2_score_2_threshold,
+        }
+
+        if c6_auto_fail:
+            # C6 threshold exceeded - auto-fail V2
+            v2_score = 1.0
+            v2_reasoning = (
+                f"C6 auto-fail triggered: contradiction_rate={contradiction_rate:.1%} >= "
+                f"threshold ({v2_thresholds['score_2']:.1%}). V2 dimension auto-scored as 1 (minimum)."
+            )
+        else:
+            # Normal V2 scoring based on contradiction_rate
+            if contradiction_rate < v2_thresholds["score_5"]:
+                v2_score = 5.0
+                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} < {v2_thresholds['score_5']:.1%}, excellent alignment"
+            elif contradiction_rate < v2_thresholds["score_4"]:
+                v2_score = 4.0
+                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} in [{v2_thresholds['score_5']:.1%}, {v2_thresholds['score_4']:.1%}), good alignment"
+            elif contradiction_rate < v2_thresholds["score_3"]:
+                v2_score = 3.0
+                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} in [{v2_thresholds['score_4']:.1%}, {v2_thresholds['score_3']:.1%}), moderate issues"
+            elif contradiction_rate < v2_thresholds["score_2"]:
+                v2_score = 2.0
+                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} in [{v2_thresholds['score_3']:.1%}, {v2_thresholds['score_2']:.1%}), multiple issues"
+            else:
+                v2_score = 1.0
+                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} >= {v2_thresholds['score_2']:.1%}, auto-fail threshold"
+
+        # Load the verification prompt for V1 and V4 dimensions
         system_prompt = self._load_prompt(
             "verifier",
             agent_name=self.name,
@@ -100,9 +149,9 @@ class VerifierAgent(BaseAgent):
         {claims_and_citations}
 
         Please verify each claim by:
-        1. Checking if the cited papers exist and are accessible
-        2. Verifying if the claims match the actual paper content
-        3. Identifying any potential hallucinations
+        1. Checking if the cited papers exist and are accessible (V1)
+        2. Verifying if the claims match the actual paper content (V2)
+        3. Identifying any potential hallucinations (V4)
         4. Providing a factuality score from 0-10
 
         Return your evaluation with evidence for each claim.
@@ -119,6 +168,20 @@ class VerifierAgent(BaseAgent):
             score, reasoning, evidence = self._incorporate_citation_analysis(
                 score, reasoning, evidence, citation_analysis
             )
+
+        # Add V2 scoring info to evidence
+        v2_evidence = {
+            "v2_score": v2_score,
+            "v2_reasoning": v2_reasoning,
+            "contradiction_rate": contradiction_rate,
+            "c6_auto_fail": c6_auto_fail,
+            "contradictions_sample": contradictions[:5],  # Include sample contradictions
+        }
+
+        if evidence:
+            evidence = f"{evidence}\n\nV2 (Citation-Assertion Alignment): {v2_reasoning}"
+        else:
+            evidence = f"V2 (Citation-Assertion Alignment): {v2_reasoning}"
 
         return EvaluationRecord(
             agent_name=self.name,

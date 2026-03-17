@@ -11,32 +11,34 @@
 | 文件 | 修改内容 |
 |------|---------|
 | `src/core/state.py` | 添加 ToolEvidence, MetricMetadata, AgentOutput 等 TypedDict；扩展 SurveyState 字段 |
-| `src/core/config.py` | 添加 evidence_collection 相关配置项（G4 的 top_k、聚类算法选择等） |
-| `src/tools/citation_checker.py` | validate 流程中将获取的完整元数据写入 ref_metadata_cache（当前只保存验证状态，需扩展保存被引次数、引用列表、venue等完整字段） |
+| `src/core/config.py` | 添加 evidence_collection 相关配置项（G4 top_k、聚类算法、C6 batch_size/contradiction_threshold等） |
+| `src/tools/citation_checker.py` | (1) validate 流程扩展保存完整元数据到 ref_metadata_cache（被引次数、引用列表、venue、abstract等）；(2) 新增 C6 citation_sentence_alignment 方法（批处理LLM调用 + contradiction_rate计算 + auto_fail短路逻辑） |
 | `src/tools/citation_analysis.py` | 新增 T2/T4/T5 指标计算方法；现有 temporal 分析方法可复用为 T1/T3 |
 | `src/tools/citation_graph_analysis.py` | 新增 G4 计算（依赖外部检索结果输入）；新增 S5 计算 |
 | `src/tools/literature_search.py` | 新增 `search_field_trend(keywords, year_range)` 和 `search_top_cited(keywords, top_k)` 方法 |
-| `src/agents/verifier.py` | 重写 evaluate() 以接收 Evidence Report 并输出结构化 JSON |
-| `src/agents/expert.py` | 同上 |
+| `src/agents/verifier.py` | 重写 evaluate()：V2/V3合并为V2(引用-断言对齐)，基于C6输出；新增C6.auto_fail时V2短路逻辑；子维度从4个减为3个(V1,V2,V4) |
+| `src/agents/expert.py` | 重写 evaluate() 以接收 Evidence Report 并输出结构化 JSON |
 | `src/agents/reader.py` | 同上 |
 | `src/agents/corrector.py` | 新增波动范围计算逻辑 |
 | `src/agents/reporter.py` | 拆分为纯报告生成（不再做数据收集） |
 | `src/graph/builder.py` | 重构节点拓扑：parse_pdf → evidence_collection → evidence_dispatch → 并行agents → corrector → debate? → aggregator → reporter |
 | `src/graph/nodes/aggregator.py` | 重写为纯数学聚合（加权平均），不涉及LLM |
-| `config/prompts/*.yaml` | 所有Agent的prompt模板需要重写 |
+| `config/prompts/*.yaml` | 所有Agent的prompt模板需要重写；新增 citation_alignment.yaml (C6批处理prompt) |
 
 ### 1.2 需要新建的文件
 
 | 文件 | 职责 |
 |------|------|
-| `src/graph/nodes/evidence_collection.py` | 统一工具执行节点：顺序调用 CitationChecker → 关键词提取(LLM) → LiteratureSearch → CitationAnalyzer → CitationGraphAnalysis |
-| `src/graph/nodes/evidence_dispatch.py` | 证据分发节点：为每个Agent组装Evidence Report |
+| `src/graph/nodes/evidence_collection.py` | 统一工具执行节点：顺序调用 CitationChecker.validate → C6批处理 → 关键词提取(LLM) → LiteratureSearch → CitationAnalyzer → CitationGraphAnalysis |
+| `src/graph/nodes/evidence_dispatch.py` | 证据分发节点：为每个Agent组装Evidence Report；实现C6.auto_fail时V2预填1分的逻辑 |
 | `src/tools/keyword_extractor.py` | LLM辅助关键词提取（从标题/摘要/章节标题中提取topic_keywords） |
 | `src/tools/trend_analyzer.py` | field_trend_baseline 计算（调用 literature_search + 年份聚合 + 相关系数计算）。也可直接在 citation_analysis.py 中新增方法，取决于代码组织偏好 |
 | `src/core/metric_metadata.py` | MetricMetadata 定义与辅助函数（创建、校验、序列化） |
+| `config/prompts/citation_alignment.yaml` | C6 批处理 prompt 模板 |
 | `tests/unit/test_s5_alignment.py` | S5 (NMI/ARI) 单元测试 |
 | `tests/unit/test_trend_alignment.py` | T5 (trend_alignment) 单元测试 |
 | `tests/unit/test_foundational_coverage.py` | G4 单元测试 |
+| `tests/unit/test_citation_alignment.py` | C6 单元测试（contradiction_rate计算、auto_fail逻辑、批处理分组、abstract缺失处理） |
 | `tests/integration/test_evidence_collection.py` | evidence_collection 全链路集成测试 |
 
 ---
@@ -48,6 +50,7 @@
 | 用途 | 推荐库 | 备注 |
 |------|--------|------|
 | 图分析（G1-G6） | `networkx` | 项目已使用（citation_graph_analysis.py） |
+| 社区检测（G5聚类） | `networkx.algorithms.community` (Louvain) 或 `cdlib` | Louvain 最成熟；固定 `seed` 参数保证可复现 |
 | NMI/ARI（S5） | `sklearn.metrics.normalized_mutual_info_score`, `adjusted_rand_score` | sklearn 应已在依赖中 |
 | 皮尔逊相关（T5） | `scipy.stats.pearsonr` | scipy 应已在依赖中 |
 | Gini系数（S3） | 手写（约5行）或 `numpy` | 无需额外依赖 |
@@ -125,11 +128,19 @@ Phase 1 内部有隐含依赖，推荐按以下顺序执行：
 1.2 G4 coverage_rate ──────┤  检索增强指标       │
      (两者共享关键词提取)   │  （需要1.4的schema）│
                             │                    │
+1.10 C6 citation_sentence_ ┤  C6指标            │
+     alignment 实现         │  （需要ref_metadata │
+     (批处理+短路逻辑)      │   _cache中的abstract│
+                            │   + 1.4的schema）  │
+                            │                    │
 1.5 完善所有rubric ─────────┤                    │
+    (V2/V3已合并为V2)       │                    │
 1.6 Agent输出JSON Schema ──┤  Agent协议         │
                             │  （需要1.4的schema）│
 1.7 evidence_dispatch ──────┤                    │
+    (含C6.auto_fail短路)    │                    │
 1.8 prompt模板更新 ─────────┘  （需要1.5/1.6/1.7）│
+    (含citation_alignment.yaml)                  │
 ```
 
 Phase 2 的 2.1 (evidence_collection) 依赖 Phase 1 的所有工具实现完成。
@@ -138,18 +149,19 @@ Phase 2 的 2.1 (evidence_collection) 依赖 Phase 1 的所有工具实现完成
 
 ## 5. Rubric 完整性补充
 
-Plan v2 中只给出了 V2, E1, E4, R1 四个子维度的完整 rubric 示例。以下子维度需要在实现时补写 rubric：
+Plan v2 中已给出 V2(引用-断言对齐), E1, E4, R1 四个子维度的完整 rubric。以下子维度需要在实现时补写 rubric：
 
 | 子维度 | rubric设计要点 |
 |--------|---------------|
 | V1 (引用存在性) | 主要依赖 C5 数值，rubric 阈值可参考：5分→C5≥0.95, 4分→≥0.85, 3分→≥0.70, 2分→≥0.50, 1分→<0.50。LLM负责对未验证文献做"是workshop/preprint还是真的不存在"的判断 |
-| V3 (引用准确性) | 与V2类似的抽样判断，但关注点不同：V2看"是否支持"，V3看"是否正确理解"。典型错误类型：误读（misinterpretation）、过度概括（overgeneralization）、错误归因（misattribution） |
 | V4 (内部一致性) | 无工具证据直接支持，纯LLM判断。rubric 按矛盾数量和严重程度分级 |
 | E2 (方法分类合理性) | 结合 G5+S5：如果 S5(NMI)高说明章节与聚类吻合，分类可能合理。LLM评估分类是否与学术共识一致 |
 | E3 (技术准确性) | 纯LLM判断，hallucination_risk 高。rubric 按技术错误数量和严重程度分级 |
 | R2 (信息分布均衡性) | 结合 S2/S3/S5/G5。S3(Gini)高不一定扣分，需LLM判断是否合理的重点安排 |
 | R3 (结构清晰度) | 结合 S1/S5。S5高 + 章节标题层次清晰 → 高分 |
 | R4 (文字质量) | 纯LLM判断，无工具证据。rubric 按语法错误、术语一致性、可读性分级 |
+
+**注意：** 原V2(引用支持性)和V3(引用准确性)已合并为V2(引用-断言对齐)，其rubric已在Plan v2 §2.6.1中定义，基于C6的contradiction_rate阈值：5分→<1%, 4分→1-2%, 3分→2-3%, 2分→3-5%, 1分→≥5%自动判定。
 
 **建议：** rubric 初版可以参照上述要点快速起草，在 Phase 3 的 pilot 标注阶段根据实际标注反馈调整。不必追求一次完美。
 
@@ -196,7 +208,39 @@ template: |
   Is this paper relevant to the survey's topic? Answer only "yes" or "no".
 ```
 
----
+### 6.3 C6 引用-断言对齐批处理 prompt 模板
+
+```yaml
+# config/prompts/citation_alignment.yaml
+template: |
+  You are checking whether survey sentences accurately represent their cited papers.
+
+  For each pair below, judge the relationship between the SENTENCE (from a survey)
+  and the ABSTRACT (of the cited paper). Output one of:
+  - "support": the abstract confirms or is consistent with the sentence's claim
+  - "contradict": the abstract contradicts or is inconsistent with the sentence's claim
+  - "insufficient": the abstract does not contain enough information to judge
+
+  {pairs}
+
+  Output as JSON array in order. Example: ["support", "contradict", "insufficient", ...]
+  Only output the JSON array, no explanation.
+```
+
+**批处理构造说明：** `{pairs}` 占位符在运行时被替换为编号列表，格式如下：
+```
+Pair 1:
+SENTENCE: "MolReGPT leverages RAG to enhance the in-context learning ability of ChatGPT for molecular discovery [68]."
+ABSTRACT: "We propose MolReGPT, which retrieves similar molecules as in-context examples for molecule-caption translation..."
+
+Pair 2:
+SENTENCE: "..."
+ABSTRACT: "..."
+
+...
+```
+
+每个batch包含`batch_size`个对（默认10，由`config.evidence.c6_batch_size`控制）。当某条ref的abstract在ref_metadata_cache中缺失时，该对自动标记为`insufficient`，不发送给LLM。
 
 ## 7. 优雅降级策略
 
@@ -204,9 +248,9 @@ template: |
 
 | 场景 | 降级策略 | 影响的指标 |
 |------|---------|-----------|
-| Semantic Scholar 不可用 | fallback 到 OpenAlex（或反之） | C5, G4, T2, T5 的数据质量下降但仍可计算 |
-| 所有学术 API 不可用 | C5 标记为 "unavailable"；T2/T5/G4 标记为 "degraded"，使用 ref_metadata_cache 中已有数据做尽力计算 | 检索增强指标不可用，在报告中标记 |
-| LLM API 不可用 | 关键词提取 fallback 到 TF-IDF/RAKE 等无监督方法；候选清洗跳过（接受更多噪声） | hallucination_risk 实际降为 none，但检索精度下降 |
+| Semantic Scholar 不可用 | fallback 到 OpenAlex（或反之） | C5, C6(abstract缺失增加), G4, T2, T5 的数据质量下降但仍可计算 |
+| 所有学术 API 不可用 | C5 标记为 "unavailable"；T2/T5/G4 标记为 "degraded"，使用 ref_metadata_cache 中已有数据做尽力计算；C6 中 abstract 全部缺失则标记为 "degraded" | 检索增强指标不可用，在报告中标记 |
+| LLM API 不可用 | 关键词提取 fallback 到 TF-IDF/RAKE 等无监督方法；候选清洗跳过（接受更多噪声）；C6 整体标记为 "unavailable" | C6 不可用时 V2 标记为 "unable to evaluate" |
 
 每个指标的输出中应包含 `data_source` 字段标明实际使用了哪些数据源，以便实验中报告。
 
@@ -219,6 +263,12 @@ template: |
 ```yaml
 # config/main.yaml 新增配置段
 evidence:
+  # C6 相关
+  c6_batch_size: 10                 # 每次prompt中构造的sentence+abstract对数量
+  c6_model: "qwen3.5-flash"          # C6批处理使用的轻量模型
+  c6_max_concurrency: 5            # C6批处理并发数
+  contradiction_threshold: 0.05    # contradiction_rate阈值，≥此值V2短路为1分
+  
   # G4 相关
   foundational_top_k: 30            # 候选核心文献检索数量
   foundational_match_threshold: 0.85 # 标题模糊匹配阈值 (rapidfuzz score)
@@ -230,9 +280,6 @@ evidence:
   # S5 相关
   clustering_algorithm: "louvain"   # louvain | spectral | leiden
   clustering_seed: 42               # 固定随机种子
-  
-  # 抽样相关
-  citation_sample_size: 15          # V2/V3 引用-断言抽样对数量
   
   # 降级配置
   api_timeout_seconds: 30
@@ -250,12 +297,14 @@ evidence:
 - **S5 测试：** 构造已知聚类和章节归属的 mock 数据，验证 NMI/ARI 计算正确性
 - **T5 测试：** 构造两个已知分布，验证 pearsonr 计算
 - **G4 测试：** 构造 candidate_list 和 ref_list，验证匹配率计算和 missing_key_papers 输出
+- **C6 统计测试：** 构造 mock 的 support/contradict/insufficient 结果列表，验证 contradiction_rate 计算和 auto_fail 短路逻辑
+- **C6 批处理构造测试：** 验证 batch 分组逻辑（总数不被 batch_size 整除时最后一批的处理、abstract 缺失时自动标记 insufficient）
 - **Gini系数测试：** 已知分布验证
-- **evidence_dispatch 测试：** 验证 Evidence Report 的组装格式完整性
+- **evidence_dispatch 测试：** 验证 Evidence Report 的组装格式完整性，特别是 C6.auto_fail=true 时 V2 预填1分的逻辑
 
 ### 9.2 集成测试
 
-使用项目中已有的 `test_survey2.pdf` 作为测试输入，验证 evidence_collection 全链路。该 PDF 是 KDD '24 发表的 RAG 综述，引用规范、结构完整，适合作为"中高质量"测试样本。
+使用项目中已有的 `test_survey2.pdf` 作为测试输入，验证 evidence_collection 全链路。该 PDF 是 KDD '24 发表的 RAG 综述，约160条引用，引用规范、结构完整，适合作为"中高质量"测试样本。C6 集成测试应验证批处理调用的完整性（所有 citation-sentence 对都被处理）和结果聚合的正确性。
 
 ---
 
@@ -274,3 +323,9 @@ evidence:
 6. **prompt 模板中的 rubric 要与 Plan v2 中定义的完全一致。** 不要让 Claude Code 自行发挥 rubric 内容。所有 rubric 应从 Plan v2 中直接复制到 prompt yaml 中。
 
 7. **多模型投票的实现。** CorrectorAgent 的多模型投票不是"让3个模型分别运行完整的Agent评估"，而是"对已有Agent输出的每个子维度分数，用3个模型分别重新打分"。这样可以大幅降低成本（只需要3次打分调用，而非3次完整评估）。
+
+8. **C6 批处理的 abstract 缺失处理。** ref_metadata_cache 中部分 ref 可能没有 abstract（API未返回、或文献太旧无电子版摘要）。这些 citation-sentence 对应自动标记为 `insufficient`，不发送给 LLM，在 C6 输出中报告 `missing_abstract_count`。
+
+9. **C6 的 sentence 可能引用多篇文献。** 一个 sentence 如 "Recent work [12, 25, 68] has shown..." 会产生3个 citation-sentence 对（同一个 sentence 分别与3篇 ref 的 abstract 配对）。这是正确的——每条引用都需要独立验证。
+
+10. **C6 阈值短路后仍需保留完整 contradiction 列表。** auto_fail=true 时 V2 跳过 Agent 直接评1分，但 contradiction 列表仍应完整输出到最终报告中，供人类审查。

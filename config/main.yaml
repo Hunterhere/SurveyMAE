@@ -37,6 +37,18 @@ evidence:
   clustering_algorithm: cocitation # cocitation, louvain, or spectral
   clustering_seed: 42
 
+  # C6 (Citation-Sentence Alignment) related
+  c6_batch_size: 10                    # Number of sentence-abstract pairs per LLM batch
+  c6_model: "qwen3.5-flash"         # Model for C6 batch processing
+  c6_max_concurrency: 5              # Max concurrent batches for C6
+  contradiction_threshold: 0.05       # Threshold for auto-fail (5%)
+
+  # V2 (Citation-Assertion Alignment) scoring thresholds
+  v2_score_5_threshold: 0.01         # <1% -> score 5
+  v2_score_4_threshold: 0.02         # 1-2% -> score 4
+  v2_score_3_threshold: 0.03         # 2-3% -> score 3
+  v2_score_2_threshold: 0.05         # 3-5% -> score 2
+
   # Sampling related
   citation_sample_size: 15
 

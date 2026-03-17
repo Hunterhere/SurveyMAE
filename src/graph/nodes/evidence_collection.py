@@ -68,6 +68,10 @@ def _load_evidence_config() -> Dict[str, Any]:
             "api_timeout_seconds": cfg.evidence.api_timeout_seconds,
             "fallback_order": cfg.evidence.fallback_order,
             "verify_limit": cfg.evidence.verify_limit,
+            "c6_batch_size": cfg.evidence.c6_batch_size,
+            "c6_model": cfg.evidence.c6_model,
+            "c6_max_concurrency": cfg.evidence.c6_max_concurrency,
+            "contradiction_threshold": cfg.evidence.contradiction_threshold,
         }
     except Exception as e:
         logger.warning(f"Failed to load config, using defaults: {e}")
@@ -82,6 +86,10 @@ DEFAULT_VERIFY_SOURCES = _EVIDENCE_CONFIG.get("fallback_order", ["semantic_schol
 DEFAULT_VERIFY_LIMIT = _EVIDENCE_CONFIG.get("verify_limit", 50)
 DEFAULT_TOP_K = _EVIDENCE_CONFIG.get("foundational_top_k", 30)
 DEFAULT_TREND_YEAR_RANGE = _EVIDENCE_CONFIG.get("trend_year_range", (2015, 2025))
+DEFAULT_C6_BATCH_SIZE = _EVIDENCE_CONFIG.get("c6_batch_size", 10)
+DEFAULT_C6_MODEL = _EVIDENCE_CONFIG.get("c6_model", "qwen3.5-flash")
+DEFAULT_C6_MAX_CONCURRENCY = _EVIDENCE_CONFIG.get("c6_max_concurrency", 5)
+DEFAULT_CONTRADICTION_THRESHOLD = _EVIDENCE_CONFIG.get("contradiction_threshold", 0.05)
 
 
 def _extract_title_and_abstract(parsed_content: str) -> tuple[str, str]:
@@ -266,6 +274,78 @@ async def _collect_citation_extraction(
     logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%}")
 
     return extraction, references, orphan_ref_rate, metadata_verify_rate
+
+
+async def _collect_c6_citation_alignment(
+    extraction: dict[str, Any],
+    references: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Step 1.5: Analyze citation-sentence alignment (C6 metric).
+
+    This collects evidence for VerifierAgent's V2 dimension:
+    - C6 (citation_sentence_alignment): LLM-based alignment analysis
+
+    Args:
+        extraction: Citation extraction result with citations and sentences.
+        references: List of reference entries with validation metadata.
+
+    Returns:
+        C6 analysis result with contradiction_rate and auto_fail flag.
+    """
+    from src.tools.citation_checker import CitationChecker
+    from src.tools.citation_checker import ReferenceEntry
+
+    logger.info("Step 1.5: Analyzing citation-sentence alignment (C6)...")
+
+    # Convert dict references to ReferenceEntry objects
+    ref_entries = []
+    for ref in references:
+        ref_entry = ReferenceEntry(
+            key=ref.get("key", ""),
+            title=ref.get("title", ""),
+            year=ref.get("year", ""),
+        )
+        # Preserve validation data
+        if "validation" in ref:
+            ref_entry.validation = ref["validation"]
+        ref_entries.append(ref_entry)
+
+    if not ref_entries:
+        logger.warning("  No references available for C6 analysis")
+        return {
+            "metric_id": "C6",
+            "status": "no_references",
+            "total_pairs": 0,
+            "contradiction_rate": 0.0,
+            "auto_fail": False,
+        }
+
+    # Run C6 analysis
+    checker = CitationChecker()
+    try:
+        c6_result = await checker.analyze_citation_sentence_alignment(
+            citations=extraction.get("citations", []),
+            references=ref_entries,
+            batch_size=DEFAULT_C6_BATCH_SIZE,
+            model_name=DEFAULT_C6_MODEL,
+            max_concurrency=DEFAULT_C6_MAX_CONCURRENCY,
+            contradiction_threshold=DEFAULT_CONTRADICTION_THRESHOLD,
+        )
+        logger.info(
+            f"  C6 complete: contradiction_rate={c6_result.get('contradiction_rate', 0):.2%}, "
+            f"auto_fail={c6_result.get('auto_fail', False)}"
+        )
+        return c6_result
+    except Exception as e:
+        logger.error(f"  C6 analysis failed: {e}")
+        return {
+            "metric_id": "C6",
+            "status": "error",
+            "error": str(e),
+            "total_pairs": 0,
+            "contradiction_rate": 0.0,
+            "auto_fail": False,
+        }
 
 
 async def _collect_temporal_and_structural(
@@ -526,6 +606,11 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
         logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%}")
 
         # =========================================================================
+        # Step 1.5: C6 Citation-Sentence Alignment Analysis
+        # =========================================================================
+        c6_result = await _collect_c6_citation_alignment(extraction, references)
+
+        # =========================================================================
         # Step 2: Keyword Extraction
         # =========================================================================
         logger.info("Step 2: Extracting keywords...")
@@ -750,6 +835,8 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
                 "missing_key_papers": missing_papers,
                 "suspicious_centrality": suspicious_papers,
             },
+            # C6 citation-sentence alignment
+            "C6": c6_result,
         }
 
         logger.info(f"Evidence collection complete: {total_refs} references, {len(topic_keywords)} keywords")

@@ -42,6 +42,9 @@ Tools 层是整个系统的数据处理底层，提供 PDF 解析、引用分析
 | `CitationChecker.extract_citations_with_context_from_pdf_async(pdf_path, verify_references?, sources?, verify_limit?) -> dict` | 异步提取引用、上下文、参考文献（含验证） | PDF 路径及验证参数 | 含 citations/references/validation 的字典 | **核心入口**，返回真实引用边 |
 | `CitationChecker.extract_references_from_pdf(pdf_path) -> List[Dict]` | 从 PDF 提取参考文献列表 | PDF 路径 | 参考文献字典列表 | 支持 GROBID/PyMuPDF 后端 |
 | `CitationChecker.build_real_citation_edges(references) -> list` | 从验证后的参考文献构建真实引用边 | 参考文献列表 | (source, target) 元组列表 | 仅使用外部 API 验证的引用 |
+| `CitationChecker.analyze_citation_sentence_alignment(citations, references, batch_size?, model_name?, max_concurrency?, contradiction_threshold?) -> dict` | C6 引用-句子对齐分析（异步批处理） | citations 列表、references 列表、批处理参数 | 含 contradiction_rate、auto_fail、contradictions 的字典 | **新增**，基于 LLM 三分类 |
+| `CitationChecker._build_c6_prompt(pairs) -> str` | 构建 C6 批处理 prompt | sentence-abstract 对列表 | prompt 字符串 | **新增**，辅助方法 |
+| `CitationChecker._parse_c6_response(response, pairs) -> list` | 解析 C6 LLM 响应 | LLM 响应字符串、对列表 | 分类结果列表 | **新增**，支持 support/contradict/insufficient |
 
 **数据模型**：
 - `CitationSpan`: 文中引用（含位置信息：page, paragraph_index, line_in_paragraph）
@@ -291,14 +294,20 @@ parse_pdf → evidence_collection → evidence_dispatch →
 
 | 函数签名 | 功能描述 | 输入 | 输出 | 备注 |
 |---------|---------|------|------|------|
-| `run_evidence_collection(state) -> dict` | **统一执行所有工具** | 状态（含 parsed_content） | tool_evidence, ref_metadata_cache, topic_keywords, field_trend_baseline, candidate_key_papers | **核心证据聚合函数**，执行 7 个步骤 |
+| `run_evidence_collection(state) -> dict` | **统一执行所有工具** | 状态（含 parsed_content） | tool_evidence, ref_metadata_cache, topic_keywords, field_trend_baseline, candidate_key_papers | **核心证据聚合函数**，执行 8 个步骤 |
+| `_collect_citation_extraction(source_pdf) -> tuple` | C3, C5 证据收集 | PDF 路径 | (extraction, references, orphan_rate, verify_rate) | **新增**，子函数拆分 |
+| `_collect_c6_citation_alignment(extraction, references) -> dict` | C6 引用-对齐分析 | extraction, references | C6 分析结果含 contradiction_rate | **新增**，LLM 批处理 |
+| `_collect_temporal_and_structural(...) -> tuple` | T1-T5, S1-S4 证据收集 | references, extraction, content, trend | (temporal_metrics, structural_metrics) | **新增**，子函数拆分 |
+| `_collect_citation_graph(...) -> tuple` | G1-G6, S5 证据收集 | references, cache, extraction, section_counts | (graph_result, s5_result) | **新增**，子函数拆分 |
+| `_collect_foundational_coverage(...) -> tuple` | G4 证据收集 | keywords, references, cache | (coverage_rate, missing, suspicious) | **新增**，子函数拆分 |
 | `_extract_title_abstract(parsed_content) -> tuple` | 提取标题和摘要 | Markdown 内容 | (title, abstract) | 简单的正则解析 |
 | `_build_ref_metadata_cache(references) -> dict` | 构建元数据缓存 | 参考文献列表 | ref_id → 元数据字典 | **核心共享数据结构**，避免重复 API 调用 |
 | `_build_citation_edges(ref_metadata_cache) -> list` | 构建引用边 | 元数据缓存 | (source, target) 元组列表 | 仅使用外部验证的引用 |
 | `_convert_numpy_types(obj) -> Any` | 类型转换 | 含 numpy 的对象 | 纯 Python 类型 | 用于 JSON 序列化 |
 
-**证据收集 7 步骤**：
+**证据收集 8 步骤**：
 1. CitationChecker 提取引用和验证（C3, C5）
+1.5. **C6 引用-对齐分析**（新增）
 2. KeywordExtractor 提取关键词
 3. LiteratureSearch 搜索领域趋势
 4. LiteratureSearch 搜索候选核心论文
