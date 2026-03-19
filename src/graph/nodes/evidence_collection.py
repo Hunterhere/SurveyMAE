@@ -526,7 +526,10 @@ async def _collect_foundational_coverage(
     return coverage_rate, missing_papers, suspicious_papers
 
 
-async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
+async def run_evidence_collection(
+    state: SurveyState,
+    result_store: Any = None,
+) -> Dict[str, Any]:
     """Execute complete evidence collection pipeline.
 
     This function orchestrates all tool calls to collect comprehensive evidence
@@ -540,13 +543,24 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
 
     Args:
         state: The current workflow state.
+        result_store: Optional ResultStore instance for tool artifact persistence.
 
     Returns:
         State updates with tool_evidence and related data.
     """
+    from src.tools.result_store import ResultStore
+
     parsed_content = state.get("parsed_content", "")
     source_pdf = state.get("source_pdf_path", "")
     section_headings = state.get("section_headings", [])
+
+    # Get paper_id for persistence
+    paper_id = None
+    if result_store and source_pdf:
+        try:
+            paper_id = result_store.register_paper(source_pdf)
+        except Exception as e:
+            logger.warning(f"Failed to register paper: {e}")
 
     if not parsed_content:
         logger.warning("No parsed content available")
@@ -563,7 +577,7 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
         # Step 1: Citation Extraction and Validation
         # =========================================================================
         logger.info("Step 1: Extracting and validating citations...")
-        checker = CitationChecker()
+        checker = CitationChecker(result_store=result_store)
 
         # Extract citations with context
         if source_pdf:
@@ -595,20 +609,37 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
 
         # Calculate C5 (metadata_verify_rate) - verified references ratio
         verified_count = 0
+        real_citation_edges = []  # Collect real citation edges from validation
         for r in references:
             validation = r.get("validation")
             if validation and isinstance(validation, dict):
-                if validation.get("verified", False):
+                # Check is_valid field (not "verified")
+                if validation.get("is_valid", False):
                     verified_count += 1
+                # Extract real_citation_edges from validation.metadata
+                val_meta = validation.get("metadata", {})
+                if isinstance(val_meta, dict):
+                    edges = val_meta.get("real_citation_edges", [])
+                    if edges:
+                        real_citation_edges.extend(edges)
         metadata_verify_rate = verified_count / total_refs if total_refs > 0 else 0.0
 
         logger.info(f"  C3 (orphan_ref_rate): {orphan_ref_rate:.2%}")
         logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%}")
+        logger.info(f"  Real citation edges from validation: {len(real_citation_edges)}")
 
         # =========================================================================
         # Step 1.5: C6 Citation-Sentence Alignment Analysis
         # =========================================================================
         c6_result = await _collect_c6_citation_alignment(extraction, references)
+
+        # Save C6 alignment results (v3)
+        if result_store and paper_id:
+            try:
+                result_store.save_c6_alignment(paper_id, c6_result)
+                logger.info(f"  Saved C6 alignment to c6_alignment.json")
+            except Exception as e:
+                logger.warning(f"  Failed to save C6 alignment: {e}")
 
         # =========================================================================
         # Step 2: Keyword Extraction
@@ -653,6 +684,14 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
 
         logger.info(f"  Field trend baseline: {len(field_trend_baseline)} years")
 
+        # Save field_trend_baseline (v3)
+        if result_store and paper_id:
+            try:
+                result_store.save_trend_baseline(paper_id, {"yearly_counts": field_trend_baseline})
+                logger.info(f"  Saved trend_baseline to trend_baseline.json")
+            except Exception as e:
+                logger.warning(f"  Failed to save trend_baseline: {e}")
+
         # =========================================================================
         # Step 4: Candidate Key Papers Retrieval
         # =========================================================================
@@ -679,19 +718,26 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
         candidate_key_papers = unique_papers
         logger.info(f"  Found {len(candidate_key_papers)} candidate papers")
 
+        # Prepare key_papers_data for persistence (v3)
+        key_papers_data = {
+            "candidate_papers": candidate_key_papers,
+        }
+        # Note: G4 coverage data will be added after G4 analysis
+
         # =========================================================================
         # Step 5: Temporal Analysis (T1-T5)
         # =========================================================================
         logger.info("Step 5: Computing temporal metrics...")
         analyzer = CitationAnalyzer()
 
-        # Convert references to dict format for analyzer
+        # Convert references to dict format for analyzer (include source_path for persistence)
         ref_dicts = []
         for ref in references:
             ref_dict = {
                 "key": ref.get("key", ""),
                 "title": ref.get("title", ""),
                 "year": ref.get("year"),
+                "source_path": source_pdf,  # Include for CitationGraphAnalyzer persistence
             }
             ref_dicts.append(ref_dict)
 
@@ -723,14 +769,13 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
         # Step 6: Citation Graph Analysis (G1-G6, S5)
         # =========================================================================
         logger.info("Step 6: Computing citation graph metrics...")
-        graph_analyzer = CitationGraphAnalyzer()
+        graph_analyzer = CitationGraphAnalyzer(result_store=result_store)
 
         # Build edges from real citation data (verified by citation checker)
-        # Use real_citation_edges from extraction if available, otherwise fallback to old method
-        real_edges = extraction.get("real_citation_edges", [])
-        if real_edges:
-            edges = real_edges
-            logger.info(f"  Using {len(edges)} real citation edges from verification")
+        # Use real_citation_edges from validation (already extracted above)
+        if real_citation_edges:
+            edges = real_citation_edges
+            logger.info(f"  Using {len(edges)} real citation edges from validation")
         else:
             # Fallback: try to build edges from reference metadata
             edges = _build_citation_edges(ref_metadata_cache)
@@ -793,6 +838,31 @@ async def run_evidence_collection(state: SurveyState) -> Dict[str, Any]:
             suspicious_papers = []
 
         logger.info(f"  G4 (foundational_coverage_rate): {g4_coverage}")
+
+        # Save key_papers with G4 data (v3)
+        key_papers_data.update({
+            "coverage_rate": g4_coverage,
+            "missing_key_papers": missing_papers,
+            "suspicious_centrality": suspicious_papers,
+        })
+        if result_store and paper_id:
+            try:
+                result_store.save_key_papers(paper_id, key_papers_data)
+                logger.info(f"  Saved key_papers to key_papers.json")
+            except Exception as e:
+                logger.warning(f"  Failed to save key_papers: {e}")
+
+        # Save citation analysis (T1-T5, S1-S4) (v3)
+        analysis_data = {
+            "temporal": temporal_metrics,
+            "structural": structural_metrics,
+        }
+        if result_store and paper_id:
+            try:
+                result_store.save_citation_analysis(paper_id, analysis_data)
+                logger.info(f"  Saved citation analysis to analysis.json")
+            except Exception as e:
+                logger.warning(f"  Failed to save citation analysis: {e}")
 
         # =========================================================================
         # Assemble Tool Evidence

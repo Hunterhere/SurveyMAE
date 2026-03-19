@@ -26,23 +26,23 @@ DEFAULT_DIMENSION_WEIGHTS = {
 
 
 async def aggregate_scores(state: SurveyState) -> Dict[str, Any]:
-    """Pure mathematical aggregation of evaluation scores.
+    """Pure mathematical aggregation of evaluation scores (v3 weighted).
 
     This function:
     1. Collects agent outputs from state
-    2. Separates deterministic vs LLM-involved metrics
-    3. Calculates weighted scores
-    4. Computes variance for LLM metrics
-    5. Returns aggregated scores WITHOUT generating markdown
+    2. Reads corrector_output for corrected scores
+    3. Applies weighted aggregation
+    4. Returns aggregated scores WITHOUT generating markdown
 
     Args:
-        state: The current workflow state containing agent_outputs.
+        state: The current workflow state containing agent_outputs and corrector_output.
 
     Returns:
-        Dict with aggregated scores, separated deterministic/LLM scores, and variance info.
+        Dict with aggregated scores (v3 format).
     """
-    # Try to get structured agent outputs first
+    # Get agent outputs and corrector output
     agent_outputs = state.get("agent_outputs", {})
+    corrector_output = state.get("corrector_output")
 
     # Fallback to legacy evaluations format
     evaluations = state.get("evaluations", [])
@@ -50,16 +50,16 @@ async def aggregate_scores(state: SurveyState) -> Dict[str, Any]:
     if not agent_outputs and not evaluations:
         logger.warning("No evaluations to aggregate")
         return {
-            "aggregated_scores": {},
-            "deterministic_score": None,
-            "llm_score": None,
+            "dimension_scores": {},
+            "deterministic_metrics": {},
             "overall_score": 0.0,
-            "consensus_reached": True,
+            "grade": "F",
+            "total_weight": 0.0,
         }
 
-    # Aggregate from new AgentOutput format
+    # Aggregate from new AgentOutput format (v3)
     if agent_outputs:
-        result = _aggregate_from_agent_outputs(agent_outputs)
+        result = _aggregate_from_agent_outputs(agent_outputs, corrector_output)
     else:
         # Fallback to legacy format
         result = _aggregate_from_evaluations(evaluations)
@@ -67,89 +67,129 @@ async def aggregate_scores(state: SurveyState) -> Dict[str, Any]:
     return result
 
 
-def _aggregate_from_agent_outputs(agent_outputs: Dict[str, AgentOutput]) -> Dict[str, Any]:
-    """Aggregate scores from structured AgentOutput format.
+def _get_grade(score: float) -> str:
+    """Convert numerical score to letter grade."""
+    if score >= 8.5:
+        return "A"
+    elif score >= 7.5:
+        return "B"
+    elif score >= 6.5:
+        return "C"
+    elif score >= 5.5:
+        return "D"
+    else:
+        return "F"
 
-    This separates deterministic metrics from LLM-involved metrics
-    and computes variance for each.
+
+def _aggregate_from_agent_outputs(
+    agent_outputs: Dict[str, AgentOutput],
+    corrector_output: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Aggregate scores from structured AgentOutput format (v3 weighted aggregation).
+
+    This function:
+    1. Reads corrector_output to get corrected scores
+    2. Uses corrected scores if available, otherwise uses original scores
+    3. Applies weighted aggregation based on config weights
+    4. Computes overall score on 0-10 scale
 
     Args:
         agent_outputs: Dict of agent_name -> AgentOutput
+        corrector_output: Optional corrector output with correction records
 
     Returns:
-        Aggregated scores with separation of deterministic/LLM metrics.
+        Aggregated scores with weighted aggregation.
     """
-    # Collect all sub-scores
-    all_sub_scores = []
-    deterministic_scores = []
-    llm_scores = []
+    from src.core.config import load_config
+
+    # Load weights from config
+    weights_config = {}
+    try:
+        cfg = load_config()
+        weights_config = getattr(cfg.aggregation, "weights", {}) if hasattr(cfg, "aggregation") else {}
+    except Exception:
+        pass
+
+    # Default weights (fallback)
+    default_weights = {
+        "V1_citation_existence": 1.2,
+        "V2_citation_claim_alignment": 1.5,
+        "V4_internal_consistency": 1.0,
+        "E1_foundational_coverage": 1.3,
+        "E2_classification_reasonableness": 1.0,
+        "E3_technical_accuracy": 1.2,
+        "E4_critical_analysis_depth": 1.3,
+        "R1_timeliness": 1.0,
+        "R2_information_balance": 0.8,
+        "R3_structural_clarity": 0.8,
+        "R4_writing_quality": 0.7,
+    }
+
+    # Merge configs
+    weights = {**default_weights, **weights_config}
+
+    # Get corrections from corrector_output
+    corrections = {}
+    if corrector_output:
+        corrections = corrector_output.get("corrections", {})
+
+    # Collect all sub-scores with correction
+    dimension_scores = {}  # dim_id -> DimensionScore
+    all_scores_with_weights = []
 
     for agent_name, output in agent_outputs.items():
         dimension = output.get("dimension", agent_name)
 
         for sub_id, sub_score in output.get("sub_scores", {}).items():
-            score_data = {
-                "agent": agent_name,
-                "dimension": dimension,
-                "sub_id": sub_id,
-                "score": sub_score.get("score", 5.0),
-                "llm_involved": sub_score.get("llm_involved", True),
-                "variance": sub_score.get("variance"),
-            }
-            all_sub_scores.append(score_data)
-
-            if score_data["llm_involved"]:
-                llm_scores.append(score_data["score"])
+            # Check if this dimension has a correction
+            if sub_id in corrections:
+                final_score = corrections[sub_id]["corrected_score"]
+                source = "corrected"
+                variance = corrections[sub_id].get("variance")
             else:
-                deterministic_scores.append(score_data["score"])
+                final_score = sub_score.get("score", 5.0)
+                source = "original"
+                variance = sub_score.get("variance")
 
-    # Calculate overall scores
-    all_scores = [s["score"] for s in all_sub_scores]
+            weight = weights.get(sub_id, 1.0)
+            hallucination_risk = sub_score.get("hallucination_risk", "medium")
 
-    if not all_scores:
+            dimension_scores[sub_id] = {
+                "dim_id": sub_id,
+                "final_score": final_score,
+                "source": source,
+                "agent": agent_name,
+                "hallucination_risk": hallucination_risk,
+                "variance": variance,
+                "weight": weight,
+            }
+
+            # For weighted average: score * weight
+            all_scores_with_weights.append((final_score, weight))
+
+    if not all_scores_with_weights:
         return {
-            "aggregated_scores": {},
-            "deterministic_score": None,
-            "llm_score": None,
+            "dimension_scores": {},
+            "deterministic_metrics": {},
             "overall_score": 0.0,
-            "consensus_reached": True,
+            "grade": "F",
+            "total_weight": 0.0,
         }
 
-    overall_score = mean(all_scores)
+    # Weighted average -> 0-10 scale
+    weighted_sum = sum(score * weight for score, weight in all_scores_with_weights)
+    total_weight = sum(weight for _, weight in all_scores_with_weights)
+    overall_score = (weighted_sum / total_weight) * 2 if total_weight > 0 else 0.0  # 1-5 -> 0-10
 
-    # Calculate deterministic and LLM scores separately
-    deterministic_score = mean(deterministic_scores) if deterministic_scores else None
-    llm_score = mean(llm_scores) if llm_scores else None
-
-    # Compute variance for LLM scores
-    llm_variance = None
-    if len(llm_scores) > 1:
-        llm_variance = {
-            "std": stdev(llm_scores),
-            "range": [min(llm_scores), max(llm_scores)],
-            "n_scores": len(llm_scores),
-        }
-
-    # Group by dimension for detailed report
-    dimension_scores = {}
-    for agent_name, output in agent_outputs.items():
-        dimension = output.get("dimension", agent_name)
-        dimension_scores[dimension] = {
-            "overall": output.get("overall_score", 0.0),
-            "confidence": output.get("confidence", 0.5),
-            "sub_scores": output.get("sub_scores", {}),
-        }
+    # Determine grade
+    grade = _get_grade(overall_score)
 
     return {
-        "aggregated_scores": dimension_scores,
-        "deterministic_score": deterministic_score,
-        "llm_score": llm_score,
-        "llm_variance": llm_variance,
-        "overall_score": overall_score,
-        "total_metrics": len(all_sub_scores),
-        "deterministic_count": len(deterministic_scores),
-        "llm_count": len(llm_scores),
-        "consensus_reached": True,
+        "dimension_scores": dimension_scores,
+        "deterministic_metrics": {},  # First-layer metrics stored separately
+        "overall_score": round(overall_score, 2),
+        "grade": grade,
+        "total_weight": round(total_weight, 2),
     }
 
 
@@ -241,15 +281,15 @@ def _aggregate_from_evaluations(evaluations: List[EvaluationRecord]) -> Dict[str
 
 
 def generate_report(aggregation_result: Dict[str, Any], state: SurveyState) -> str:
-    """Generate markdown report with variance-aware display.
+    """Generate markdown report with variance-aware display (v3 format).
 
     This function creates a final report that:
-    1. Shows deterministic metrics with solid values
-    2. Shows LLM metrics with error bars/variance display
+    1. Shows all dimension scores with source (original/corrected)
+    2. Shows variance information for corrected dimensions
     3. Includes diagnostic information
 
     Args:
-        aggregation_result: Result from aggregate_scores
+        aggregation_result: Result from aggregate_scores (v3 format with dimension_scores)
         state: Current workflow state
 
     Returns:
@@ -269,112 +309,52 @@ def generate_report(aggregation_result: Dict[str, Any], state: SurveyState) -> s
 
     # Overall score section
     overall = aggregation_result.get("overall_score", 0.0)
+    grade = aggregation_result.get("grade", "F")
     lines.append(f"## Overall Score: {overall:.2f}/10")
     lines.append("")
-    lines.append(_get_score_grade(overall))
+    lines.append(f"**Grade**: {grade}")
     lines.append("")
 
-    # Score summary with variance indication
+    # Score summary table (v3: dimension_scores)
     lines.extend(
         [
             "## Score Summary",
             "",
-            "| Dimension | Score | Confidence | Type |",
-            "|-----------|-------|------------|------|",
+            "| Dimension | Score | Source | Agent |",
+            "|-----------|-------|--------|-------|",
         ]
     )
 
-    aggregated = aggregation_result.get("aggregated_scores", {})
-    for dim, data in aggregated.items():
-        score = data.get("overall", data.get("score", 0.0))
-        conf = data.get("confidence", 0.0)
-
-        # Determine if this is deterministic or LLM
-        sub_scores = data.get("sub_scores", {})
-        if sub_scores:
-            has_deterministic = any(not s.get("llm_involved", True) for s in sub_scores.values())
-            has_llm = any(s.get("llm_involved", True) for s in sub_scores.values())
-
-            if has_deterministic and has_llm:
-                metric_type = "Mixed"
-            elif has_deterministic:
-                metric_type = "Deterministic"
-            else:
-                metric_type = "LLM"
-        else:
-            metric_type = "LLM"  # Legacy format
-
-        lines.append(f"| {dim.title()} | {score:.2f}/10 | {conf:.2f} | {metric_type} |")
+    dimension_scores = aggregation_result.get("dimension_scores", {})
+    for dim_id, data in dimension_scores.items():
+        score = data.get("final_score", 5.0)
+        source = data.get("source", "original")
+        agent = data.get("agent", "unknown")
+        lines.append(f"| {dim_id} | {score:.1f}/5 | {source} | {agent} |")
 
     lines.append("")
 
-    # Variance section for LLM metrics
-    llm_variance = aggregation_result.get("llm_variance")
-    if llm_variance:
+    # Variance section for corrected dimensions
+    corrected_dims = [(dim_id, data) for dim_id, data in dimension_scores.items()
+                      if data.get("source") == "corrected"]
+    if corrected_dims:
         lines.extend(
             [
-                "## LLM Metrics Variance",
-                "",
-                f"- **Standard Deviation**: {llm_variance.get('std', 'N/A'):.2f}",
-                f"- **Score Range**: [{llm_variance.get('range', ['N/A', 'N/A'])[0]:.1f} - {llm_variance.get('range', ['N/A', 'N/A'])[1]:.1f}]",
-                f"- **Number of Metrics**: {llm_variance.get('n_scores', 'N/A')}",
+                "## Variance (Multi-Model Voting)",
                 "",
             ]
         )
-
-    # Separate deterministic vs LLM scores if available
-    det_score = aggregation_result.get("deterministic_score")
-    llm_score = aggregation_result.get("llm_score")
-
-    if det_score is not None or llm_score is not None:
-        lines.extend(
-            [
-                "## Score Breakdown",
-                "",
-            ]
-        )
-        if det_score is not None:
-            lines.append(f"- **Deterministic Metrics Score**: {det_score:.2f}/10 (solid value)")
-        if llm_score is not None:
-            var_info = ""
-            if llm_variance:
-                var_info = f" ± {llm_variance.get('std', 0):.2f}"
-            lines.append(f"- **LLM Metrics Score**: {llm_score:.2f}/10{var_info} (with variance)")
+        for dim_id, data in corrected_dims:
+            variance = data.get("variance", {})
+            if variance:
+                std = variance.get("std", 0.0)
+                scores = variance.get("scores", [])
+                lines.append(f"- **{dim_id}**: scores={scores}, std={std:.2f}")
         lines.append("")
-
-    # Detailed sub-scores if available
-    has_sub_scores = any(data.get("sub_scores") for data in aggregated.values())
-
-    if has_sub_scores:
-        lines.extend(["", "## Detailed Sub-Scores", ""])
-
-        for dim, data in aggregated.items():
-            sub_scores = data.get("sub_scores", {})
-            if not sub_scores:
-                continue
-
-            lines.append(f"### {dim.title()}")
-            lines.append("")
-
-            for sub_id, sub_data in sub_scores.items():
-                score = sub_data.get("score", 0.0)
-                llm_involved = sub_data.get("llm_involved", True)
-                reasoning = sub_data.get("llm_reasoning", "")
-
-                # Add indicator for metric type
-                indicator = "✓" if not llm_involved else "🤖"
-                lines.append(f"**{indicator} {sub_id}**: {score:.1f}/5")
-
-                if reasoning:
-                    # Truncate reasoning
-                    if len(reasoning) > 200:
-                        reasoning = reasoning[:200] + "..."
-                    lines.append(f"  - {reasoning}")
-                lines.append("")
 
     # Recommendations
     lines.extend(["", "## Recommendations", ""])
-    recommendations = _generate_recommendations(aggregated, overall)
+    recommendations = _generate_recommendations(dimension_scores, overall)
     lines.extend(recommendations)
 
     # Footer
@@ -390,59 +370,42 @@ def generate_report(aggregation_result: Dict[str, Any], state: SurveyState) -> s
     return "\n".join(lines)
 
 
-def _get_score_grade(score: float) -> str:
-    """Convert numerical score to letter grade and description."""
-    if score >= 9:
-        return "**Grade**: A - Excellent\n\nThe survey demonstrates outstanding quality across all evaluation dimensions."
-    elif score >= 8:
-        return "**Grade**: B - Good\n\nThe survey shows strong quality with minor areas for improvement."
-    elif score >= 7:
-        return "**Grade**: C - Satisfactory\n\nThe survey meets basic requirements but has notable weaknesses."
-    elif score >= 6:
-        return "**Grade**: D - Needs Improvement\n\nThe survey has significant issues that should be addressed."
-    else:
-        return (
-            "**Grade**: F - Unsatisfactory\n\nThe survey fails to meet minimum quality standards."
-        )
-
-
 def _generate_recommendations(
-    aggregated: Dict[str, Dict],
+    dimension_scores: Dict[str, Dict],
     overall_score: float,
 ) -> List[str]:
-    """Generate recommendations based on evaluation results."""
+    """Generate recommendations based on evaluation results (v3 format)."""
     recommendations = []
 
     # Check each dimension for low scores
     low_score_dims = []
-    for dim, data in aggregated.items():
-        score = data.get("overall", data.get("score", 0.0))
-        if score < 7.0:
-            low_score_dims.append((dim, score))
+    for dim_id, data in dimension_scores.items():
+        score = data.get("final_score", 5.0)
+        # Score is on 1-5 scale, convert threshold: 7/10 * 5 = 3.5
+        if score < 3.5:
+            low_score_dims.append((dim_id, score))
 
     if low_score_dims:
         recommendations.append("**Areas Requiring Attention:**")
-        for dim, score in low_score_dims:
+        for dim_id, score in low_score_dims:
             recommendations.append(
-                f"- **{dim.title()}** (Score: {score:.1f}/10) - Consider improving this aspect."
+                f"- **{dim_id}** (Score: {score:.1f}/5) - Consider improving this aspect."
             )
 
-    # Check for high variance in sub-scores
+    # Check for high variance in corrected dimensions
     high_variance_dims = []
-    for dim, data in aggregated.items():
-        sub_scores = data.get("sub_scores", {})
-        if sub_scores:
-            # Check for metrics with high variance
-            for sub_id, sub_data in sub_scores.items():
-                variance = sub_data.get("variance")
-                if variance and variance.get("std", 0) > 1.0:
-                    high_variance_dims.append(f"{dim}.{sub_id}")
-                    break
+    for dim_id, data in dimension_scores.items():
+        if data.get("source") == "corrected":
+            variance = data.get("variance", {})
+            if variance and variance.get("high_disagreement", False):
+                high_variance_dims.append(dim_id)
 
     if high_variance_dims:
         recommendations.append("")
         recommendations.append("**High Variance Detected:**")
-        recommendations.append("The following metrics show high disagreement between models:")
+        recommendations.append("The following dimensions show high disagreement between models:")
+        for dim_id in high_variance_dims:
+            recommendations.append(f"- {dim_id}")
         for item in high_variance_dims:
             recommendations.append(f"- {item}")
 

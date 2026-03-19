@@ -63,6 +63,9 @@ class ResultStore:
         if tool_params:
             data["tool_params"] = tool_params
 
+        # v3 schema version
+        data["schema_version"] = "v3"
+
         self._write_json(run_path, data)
 
     def register_paper(self, source_path: str, metadata: Optional[dict[str, Any]] = None) -> str:
@@ -87,14 +90,33 @@ class ResultStore:
         self._paper_cache[source_path] = paper_id
         return paper_id
 
-    def save_extraction(self, paper_id: str, extraction: dict[str, Any]) -> None:
-        self._write_json(self._paper_dir(paper_id) / "extraction.json", extraction)
+    def save_extraction(self, paper_id: str, extraction: dict[str, Any]) -> Path:
+        """Save citation extraction results (citations + references)."""
+        return self._write_json(self._paper_dir(paper_id) / "extraction.json", extraction)
 
-    def save_validation(self, paper_id: str, validation: dict[str, Any]) -> None:
-        self._write_json(self._paper_dir(paper_id) / "validation.json", validation)
+    def save_validation(self, paper_id: str, validation: dict[str, Any]) -> Path:
+        """Save validation results (C3, C5) + ref_metadata_cache."""
+        return self._write_json(self._paper_dir(paper_id) / "validation.json", validation)
 
-    def save_analysis(self, paper_id: str, analysis: dict[str, Any]) -> None:
-        self._write_json(self._paper_dir(paper_id) / "analysis.json", analysis)
+    def save_c6_alignment(self, paper_id: str, data: dict[str, Any]) -> Path:
+        """Save C6 citation-sentence alignment results."""
+        return self._write_json(self._paper_dir(paper_id) / "c6_alignment.json", data)
+
+    def save_citation_analysis(self, paper_id: str, data: dict[str, Any]) -> Path:
+        """Save CitationAnalyzer T/S series metrics (T1-T5, S1-S4)."""
+        return self._write_json(self._paper_dir(paper_id) / "analysis.json", data)
+
+    def save_graph_analysis(self, paper_id: str, data: dict[str, Any]) -> Path:
+        """Save CitationGraphAnalysis G series metrics + S5."""
+        return self._write_json(self._paper_dir(paper_id) / "graph_analysis.json", data)
+
+    def save_trend_baseline(self, paper_id: str, data: dict[str, Any]) -> Path:
+        """Save field_trend_baseline (yearly publication counts)."""
+        return self._write_json(self._paper_dir(paper_id) / "trend_baseline.json", data)
+
+    def save_key_papers(self, paper_id: str, data: dict[str, Any]) -> Path:
+        """Save candidate_key_papers + G4 coverage + missing/suspicious lists."""
+        return self._write_json(self._paper_dir(paper_id) / "key_papers.json", data)
 
     def append_error(self, paper_id: str, record: dict[str, Any]) -> None:
         record = dict(record)
@@ -135,8 +157,11 @@ class ResultStore:
                 hasher.update(chunk)
         return hasher.hexdigest()[:12]
 
-    def _write_json(self, path: Path, data: dict[str, Any]) -> None:
+    def _write_json(self, path: Path, data: dict[str, Any]) -> Path:
+        """Write JSON to file and return the path."""
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
 
     def _read_json(self, path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))

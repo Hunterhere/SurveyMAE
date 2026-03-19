@@ -50,20 +50,142 @@ class MetricMetadata(TypedDict):
     confidence: float
 
 
+class C6AlignmentResult(TypedDict):
+    """Result from C6 citation-sentence alignment analysis.
+
+    Attributes:
+        total_pairs: Total number of citation-sentence pairs analyzed.
+        support: Number of pairs where sentence is supported by abstract.
+        contradict: Number of pairs where sentence contradicts abstract.
+        insufficient: Number of pairs with insufficient information.
+        contradiction_rate: Rate of contradictions (contradict / total_pairs).
+        auto_fail: Whether contradiction_rate exceeds threshold.
+        contradictions: List of contradiction details.
+        missing_abstract_count: Number of pairs missing abstract.
+    """
+
+    total_pairs: int
+    support: int
+    contradict: int
+    insufficient: int
+    contradiction_rate: float
+    auto_fail: bool
+    contradictions: List[Dict[str, Any]]
+    missing_abstract_count: int
+
+
+class KeyPapersResult(TypedDict):
+    """Result from G4 foundational coverage analysis.
+
+    Attributes:
+        candidate_count: Number of candidate key papers retrieved.
+        matched_count: Number of candidate papers matched in survey references.
+        coverage_rate: G4 coverage rate (matched / candidate).
+        missing_key_papers: List of papers that should be cited but are not.
+        suspicious_centrality: List of papers with high internal citations but low external citations.
+    """
+
+    candidate_count: int
+    matched_count: int
+    coverage_rate: float
+    missing_key_papers: List[Dict[str, Any]]
+    suspicious_centrality: List[Dict[str, Any]]
+
+
 class ToolEvidence(TypedDict):
     """Evidence collected from tools for agent evaluation.
 
     Attributes:
         extraction: Citation extraction results from CitationChecker.
-        validation: Metadata validation results (C3, C5).
-        analysis: Temporal and structural analysis (T1-T5, S1-S5).
-        graph_analysis: Citation graph analysis (G1-G6).
+        validation: Metadata validation results (C3, C5) + ref_metadata_cache.
+        c6_alignment: C6 citation-sentence alignment results (v3 new).
+        analysis: Temporal and structural analysis (T1-T5, S1-S4).
+        graph_analysis: Citation graph analysis (G1-G6, S5).
+        trend_baseline: Field publication trend from academic APIs (v3 new).
+        key_papers: Candidate key papers + G4 results (v3 new).
     """
 
     extraction: Dict[str, Any]
     validation: Dict[str, Any]
+    c6_alignment: Optional[C6AlignmentResult]
     analysis: Dict[str, Any]
     graph_analysis: Dict[str, Any]
+    trend_baseline: Optional[Dict[str, Any]]
+    key_papers: Optional[KeyPapersResult]
+
+
+class VarianceRecord(TypedDict):
+    """Variance information from multi-model voting.
+
+    Attributes:
+        models_used: List of model identifiers used.
+        scores: List of scores from each model.
+        median: Median score.
+        std: Standard deviation of scores.
+        high_disagreement: Whether the variance indicates high disagreement (std > 1.0 or max-min > 2).
+    """
+
+    models_used: List[str]
+    scores: List[float]
+    median: float
+    std: float
+    high_disagreement: bool
+
+
+class CorrectionRecord(TypedDict):
+    """Correction record from Corrector multi-model voting.
+
+    Attributes:
+        original_agent: Original agent that provided the score.
+        original_score: Original score before correction.
+        corrected_score: Corrected score (median from multi-model voting).
+        variance: Variance information from the voting.
+    """
+
+    original_agent: str
+    original_score: float
+    corrected_score: float
+    variance: VarianceRecord
+
+
+class CorrectorOutput(TypedDict):
+    """Output from Corrector multi-model voting correction.
+
+    Attributes:
+        corrections: Dict mapping dimension ID to correction record.
+        skipped_dimensions: List of dimensions that were skipped (low hallucination risk).
+        skip_reason: Reason for skipping dimensions.
+        total_model_calls: Total number of LLM calls made.
+        failed_calls: Number of failed LLM calls.
+    """
+
+    corrections: Dict[str, CorrectionRecord]
+    skipped_dimensions: List[str]
+    skip_reason: str
+    total_model_calls: int
+    failed_calls: int
+
+
+class DimensionScore(TypedDict):
+    """Final score for a dimension in aggregation.
+
+    Attributes:
+        dim_id: Dimension identifier (e.g., "V1", "E2").
+        final_score: Final score after correction (if any) or original score.
+        source: Source of the score ("original" or "corrected").
+        agent: Agent that produced the original score.
+        hallucination_risk: Hallucination risk level.
+        variance: Variance information (if corrected).
+        weight: Weight used in aggregation.
+    """
+
+    dim_id: str
+    final_score: float
+    source: Literal["original", "corrected"]
+    agent: str
+    hallucination_risk: str
+    variance: Optional[VarianceRecord]
+    weight: float
 
 
 class AgentSubScore(TypedDict):
@@ -72,18 +194,20 @@ class AgentSubScore(TypedDict):
     Attributes:
         score: Numerical score (1-5).
         llm_involved: Whether LLM was involved in this scoring.
+        hallucination_risk: Risk level of hallucination ("low", "medium", "high").
         tool_evidence: Tool evidence used for scoring.
         llm_reasoning: LLM's reasoning for the score.
         flagged_items: Items flagged for attention.
-        variance: Variance information (for multi-model voting).
+        variance: Variance information (for multi-model voting, initially null, filled by Corrector).
     """
 
     score: float
     llm_involved: bool
+    hallucination_risk: str
     tool_evidence: Dict[str, Any]
     llm_reasoning: str
     flagged_items: Optional[List[Any]]
-    variance: Optional[Dict[str, Any]]
+    variance: Optional[VarianceRecord]
 
 
 class AgentOutput(TypedDict):
@@ -107,21 +231,21 @@ class AgentOutput(TypedDict):
 
 
 class AggregatedScores(TypedDict):
-    """Aggregated scores from all agents.
+    """Aggregated scores from all agents (v3 weighted aggregation).
 
     Attributes:
-        weighted_score: Weighted aggregate score.
-        deterministic_score: Score from deterministic metrics only.
-        llm_score: Score from LLM-involved metrics (with variance).
-        variance: Variance information.
-        agent_scores: Individual agent scores.
+        dimension_scores: Dict mapping dimension ID to final score info.
+        deterministic_metrics: Raw values of first-layer metrics (C3, C5, T1-T5, S1-S5, G1-G6).
+        overall_score: Weighted overall score (0-10 scale).
+        grade: Letter grade (A/B/C/D/F).
+        total_weight: Total weight used in aggregation.
     """
 
-    weighted_score: float
-    deterministic_score: Optional[float]
-    llm_score: Optional[float]
-    variance: Optional[Dict[str, Any]]
-    agent_scores: Dict[str, float]
+    dimension_scores: Dict[str, DimensionScore]
+    deterministic_metrics: Dict[str, float]
+    overall_score: float
+    grade: str
+    total_weight: float
 
 
 class EvaluationRecord(TypedDict):
@@ -242,16 +366,15 @@ class SurveyState(TypedDict):
         evaluations: Accumulated evaluation records from all agents.
                      Uses operator.add to append records from parallel nodes.
 
-        debate_history: Accumulated debate messages during consensus process.
-                        Uses operator.add to preserve all debate content.
-
         sections: Dictionary mapping section names to their evaluation results.
 
-        agent_outputs: Structured outputs from each agent.
+        agent_outputs: Structured outputs from each agent (V/E/R).
+
+        corrector_output: Output from Corrector multi-model voting (v3 new).
 
         aggregated_scores: Aggregated scores from all agents.
 
-        current_round: Current debate round (starts at 0).
+        current_round: Current round (starts at 0, kept for compatibility).
 
         consensus_reached: Boolean flag indicating if consensus is achieved.
 
@@ -276,11 +399,11 @@ class SurveyState(TypedDict):
 
     # --- Process Data (using reducer for incremental updates) ---
     evaluations: Annotated[List[EvaluationRecord], operator.add]
-    debate_history: Annotated[List[DebateMessage], operator.add]
     sections: dict[str, SectionResult]
 
     # --- Agent Outputs ---
     agent_outputs: Annotated[Dict[str, AgentOutput], dict_merge]
+    corrector_output: Optional[CorrectorOutput] = None  # v3: Corrector voting results
     aggregated_scores: AggregatedScores
 
     # --- Control Flow ---

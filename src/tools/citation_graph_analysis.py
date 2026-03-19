@@ -1200,7 +1200,7 @@ class CitationGraphAnalyzer:
                 return
             paper_id = self.result_store.register_paper(source_path)
             analysis_payload = self._merge_existing_analysis(paper_id, output)
-            self.result_store.save_analysis(paper_id, analysis_payload)
+            self.result_store.save_graph_analysis(paper_id, analysis_payload)
             self.result_store.update_index(
                 paper_id, status="graph_analyzed", source_path=source_path
             )

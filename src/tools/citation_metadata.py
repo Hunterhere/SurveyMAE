@@ -512,7 +512,7 @@ class MetadataComparator:
             source="unable",
         )
 
-    def _compare(
+    def _compare( #FIXME: poor extraction leads to mismatch, see \output\runs\20260319T065912Z_53317b7e\papers\40b1a0d0d47b\validation.json
         self,
         bib_entry: BibEntry,
         fetched_title: str,

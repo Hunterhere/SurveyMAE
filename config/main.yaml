@@ -9,7 +9,7 @@ general:
 # LLM Configuration (can be overridden by environment variables)
 llm:
   provider: qwen
-  model: qwen-turbo
+  model: qwen-max
   temperature: 0.0
   max_tokens: 4096
   # api_key is loaded from OPENAI_API_KEY env var
@@ -130,6 +130,32 @@ debate:
     reader: 1.0
     corrector: 0.8
     reporter: 1.0
+
+# Aggregation Configuration (v3)
+aggregation:
+  weights:
+    # VerifierAgent dimensions (factuality, highest priority)
+    V1_citation_existence: 1.2
+    V2_citation_claim_alignment: 1.5
+    V4_internal_consistency: 1.0
+
+    # ExpertAgent dimensions (academic depth)
+    E1_foundational_coverage: 1.3
+    E2_classification_reasonableness: 1.0
+    E3_technical_accuracy: 1.2
+    E4_critical_analysis_depth: 1.3
+
+    # ReaderAgent dimensions (readability)
+    R1_timeliness: 1.0
+    R2_information_balance: 0.8
+    R3_structural_clarity: 0.8
+    R4_writing_quality: 0.7
+
+# Persistence Configuration (v3)
+persistence:
+  schema_version: "v3"
+  incremental_save: true
+  save_tool_artifacts: true
 
 # Report Generation Configuration
 report:

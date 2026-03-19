@@ -1,50 +1,59 @@
-"""Bias Correction Agent (CorrectorAgent).
+"""Corrector Agent (v3 - Multi-Model Voting Correction).
 
-Analyzes and detects systematic biases in the survey.
-Evaluates balance, fairness, and potential viewpoints being over/under-represented.
-Implements multi-vendor model parallel invocation and majority voting.
-
-According to Plan v2, this agent also computes variance for LLM-involved metrics:
-- Takes agent_outputs from Verifier/Expert/Reader
-- For each sub-dimension, computes variance from multi-model sampling
-- Fills in the variance info in the output
+According to Plan v3, Corrector:
+- No longer produces independent C1/C2/C3 scoring dimensions
+- Acts as a pure corrector: performs multi-model voting on high hallucination risk sub-dimensions
+- Only votes on 7 sub-dimensions: V4, E2, E3, E4, R2, R3, R4
+- Does NOT modify original agent_outputs, stores corrections in corrector_output
 """
 
+import asyncio
 import logging
-import os
 import statistics
 from typing import Any, Dict, List, Optional
 
 from src.agents.base import BaseAgent, MultiModelConfig
-from src.agents.output_schema import create_sub_score, create_agent_output
-from src.core.config import AgentConfig, LLMConfig
+from src.core.config import AgentConfig, load_config
 from src.core.mcp_client import MCPManager
-from src.core.state import SurveyState, EvaluationRecord
+from src.core.state import (
+    SurveyState,
+    EvaluationRecord,
+    AgentOutput,
+    CorrectorOutput,
+    CorrectionRecord,
+    VarianceRecord,
+)
 
 logger = logging.getLogger(__name__)
 
+# Sub-dimensions that require multi-model voting (hallucination_risk: medium/high)
+HIGH_RISK_DIMENSIONS = [
+    "V4",  # Internal consistency
+    "E2",  # Classification reasonableness
+    "E3",  # Technical accuracy
+    "E4",  # Critical analysis depth
+    "R2",  # Information balance
+    "R3",  # Structural clarity
+    "R4",  # Writing quality
+]
 
-# Default multi-model configuration for bias correction
-# Note: This should be loaded from config/models.yaml via builder.py
-DEFAULT_MULTI_MODELS: List[LLMConfig] = []
+# Dimensions that are skipped (low hallucination risk, threshold-based)
+LOW_RISK_DIMENSIONS = [
+    "V1",  # Citation existence (based on C5 threshold)
+    "V2",  # Citation-claim alignment (based on C6, hallucination_risk=low)
+    "E1",  # Foundational coverage (based on G4 threshold)
+    "R1",  # Timeliness (based on T5 threshold)
+]
 
 
 class CorrectorAgent(BaseAgent):
-    """Agent that detects and evaluates systematic biases in the survey.
+    """Corrector agent that performs multi-model voting correction.
 
-    This agent:
-    - Analyzes citation distribution and balance
-    - Detects potential viewpoint biases
-    - Identifies over-represented or under-represented perspectives
-    - Evaluates fairness in presenting conflicting views
-    - Uses multi-vendor model parallel invocation
-    - Applies majority voting to reduce bias and variance
-
-    Dimensions evaluated:
-    - bias: Overall bias score (lower is more balanced)
-    - balance: Balance in presenting different viewpoints
-    - representation: Fair representation of different works/perspectives
-    - objectivity: Objectivity in presenting facts vs. opinions
+    According to Plan v3:
+    - Does NOT produce independent scoring dimensions (no C1/C2/C3)
+    - Performs multi-model voting on 7 high-risk sub-dimensions
+    - Returns CorrectorOutput with correction records
+    - Original agent_outputs remain unchanged
     """
 
     def __init__(
@@ -58,14 +67,13 @@ class CorrectorAgent(BaseAgent):
             config: Agent configuration (includes multi_model from config/models.yaml).
             mcp: Optional MCP manager for reference check tools.
         """
-        # Ensure config has multi_model from models.yaml
         if config is None:
             config = AgentConfig(name="corrector")
 
-        # Use multi_model from config if available, otherwise fall back to single model mode
+        # Use multi_model from config for voting
         multi_model_config = config.multi_model
         if multi_model_config is None:
-            multi_model_config = MultiModelConfig(models=[], use_parallel=False)
+            multi_model_config = MultiModelConfig(models=[], use_parallel=False) #FIXME: set default value
 
         super().__init__(
             name="corrector",
@@ -74,79 +82,239 @@ class CorrectorAgent(BaseAgent):
             multi_model_config=multi_model_config,
         )
 
+        # Load corrector models from config
+        self._corrector_models = []
+        if multi_model_config and multi_model_config.models:
+            self._corrector_models = multi_model_config.models
+
     async def evaluate(
         self,
         state: SurveyState,
         section_name: Optional[str] = None,
     ) -> EvaluationRecord:
-        """Evaluate bias and balance in the survey content.
+        """Legacy evaluate method - returns placeholder for compatibility.
 
-        Uses multi-model parallel invocation and majority voting for stability.
+        According to Plan v3, Corrector does not produce independent scores.
+        Use process() for multi-model voting correction.
 
         Args:
             state: The current workflow state.
             section_name: Optional specific section to evaluate.
 
         Returns:
-            EvaluationRecord with bias and balance scores.
+            Placeholder EvaluationRecord.
         """
-        content = state.get("parsed_content", "")
-
-        # Get agent outputs from state
-        agent_outputs = state.get("agent_outputs", {})
-
-        # Format outputs from each agent for the prompt
-        import json
-        verifier_output = json.dumps(agent_outputs.get("verifier", {}), indent=2)
-        expert_output = json.dumps(agent_outputs.get("expert", {}), indent=2)
-        reader_output = json.dumps(agent_outputs.get("reader", {}), indent=2)
-
-        # Load the bias correction prompt
-        system_prompt = self._load_prompt(
-            "corrector",
+        return EvaluationRecord(
             agent_name=self.name,
-            section=section_name or "entire survey",
-            verifier_output=verifier_output or "No verifier output available.",
-            expert_output=expert_output or "No expert output available.",
-            reader_output=reader_output or "No reader output available.",
+            dimension="correction",
+            score=10.0,
+            reasoning="Corrector no longer produces independent scores. Use process() for voting correction.",
+            evidence=None,
+            confidence=1.0,
         )
 
-        user_content = f"""
-        Survey Content:
-        ---
-        {content[:10000]}
-        ---
+    async def process(self, state: SurveyState) -> Dict[str, Any]:
+        """Perform multi-model voting correction on high-risk sub-dimensions.
 
-        Please analyze this survey for potential biases:
-        1. Examine citation distribution - are some works over-represented?
-        2. Check for balance in presenting different viewpoints
-        3. Identify any systematic biases (geographic, temporal, methodological)
-        4. Evaluate objectivity vs. opinion
-        5. Rate the overall bias/balance (0-10, where 10 = perfectly balanced)
+        According to Plan v3:
+        - Only votes on 7 high-risk sub-dimensions: V4, E2, E3, E4, R2, R3, R4
+        - Skips low-risk dimensions: V1, V2 (threshold-based), E1, R1
+        - Returns CorrectorOutput with correction records
+        - Does NOT modify original agent_outputs
 
-        Provide specific examples of bias or imbalance if found.
+        Args:
+            state: Current workflow state with agent_outputs.
+
+        Returns:
+            Dict containing corrector_output.
         """
+        import json
+        from statistics import median
 
-        messages = self._create_messages(system_prompt, user_content)
+        agent_outputs = state.get("agent_outputs", {})
+        evidence_reports = state.get("evidence_reports", {})
 
-        # Use multi-model parallel invocation if configured
-        if self._llm_pool:
-            # Call multiple models in parallel
-            results = await self._call_llm_pool(messages)
-            return self._process_multi_model_results(results)
-        else:
-            # Fallback to single model
-            response = await self._call_llm(messages)
-            score, reasoning, evidence = self._parse_corrector_response(response)
+        if not agent_outputs:
+            logger.warning("No agent_outputs found in state")
+            return {
+                "corrector_output": {
+                    "corrections": {},
+                    "skipped_dimensions": [],
+                    "skip_reason": "no agent_outputs",
+                    "total_model_calls": 0,
+                    "failed_calls": 0,
+                }
+            }
 
-            return EvaluationRecord(
-                agent_name=self.name,
-                dimension="bias",
-                score=score,
-                reasoning=reasoning,
-                evidence=evidence,
-                confidence=0.75,
-            )
+        # Identify dimensions to vote on
+        dimensions_to_vote = self._identify_voting_dimensions(agent_outputs)
+        skipped = self._get_skipped_dimensions(agent_outputs)
+
+        logger.info(f"Corrector voting on {len(dimensions_to_vote)} dimensions: {dimensions_to_vote}")
+        logger.info(f"Skipping {len(skipped)} low-risk dimensions: {skipped}")
+
+        # Perform voting for each dimension
+        corrections: Dict[str, CorrectionRecord] = {}
+        total_calls = 0
+        failed_calls = 0
+
+        if dimensions_to_vote and self._corrector_models:
+            # Create voting tasks for all dimensions x models
+            tasks = []
+            for dim_id in dimensions_to_vote:
+                dim_info = self._get_dimension_info(dim_id, agent_outputs)
+                for model_cfg in self._corrector_models:
+                    task = self._vote_dimension(dim_id, dim_info, model_cfg)
+                    tasks.append((dim_id, model_cfg, task))
+
+            # Execute all voting tasks concurrently
+            if tasks:
+                results_list = await asyncio.gather(
+                    *[t[2] for t in tasks],
+                    return_exceptions=True
+                )
+
+                # Group results by dimension
+                dim_results: Dict[str, List[tuple]] = {}
+                for i, (dim_id, model_cfg, _) in enumerate(tasks):
+                    if dim_id not in dim_results:
+                        dim_results[dim_id] = []
+                    result = results_list[i]
+                    if isinstance(result, Exception):
+                        logger.warning(f"Model {model_cfg.model} failed for {dim_id}: {result}")
+                        failed_calls += 1
+                    else:
+                        dim_results[dim_id].append((model_cfg.model, result))
+                        total_calls += 1
+
+                # Aggregate results for each dimension
+                for dim_id, model_results in dim_results.items():
+                    if len(model_results) >= 2:  # Need at least 2 models
+                        scores = [r[1] for r in model_results]
+                        models_used = [r[0] for r in model_results]
+
+                        corrected_score = median(scores)
+                        std = statistics.stdev(scores) if len(scores) > 1 else 0.0
+
+                        # Get original score
+                        dim_info = self._get_dimension_info(dim_id, agent_outputs)
+                        original_score = dim_info.get("score", 5.0)
+                        original_agent = dim_info.get("agent", "unknown")
+
+                        variance: VarianceRecord = {
+                            "models_used": models_used,
+                            "scores": scores,
+                            "median": corrected_score,
+                            "std": std,
+                            "high_disagreement": std > 1.0 or (max(scores) - min(scores)) > 2,
+                        }
+
+                        corrections[dim_id] = {
+                            "original_agent": original_agent,
+                            "original_score": original_score,
+                            "corrected_score": corrected_score,
+                            "variance": variance,
+                        }
+                        logger.info(f"  {dim_id}: {original_score} -> {corrected_score} (std={std:.2f})")
+                    else:
+                        logger.warning(f"  {dim_id}: insufficient model results, skipping")
+
+        corrector_output: CorrectorOutput = {
+            "corrections": corrections,
+            "skipped_dimensions": skipped,
+            "skip_reason": "low hallucination_risk, threshold-based scoring",
+            "total_model_calls": total_calls,
+            "failed_calls": failed_calls,
+        }
+
+        return {"corrector_output": corrector_output}
+
+    def _identify_voting_dimensions(self, agent_outputs: Dict[str, AgentOutput]) -> List[str]:
+        """Identify which sub-dimensions need voting."""
+        voting_dims = []
+        for agent_name, output in agent_outputs.items():
+            for sub_id in output.get("sub_scores", {}):
+                risk = output["sub_scores"][sub_id].get("hallucination_risk", "medium")
+                if risk in ["medium", "high"] and sub_id in HIGH_RISK_DIMENSIONS:
+                    voting_dims.append(sub_id)
+        return voting_dims
+
+    def _get_skipped_dimensions(self, agent_outputs: Dict[str, AgentOutput]) -> List[str]:
+        """Get list of dimensions that are skipped."""
+        skipped = []
+        for agent_name, output in agent_outputs.items():
+            for sub_id in output.get("sub_scores", {}):
+                risk = output["sub_scores"][sub_id].get("hallucination_risk", "medium")
+                if risk == "low" or sub_id in LOW_RISK_DIMENSIONS:
+                    skipped.append(sub_id)
+        return list(set(skipped))
+
+    def _get_dimension_info(self, dim_id: str, agent_outputs: Dict[str, AgentOutput]) -> Dict[str, Any]:
+        """Get dimension info from agent_outputs."""
+        for agent_name, output in agent_outputs.items():
+            if dim_id in output.get("sub_scores", {}):
+                sub_score = output["sub_scores"][dim_id]
+                return {
+                    "score": sub_score.get("score", 5.0),
+                    "agent": agent_name,
+                    "tool_evidence": sub_score.get("tool_evidence", {}),
+                    "llm_reasoning": sub_score.get("llm_reasoning", ""),
+                }
+        return {"score": 5.0, "agent": "unknown", "tool_evidence": {}, "llm_reasoning": ""}
+
+    async def _vote_dimension(
+        self,
+        dim_id: str,
+        dim_info: Dict[str, Any],
+        model_cfg: Any,
+    ) -> float:
+        """Vote on a single dimension using a specific model."""
+        import re
+        rubric = self._get_rubric(dim_id)
+        tool_evidence = dim_info.get("tool_evidence", {})
+        llm_reasoning = dim_info.get("llm_reasoning", "")
+
+        prompt = f"""You are re-scoring a survey evaluation dimension as part of a multi-model voting process.
+
+## Dimension: {dim_id}
+
+## Rubric:
+{rubric}
+
+## Tool Evidence:
+{json.dumps(tool_evidence, indent=2) if tool_evidence else "No tool evidence available."}
+
+## Original Agent Assessment:
+Agent: {dim_info.get('agent', 'unknown')}
+Score: {dim_info.get('score', 5.0)}/5
+Reasoning: {llm_reasoning[:500] if llm_reasoning else 'No reasoning available.'}
+
+Based on the rubric, tool evidence, and your own judgment, provide your score (1-5).
+Output ONLY a JSON object: {{"score": <number>}}
+"""
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = await self._call_llm(messages, model=model_cfg.model)
+            match = re.search(r'"score"\s*:\s*(\d+(?:\.\d+)?)', response)
+            if match:
+                return float(match.group(1))
+            return 5.0
+        except Exception as e:
+            logger.warning(f"Failed to vote on {dim_id} with model {model_cfg.model}: {e}")
+            raise
+
+    def _get_rubric(self, dim_id: str) -> str:
+        """Get rubric text for a dimension."""
+        rubrics = {
+            "V4": "Internal Consistency: Check if the survey has any self-contradictions. 5=No contradictions, 4=1 minor contradiction, 3=2-3 contradictions or 1 severe, 2=Multiple contradictions, 1=Systematic contradictions.",
+            "E2": "Method Classification Reasonableness: Evaluate if the method classification aligns with academic consensus. 5=S5(NMI)>=0.7 + LLM confirms reasonable, 4=Mostly reasonable, 3=Some issues, 2=Significant issues, 1=Unreasonable classification.",
+            "E3": "Technical Accuracy: Check for technical errors in method descriptions. 5=No errors, 4=1-2 minor errors, 3=A few errors, 2=Multiple errors, 1=Many severe errors.",
+            "E4": "Critical Analysis Depth: Evaluate the depth of comparative analysis and critique. 5=Systematic comparison tables + clear trends + specific limitations, 4=Comparison and trends but limited limitations, 3=Some listing with minimal critique, 2=Mostly listing, 1=Pure summary with no analysis.",
+            "R2": "Information Balance: Check if information distribution across sections is reasonable. 5=Well-balanced, 4=Mostly balanced, 3=Slightly imbalanced, 2=Imbalanced, 1=Severely imbalanced.",
+            "R3": "Structural Clarity: Evaluate hierarchical structure and reading path. 5=S5>=0.7 + clear hierarchy, 4=Good structure, 3=Acceptable structure, 2=Poor structure, 1=Confusing structure.",
+            "R4": "Writing Quality: Evaluate language fluency and terminology consistency. 5=Excellent, 4=Good, 3=Acceptable, 2=Needs improvement, 1=Poor.",
+        }
+        return rubrics.get(dim_id, "Rate this dimension from 1-5 based on quality.")
 
     def _process_multi_model_results(
         self,

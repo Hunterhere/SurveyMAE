@@ -70,13 +70,17 @@ def _save_workflow_step(
     input_state: Optional[SurveyState] = None,
     run_params: Optional[dict] = None,
 ) -> None:
-    """Save workflow step data with full input/output/params to ResultStore.
+    """Save workflow step data with incremental output (v3 design).
+
+    For v3, step JSON files only save incremental output:
+    - 02_evidence_collection: does not include ref_metadata_cache (see validation.json)
+    - Other steps: save only the step's output
 
     Args:
         step_name: Name of the workflow step
         state: Current workflow state
         data: Output data from the step
-        input_state: Input state before the step (optional)
+        input_state: Input state before the step (optional, not saved in v3)
         run_params: Run parameters used (optional)
     """
     try:
@@ -88,20 +92,27 @@ def _save_workflow_step(
         if source_path:
             paper_id = store.register_paper(source_path)
 
-            # Build comprehensive step record
+            # Build step record (v3: incremental output only)
             step_record = {
                 "step": step_name,
                 "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "source_pdf": source_path,
             }
 
-            # Add input state (sanitized - remove large content)
-            if input_state:
-                sanitized_input = _sanitize_state_for_logging(input_state)
-                step_record["input"] = sanitized_input
+            # Add output data (v3: no input state saved)
+            output_data = _sanitize_output_for_logging(data)
 
-            # Add output data
-            step_record["output"] = _sanitize_output_for_logging(data)
+            # v3: Special handling for ref_metadata_cache
+            # Reference it instead of including the full data
+            if step_name == "02_evidence_collection":
+                if "ref_metadata_cache" in output_data:
+                    # Replace with reference to validation.json
+                    output_data["ref_metadata_cache"] = {
+                        "_ref": "see validation.json",
+                        "_note": "Full ref_metadata_cache stored in tool artifact"
+                    }
+
+            step_record["output"] = output_data
 
             # Add run parameters
             if run_params:
@@ -194,7 +205,9 @@ async def _wrap_parse_pdf(state: SurveyState) -> dict:
 async def _wrap_evidence_collection(state: SurveyState) -> dict:
     """Wrapper for evidence_collection node with result saving."""
     input_state = dict(state)
-    result = await run_evidence_collection(state)
+    # Get result store for tool artifact persistence (v3)
+    store = _get_result_store(state.get("source_pdf_path", ""))
+    result = await run_evidence_collection(state, result_store=store)
     _save_workflow_step(
         "02_evidence_collection", state, result,
         input_state=input_state,

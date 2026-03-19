@@ -4,6 +4,7 @@ Provides citation extraction and verification functionality.
 Can be used to check if cited papers exist and match claims.
 """
 
+import asyncio
 import re
 import logging
 import xml.etree.ElementTree as ET
@@ -766,7 +767,6 @@ class CitationChecker:
         """
         from langchain_core.messages import HumanMessage
         from langchain_openai import ChatOpenAI
-        import asyncio
 
         logger.info(f"Starting C6 citation-sentence alignment analysis...")
 
@@ -782,13 +782,13 @@ class CitationChecker:
         # Build citation-sentence pairs
         pairs: list[dict[str, Any]] = []
         for citation in citations:
-            ref_keys = citation.get("ref_keys", [])
+            ref_key = citation.get("ref_key", "")
             sentence = citation.get("sentence", "")
-            if not sentence or not ref_keys:
+            if not sentence or not ref_key:
                 continue
 
             # One pair per cited reference
-            for ref_key in ref_keys:
+            for ref_key in [ref_key]:
                 ref_data = ref_lookup.get(ref_key, {})
                 abstract = ref_data.get("abstract", "")
 
@@ -803,7 +803,7 @@ class CitationChecker:
 
         logger.info(f"Built {len(pairs)} citation-sentence pairs")
 
-        if not pairs:
+        if not pairs: #FIXME: why no pairs, check output\runs\20260318T082520Z_53317b7e\papers\40b1a0d0d47b\c6_alignment.json
             return {
                 "metric_id": "C6",
                 "llm_involved": True,
@@ -824,9 +824,15 @@ class CitationChecker:
 
         logger.info(f"Pairs with abstract: {len(pairs_with_abstract)}, without: {len(insufficient_pairs)}")
 
-        # Initialize LLM
+        # Initialize LLM using config
         try:
-            llm = ChatOpenAI(model=model_name, temperature=0.1)
+            llm_config = self.config.llm
+            llm = ChatOpenAI(
+                model=llm_config.model,
+                api_key=llm_config.api_key,
+                base_url=llm_config.base_url,
+                temperature=0.1,
+            )
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
             return {

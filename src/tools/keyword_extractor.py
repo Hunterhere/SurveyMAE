@@ -12,7 +12,7 @@ from typing import Any, Optional
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import Runnable
 
-from src.core.config import LLMConfig
+from src.core.config import LLMConfig, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +72,22 @@ Example: ["retrieval augmented generation", "RAG LLM", "dense passage retrieval"
         if self.llm is not None:
             return self.llm
 
-        # Create LLM from config
+        # Create LLM from config - load from main.yaml
         if self.llm_config is None:
-            self.llm_config = LLMConfig(
-                provider="openai",
-                model="gpt-4o-mini",
-                temperature=0.0,
-            )
+            try:
+                cfg = load_config()
+                self.llm_config = LLMConfig(
+                    provider=cfg.llm.provider,
+                    model=cfg.llm.model,
+                    temperature=cfg.llm.temperature,
+                )
+            except Exception:
+                # Fallback to qwen if config loading fails
+                self.llm_config = LLMConfig(
+                    provider="qwen",
+                    model="qwen3.5-flash",
+                    temperature=0.0,
+                )
 
         # Directly create LLM without using BaseAgent
         from langchain_openai import ChatOpenAI
