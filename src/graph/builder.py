@@ -14,7 +14,7 @@ According to Plan v2, the workflow structure is:
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -61,6 +61,193 @@ def _get_result_store(source_pdf_path: str = "") -> ResultStore:
             run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{pdf_hash}"
         _result_store = ResultStore(base_dir="./output/runs", run_id=run_id)
     return _result_store
+
+
+def _init_metrics_index(config: Any = None) -> dict:
+    """Initialize metrics_index for run.json.
+
+    Returns the metrics_index structure recording指标血缘.
+    """
+    # Build metrics_index based on Plan v3 §3.4.3
+    metrics_index = {
+        "metrics": {
+            # C Series (Citation integrity)
+            "C3": {
+                "name": "orphan_ref_rate",
+                "computed_by": "CitationChecker",
+                "source_file": "validation.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["VerifierAgent.V1"]
+            },
+            "C5": {
+                "name": "metadata_verify_rate",
+                "computed_by": "CitationChecker.validate",
+                "source_file": "validation.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["VerifierAgent.V1"]
+            },
+            "C6": {
+                "name": "citation_sentence_alignment",
+                "computed_by": "CitationChecker.analyze_citation_sentence_alignment",
+                "source_file": "c6_alignment.json",
+                "llm_involved": True,
+                "hallucination_risk": "low",
+                "consumed_by": ["VerifierAgent.V2"]
+            },
+            # T Series (Temporal)
+            "T1": {
+                "name": "year_span",
+                "computed_by": "CitationAnalyzer.compute_temporal_metrics",
+                "source_file": "analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ReaderAgent.R1"]
+            },
+            "T2": {
+                "name": "foundational_retrieval_gap",
+                "computed_by": "CitationAnalyzer + LiteratureSearch",
+                "source_file": "analysis.json + trend_baseline.json",
+                "llm_involved": True,
+                "hallucination_risk": "low",
+                "consumed_by": ["ReaderAgent.R1"]
+            },
+            "T3": {
+                "name": "peak_year_ratio",
+                "computed_by": "CitationAnalyzer.compute_temporal_metrics",
+                "source_file": "analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ReaderAgent.R1"]
+            },
+            "T4": {
+                "name": "temporal_continuity",
+                "computed_by": "CitationAnalyzer.compute_temporal_metrics",
+                "source_file": "analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ReaderAgent.R1"]
+            },
+            "T5": {
+                "name": "trend_alignment",
+                "computed_by": "CitationAnalyzer + LiteratureSearch",
+                "source_file": "analysis.json + trend_baseline.json",
+                "llm_involved": True,
+                "hallucination_risk": "low",
+                "consumed_by": ["ReaderAgent.R1"]
+            },
+            # S Series (Structural)
+            "S1": {
+                "name": "section_count",
+                "computed_by": "CitationAnalyzer.compute_structural_metrics",
+                "source_file": "analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ReaderAgent.R3"]
+            },
+            "S2": {
+                "name": "citation_density",
+                "computed_by": "CitationAnalyzer.compute_structural_metrics",
+                "source_file": "analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ReaderAgent.R2"]
+            },
+            "S3": {
+                "name": "citation_gini",
+                "computed_by": "CitationAnalyzer.compute_structural_metrics",
+                "source_file": "analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ReaderAgent.R2"]
+            },
+            "S4": {
+                "name": "zero_citation_section_rate",
+                "computed_by": "CitationAnalyzer.compute_structural_metrics",
+                "source_file": "analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ReaderAgent.R2"]
+            },
+            "S5": {
+                "name": "section_cluster_alignment",
+                "computed_by": "CitationGraphAnalyzer.compute_section_cluster_alignment",
+                "source_file": "graph_analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ExpertAgent.E2", "ReaderAgent.R2", "ReaderAgent.R3"]
+            },
+            # G Series (Graph)
+            "G1": {
+                "name": "graph_density",
+                "computed_by": "CitationGraphAnalyzer.analyze",
+                "source_file": "graph_analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ExpertAgent.E1"]
+            },
+            "G2": {
+                "name": "connected_component_count",
+                "computed_by": "CitationGraphAnalyzer.analyze",
+                "source_file": "graph_analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ExpertAgent.E1"]
+            },
+            "G3": {
+                "name": "max_component_ratio",
+                "computed_by": "CitationGraphAnalyzer.analyze",
+                "source_file": "graph_analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ExpertAgent.E1"]
+            },
+            "G4": {
+                "name": "foundational_coverage_rate",
+                "computed_by": "FoundationalCoverageAnalyzer.analyze",
+                "source_file": "key_papers.json",
+                "llm_involved": True,
+                "hallucination_risk": "low",
+                "consumed_by": ["ExpertAgent.E1"]
+            },
+            "G5": {
+                "name": "cluster_count",
+                "computed_by": "CitationGraphAnalyzer.analyze",
+                "source_file": "graph_analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ExpertAgent.E2"]
+            },
+            "G6": {
+                "name": "isolated_node_ratio",
+                "computed_by": "CitationGraphAnalyzer.analyze",
+                "source_file": "graph_analysis.json",
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ExpertAgent.E1"]
+            }
+        },
+        "agent_dimensions": {
+            "VerifierAgent": {
+                "input_evidence": ["C3", "C5", "C6"],
+                "output_dimensions": ["V1", "V2", "V4"],
+                "corrector_targets": ["V4"]
+            },
+            "ExpertAgent": {
+                "input_evidence": ["G1", "G2", "G3", "G4", "G5", "G6", "S5"],
+                "output_dimensions": ["E1", "E2", "E3", "E4"],
+                "corrector_targets": ["E2", "E3", "E4"]
+            },
+            "ReaderAgent": {
+                "input_evidence": ["T1", "T2", "T3", "T4", "T5", "S1", "S2", "S3", "S4", "S5"],
+                "output_dimensions": ["R1", "R2", "R3", "R4"],
+                "corrector_targets": ["R2", "R3", "R4"]
+            }
+        }
+    }
+
+    return metrics_index
 
 
 def _save_workflow_step(
@@ -127,7 +314,7 @@ def _save_workflow_step(
         logger.warning(f"Failed to save workflow step {step_name}: {e}")
 
 
-def _sanitize_state_for_logging(state: SurveyState) -> dict:
+def _sanitize_state_for_logging(state: SurveyState) -> dict: #FIXME: why truncate?
     """Sanitize state for logging - truncate large content but keep structure."""
     result = {}
     for key, value in state.items():
@@ -273,14 +460,14 @@ def create_workflow(
 ) -> StateGraph:
     """Create the SurveyMAE evaluation workflow graph.
 
-    According to Plan v2, the workflow structure is:
+    According to Plan v3, the workflow structure is:
     1. parse_pdf -> Extract content and citations
     2. evidence_collection -> Execute all tools, build ref_metadata_cache
     3. evidence_dispatch -> Assemble Evidence Report for each agent
     4. Parallel agent evaluation -> verifier, expert, reader evaluate with evidence
     5. corrector -> Multi-model voting + variance computation
-    6. Check for Debate -> If score variance is high, enter debate
-    7. reporter -> Generate final report with variance display
+    6. aggregator -> Weighted aggregation
+    7. reporter -> Generate final report
 
     Args:
         config: Optional configuration for customization.
@@ -288,6 +475,12 @@ def create_workflow(
     Returns:
         Compiled StateGraph ready for execution.
     """
+    # Initialize metrics_index and write to run.json
+    metrics_index = _init_metrics_index(config)
+    store = _get_result_store()
+    if store:
+        store._init_run_file(metrics_index=metrics_index)
+
     # Create the state graph
     workflow = StateGraph(SurveyState)
 

@@ -578,8 +578,7 @@ class CorrectionRecord(TypedDict):
 
 ```
 output/runs/{run_id}/
-├── run.json                          # 运行元信息 + config快照
-├── metric_index.json                 # ★v3新增：指标索引（见3.4.3）
+├── run.json                          # 运行元信息 + config快照 + metrics_index（见3.4.3）
 ├── run_summary.json                  # ★v3新增：运行结果摘要（见3.4.4）
 ├── papers/{paper_id}/
 │   ├── source.json                   # 源文件信息
@@ -607,18 +606,23 @@ output/runs/{run_id}/
 
 **关键改进：** ref_metadata_cache完整数据仅在`validation.json`中保存一次。步骤JSON通过引用validation.json获取cache数据，不再每个文件都冗余包含。步骤JSON中如需引用cache数据，记录`"ref_metadata_cache": "→ see validation.json"`。
 
-#### 3.4.3 metric_index.json（指标索引与数据流）
+#### 3.4.3 metrics_index（合并到 run.json）
 
 在运行开始时生成，记录所有指标的定义、计算来源、数据流向。对后续可视化和调试至关重要。
+
+**设计变更**：metrics_index 合并到 run.json 中，作为 `metrics_index` 字段，而非独立文件。
 
 ```json
 {
   "run_id": "20260317T070826Z_53317b7e",
-  "config_snapshot": {
-    "evidence": { "foundational_top_k": 30, "c6_batch_size": 10, "contradiction_threshold": 0.05, "..." : "..." },
-    "models": { "default": "gpt-4o", "c6_model": "gpt-4o-mini", "corrector_models": ["gpt-4o", "claude-sonnet", "deepseek"] }
-  },
-  "metrics": {
+  "created_at": "2026-03-17T07:00:00Z",
+  "schema_version": "v3",
+  "metrics_index": {
+    "config_snapshot": {
+      "evidence": { "foundational_top_k": 30, "c6_batch_size": 10, "contradiction_threshold": 0.05, "..." : "..." },
+      "models": { "default": "gpt-4o", "c6_model": "gpt-4o-mini", "corrector_models": ["gpt-4o", "claude-sonnet", "deepseek"] }
+    },
+    "metrics": {
     "C3": {
       "name": "orphan_ref_rate",
       "computed_by": "CitationChecker",
@@ -673,9 +677,11 @@ output/runs/{run_id}/
 
 此文件同时服务于：(1) 运行参数可复现，(2) 调试时追踪某个指标从哪个工具产出、流向哪个Agent，(3) 可视化时展示数据流图。
 
-#### 3.4.4 run_summary.json（轻量结果摘要）
+#### 3.4.4 run_summary.json（运行结果摘要）
 
 运行结束后生成，包含所有指标最终值和评分结果，方便批量实验时快速比较。
+
+**设计变更**：run_summary.json 放在 run.json 同级目录（output/runs/{run_id}/run_summary.json），而非 papers/{paper_id}/ 目录。
 
 ```json
 {

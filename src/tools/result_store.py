@@ -51,6 +51,7 @@ class ResultStore:
         self,
         config_snapshot: Optional[dict[str, Any]] = None,
         tool_params: Optional[dict[str, Any]] = None,
+        metrics_index: Optional[dict[str, Any]] = None,
     ) -> None:
         run_path = self.run_dir / "run.json"
         if run_path.exists():
@@ -65,6 +66,10 @@ class ResultStore:
 
         # v3 schema version
         data["schema_version"] = "v3"
+
+        # metrics_index: 指标血缘记录
+        if metrics_index:
+            data["metrics_index"] = metrics_index
 
         self._write_json(run_path, data)
 

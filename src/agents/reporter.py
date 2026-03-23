@@ -65,7 +65,7 @@ class ReportAgent(BaseAgent):
             confidence=1.0,
         )
 
-    async def process(
+    async def process( #FIXME: add LLM judgement for more datails
         self,
         state: SurveyState,
     ) -> Dict[str, Any]:
@@ -86,14 +86,12 @@ class ReportAgent(BaseAgent):
         # Step 3: Generate run_summary.json (v3)
         run_summary = self._generate_run_summary(state, aggregation_result)
 
-        # Save run_summary.json
+        # Save run_summary.json to run directory (not papers/)
         try:
             store = _get_result_store(state.get("source_pdf_path", ""))
-            source_path = state.get("source_pdf_path", "")
-            if source_path:
-                paper_id = store.register_paper(source_path)
-                store._write_json(store.papers_dir / paper_id / "run_summary.json", run_summary)
-                logger.info("Saved run_summary.json")
+            # Save to run directory (output/runs/{run_id}/run_summary.json)
+            store._write_json(store.run_dir / "run_summary.json", run_summary)
+            logger.info("Saved run_summary.json to run directory")
         except Exception as e:
             logger.warning(f"Failed to save run_summary.json: {e}")
 

@@ -119,8 +119,13 @@ Tools 层是整个系统的数据处理底层，提供 PDF 解析、引用分析
 | 函数签名 | 功能描述 | 输入 | 输出 | 备注 |
 |---------|---------|------|------|------|
 | `ResultStore.register_paper(source_pdf) -> str` | 注册论文，返回 paper_id | PDF 路径 | 论文 ID | 用于批处理 |
-| `ResultStore.save_extraction(paper_id, data) -> None` | 保存提取结果 | 论文 ID、数据 | 无 | 写入 extraction.json |
-| `ResultStore.save_validation(paper_id, data) -> None` | 保存验证结果 | 论文 ID、数据 | 无 | 写入 validation.json |
+| `ResultStore.save_extraction(paper_id, data) -> Path` | 保存提取结果 | 论文 ID、数据 | 文件路径 | 写入 extraction.json |
+| `ResultStore.save_validation(paper_id, data) -> Path` | 保存验证结果 | 论文 ID、数据 | 文件路径 | 写入 validation.json |
+| `ResultStore.save_c6_alignment(paper_id, data) -> Path` | 保存 C6 对齐结果 | 论文 ID、数据 | 文件路径 | 写入 c6_alignment.json |
+| `ResultStore.save_citation_analysis(paper_id, data) -> Path` | 保存引用分析 | 论文 ID、数据 | 文件路径 | 写入 analysis.json |
+| `ResultStore.save_graph_analysis(paper_id, data) -> Path` | 保存图分析结果 | 论文 ID、数据 | 文件路径 | 写入 graph_analysis.json |
+| `ResultStore.save_trend_baseline(paper_id, data) -> Path` | 保存趋势基线 | 论文 ID、数据 | 文件路径 | 写入 trend_baseline.json |
+| `ResultStore.save_key_papers(paper_id, data) -> Path` | 保存关键论文 | 论文 ID、数据 | 文件路径 | 写入 key_papers.json |
 | `ResultStore.append_error(paper_id, error) -> None` | 追加错误日志 | 论文 ID、错误字典 | 无 | 写入 errors.jsonl |
 
 **调用来源**：
@@ -224,15 +229,20 @@ Agents 层基于 Tools 层的工具产出，利用 LLM 进行评估判断。
 
 | 函数签名 | 功能描述 | 输入 | 输出 | 备注 |
 |---------|---------|------|------|------|
-| `CorrectorAgent.evaluate(state, section_name?) -> EvaluationRecord` | 偏差校正与投票 | 状态（含其他 Agent 输出） | 校正后评分 | **多模型投票**，计算波动范围 |
+| `CorrectorAgent.evaluate(state, section_name?) -> EvaluationRecord` | 返回占位符 | 状态 | 占位符记录 | 兼容性保留 |
+| `CorrectorAgent.process(state) -> dict` | 多模型投票校正 | 状态（含 agent_outputs） | corrector_output | **纯校正器**，仅对高风险维度投票 |
 
 **核心功能**：
-- 多模型投票（3+ 模型）
-- 异常值检测（差异 > 2 分触发）
-- 波动范围计算（std, score_range）
+- 只对 7 个高风险（hallucination_risk=="high"）维度投票（V4, E2, E3, E4, R2, R3, R4）
+- 跳过 4 个低风险维度（V1, V2, E1, R1）
+- 使用中位数校正，返回 variance 信息
 
 **输入来源**：
 - `agent_outputs`（verifier, expert, reader 的输出）
+
+**输出**：
+- `corrector_output.corrections`: 各维度校正记录
+- `corrector_output.skipped_dimensions`: 跳过的维度
 
 ---
 
@@ -271,12 +281,12 @@ Graph 层使用 LangGraph 编排整个评测流程。
 
 **工作流节点顺序**：
 ```
-parse_pdf → evidence_collection → evidence_dispatch →
-  verifier_eval → expert_eval → reader_eval →
-    corrector_eval →
-      should_debate? → [debate] → aggregator →
-        reporter → END
+01_parse_pdf → 02_evidence_collection → 03_evidence_dispatch →
+  04_verifier → 04_expert → 04_reader → 05_corrector →
+    06_aggregator → 07_reporter → END
 ```
+
+**注意**：Plan v3 移除了 debate 节点，简化了工作流。
 
 ---
 
@@ -346,11 +356,12 @@ parse_pdf → evidence_collection → evidence_dispatch →
 
 | 函数签名 | 功能描述 | 输入 | 输出 | 备注 |
 |---------|---------|------|------|------|
-| `aggregate_scores(state) -> dict` | 聚合所有 Agent 评分 | 状态 | aggregated_scores | 支持 weighted/average/max 策略 |
-| `generate_report(aggregation_result, state) -> str` | 生成 Markdown 报告 | 聚合结果、状态 | 报告文本 | **Reporter 核心** |
-| `_aggregate_from_agent_outputs(agent_outputs) -> dict` | 从 Agent 输出聚合 | Agent 输出字典 | 聚合结果 | 处理结构化输出 |
+| `aggregate_scores(state) -> dict` | 聚合所有 Agent 评分 | 状态 | aggregated_scores | **加权聚合**，读取 corrector_output |
+| `generate_report(aggregation_result, state) -> str` | 生成 Markdown 报告 | 聚合结果、状态 | 报告文本 | 包含维度分数和方差 |
+| `_aggregate_from_agent_outputs(agent_outputs, corrector_output?) -> dict` | 从 Agent 输出聚合 | Agent 输出、校正输出 | 聚合结果 | 使用 config weights |
 | `_aggregate_from_evaluations(evaluations) -> dict` | 从旧格式评估聚合 | 评估列表 | 聚合结果 | 兼容旧代码 |
-| `_generate_recommendations(scores) -> list` | 生成改进建议 | 分数字典 | 建议列表 | 基于评分阈值 |
+| `_get_grade(score) -> str` | 计算字母等级 | 分值 (0-10) | A-F | 阈值：8.5/7.5/6.5/5.5 |
+| `_generate_recommendations(dimension_scores, overall) -> list` | 生成改进建议 | 维度分数、总分 | 建议列表 | 基于评分阈值 |
 
 ---
 
@@ -362,12 +373,17 @@ Core 层定义数据类型、配置加载和 MCP 客户端。
 
 | 类型名 | 字段 | 说明 |
 |--------|------|------|
-| `SurveyState` | source_pdf_path, parsed_content, tool_evidence, ref_metadata_cache, topic_keywords, field_trend_baseline, candidate_key_papers, agent_outputs, aggregated_scores, debate_history, current_round, consensus_reached, final_report_md, metadata | **主状态类型**，贯穿整个工作流 |
-| `ToolEvidence` | extraction, validation, analysis, graph_analysis | 工具产出证据 |
+| `SurveyState` | source_pdf_path, parsed_content, tool_evidence, ref_metadata_cache, topic_keywords, field_trend_baseline, candidate_key_papers, agent_outputs, corrector_output, aggregated_scores, current_round, consensus_reached, final_report_md, metadata | **主状态类型**，贯穿整个工作流 |
+| `ToolEvidence` | extraction, validation, c6_alignment, analysis, graph_analysis, trend_baseline, key_papers | 工具产出证据 |
 | `AgentOutput` | agent_name, dimension, sub_scores, overall_score, confidence, evidence_summary | Agent 结构化输出 |
-| `AgentSubScore` | score, llm_involved, tool_evidence, llm_reasoning, flagged_items, variance | 单个子维度评分 |
-| `AggregatedScores` | weighted, average, max, agent_breakdown, dimension_breakdown | 聚合分数 |
-| `MetricMetadata` | metric_id, llm_involved, hallucination_risk, variance_strategy, reported_variance | 指标元数据 |
+| `AgentSubScore` | score, llm_involved, hallucination_risk, tool_evidence, llm_reasoning, flagged_items, variance | 单个子维度评分，含 hallucination_risk |
+| `VarianceRecord` | models_used, scores, median, std, high_disagreement | 多模型投票方差 |
+| `CorrectionRecord` | original_agent, original_score, corrected_score, variance | 校正记录 |
+| `CorrectorOutput` | corrections, skipped_dimensions, skip_reason, total_model_calls, failed_calls | 校正器输出 |
+| `DimensionScore` | dim_id, final_score, source, agent, hallucination_risk, variance, weight | 聚合后维度分数 |
+| `AggregatedScores` | dimension_scores, deterministic_metrics, overall_score, grade, total_weight | 加权聚合分数 |
+| `C6AlignmentResult` | total_pairs, support, contradict, insufficient, contradiction_rate, auto_fail, contradictions, missing_abstract_count | C6 对齐结果 |
+| `KeyPapersResult` | candidate_count, matched_count, coverage_rate, missing_key_papers, suspicious_centrality | 关键论文分析结果 |
 
 ---
 
@@ -402,98 +418,47 @@ Core 层定义数据类型、配置加载和 MCP 客户端。
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     Graph Layer (builder.py)                        │
-│  create_workflow() → compile_workflow()                            │
+│     create_workflow() → compile_workflow()                          │
 │         │                              │                            │
 │         ▼                              ▼                            │
-│  ┌─────────────┐              ┌─────────────────────┐             │
-│  │parse_pdf    │              │ evidence_collection │             │
-│  │(PDFParser)  │              │ (run_evidence_      │             │
-│  └─────────────┘              │  collection)        │             │
-│                               └─────────────────────┘             │
-│                               └─────────────────────┘             │
+│  ┌─────────────┐              ┌─────────────────────┐               │
+│  │ parse_pdf   │              │ evidence_collection │               │
+│  │ (01)        │              │ (02)                │               │
+│  └─────────────┘              └─────────────────────┘               │
 │                                       │                             │
 │                                       ▼                             │
-│                        ┌─────────────────────────┐                │
-│                        │ evidence_dispatch        │                │
-│                        │ (assemble_evidence_      │                │
-│                        │  report)                 │                │
-│                        └─────────────────────────┘                │
+│                        ┌─────────────────────────┐                  │
+│                        │ evidence_dispatch       │                  │
+│                        │ (03)                    │                  │
+│                        └─────────────────────────┘                  │
 │                                       │                             │
-│          ┌────────────────────────────┼────────────────────────┐  │
-│          ▼                            ▼                            ▼  │
-│  ┌──────────────┐          ┌──────────────┐          ┌──────────────┐
-│  │VerifierAgent │          │ ExpertAgent   │          │ ReaderAgent  │
-│  │ - evaluate() │          │ - evaluate()  │          │ - evaluate() │
-│  └──────────────┘          └──────────────┘          └──────────────┘
-│          │                            │                            │
-│          └────────────────────────────┼────────────────────────────┘
+│          ┌────────────────────────────┼────────────────────────┐    │
+│          ▼                            ▼                        ▼    │
+│  ┌──────────────┐          ┌──────────────┐         ┌──────────────┐│
+│  │ Verifier     │          │ Expert       │         │ Reader       ││
+│  │ (04)         │          │ (04)         │         │ (04)         ││
+│  └──────────────┘          └──────────────┘         └──────────────┘│
+│          │                            │                        │    │
+│          └────────────────────────────┼────────────────────────┘    │
 │                                       ▼                             │
-│                        ┌─────────────────────────┐                │
-│                        │ CorrectorAgent          │                │
-│                        │ (multi-model voting)    │                │
-│                        └─────────────────────────┘                │
-│                                       │                             │
-│                                       ▼                             │
-│                        ┌─────────────────────────┐                │
-│                        │ should_debate?          │                │
-│                        │ (edges.py)              │                │
-│                        └─────────────────────────┘                │
-│                              │/    \                               │
-│                       [debate]    [skip]                           │
-│                              │/                                   │
-│                        ┌─────────────────────────┐                │
-│                        │ aggregator              │                │
-│                        │ (aggregate_scores)      │                │
-│                        └─────────────────────────┘                │
+│                        ┌─────────────────────────┐                  │
+│                        │ Corrector               │                  │
+│                        │ (05) - voting           │                  │
+│                        └─────────────────────────┘                  │
 │                                       │                             │
 │                                       ▼                             │
-│                        ┌─────────────────────────┐                │
-│                        │ reporter                │                │
-│                        │ (generate_report)       │                │
-│                        └─────────────────────────┘                │
+│                        ┌─────────────────────────┐                  │
+│                        │ aggregator              │                  │
+│                        │ (06) - weighted         │                  │
+│                        └─────────────────────────┘                  │
+│                                       │                             │
+│                                       ▼                             │
+│                        ┌─────────────────────────┐                  │
+│                        │ reporter                │                  │
+│                        │ (07) + run_summary      │                  │
+│                        └─────────────────────────┘                  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## 代码规范性问题汇总
-
-### 1. 冗余实现
-
-| 问题 | 位置 | 建议 | 改进计划 | 状态 |
-|------|------|------|----------|------|
-| 多种 PDF 解析后端 | `citation_checker.py` (_extract_references_with_backend) | 引用解析应该在 `pdf_parser.py` 完成，`citation_checker.py` 只负责联网验证和元数据扩展 | **步骤1**: 在 `PDFParser` 中添加 `extract_references()` 方法，支持 GROBID/PyMuPDF 后端<br>**步骤2**: 将 `CitationChecker.extract_references_from_pdf()` 改为调用 `PDFParser.extract_references()`<br>**步骤3**: `CitationChecker` 仅保留 `_verify_references()` 和元数据获取逻辑<br>**步骤4**: 更新 `config/main.yaml` 添加 backend 配置 | 待处理 |
-| 重复的年份提取逻辑 | `citation_checker.py` vs `citation_analysis.py` | 年份提取放 `pdf_parser.py`，年份分析保留在 `citation_analysis.py` | 经分析，当前实现为合理的职责分离，暂不需要修改 | ~~已验证~~ |
-| MCP Server 与直接调用并存 | `pdf_parser.py` 同时有类和 MCP Server | MCP 类应该只是实际工具的封装 | **步骤1**: `create_pdf_parser_mcp_server()` 中的工具调用改为直接 import `PDFParser` 实例<br>**步骤2**: MCP Server 只做参数校验和结果序列化，不重复业务逻辑<br>**步骤3**: 统一 MCP Server 模板，减少样板代码 | 待处理 |
-
-### 2. 类型对齐问题
-
-| 问题 | 位置 | 建议 | 改进计划 | 状态 |
-|------|------|------|----------|------|
-| numpy 类型未转换 | `CitationGraphAnalyzer` 输出 | 在源头处做好类型转换 | **步骤1**: ✅ 在 `CitationGraphAnalyzer.analyze()` 返回前调用 `_convert_numpy_types()`<br>**步骤2**: ✅ 已完成（`CitationAnalyzer` 无需额外处理）<br>**步骤3**: 待添加 | **✅ 已完成** |
-| 可选字段不一致 | `EvaluationRecord` 某些字段为空 | `agent_name`, `dimension`, `score`, `reasoning`, `evidence` 必填，其余可选 | **步骤1**: 在 `src/core/state.py` 中用 Pydantic 定义 `EvaluationRecord` 模型<br>**步骤2**: 必填字段加 `Field(...)`，可选字段加 `Field(default=None)`<br>**步骤3**: BaseAgent.evaluate() 返回时校验必填字段 | 待处理 |
-| 动态类型推断过多 | `extract_json()` 返回 dict | 使用 Pydantic 模型 | **步骤1**: 为各 Agent 输出定义 Pydantic 模型 (`AgentOutput`, `AgentSubScore`)<br>**步骤2**: 在 `BaseAgent.extract_json()` 中添加 Pydantic 解析和验证<br>**步骤3**: 解析失败时返回原始错误信息供调试 | 待处理 |
-
-### 3. 异常处理
-
-| 问题 | 位置 | 建议 | 改进计划 | 状态 |
-|------|------|------|----------|------|
-| 过度使用 try-except pass | 多处工具函数 | 日志中记录警告 | **步骤1**: ✅ 已扫描并修复主要问题<br>**步骤2**: ✅ 已替换 `builder.py:171` 和 `literature_search.py:372` 中的异常处理<br>**步骤3**: ✅ 已完成 | **✅ 已完成** |
-| 外部 API 失败无降级 | `LiteratureSearch.search_field_trend` | 重试3次 → 换源重试 → 空值+警告 | **步骤1**: ✅ 已添加 `with_retry` 装饰器（指数退避）<br>**步骤2**: ✅ 已重构 `search_field_trend` 使用重试方法<br>**步骤3**: ✅ 所有源失败时返回 `failed_sources` 列表并记录日志 | **✅ 已完成** |
-| 异步/同步混用 | 部分 Agent 方法 | 统一接口 | **步骤1**: 将 `CitationChecker` 中的同步方法改为 async（如 `extract_references_from_pdf`）<br>**步骤2**: 移除 `_async` 后缀方法<br>**步骤3**: 更新调用方统一使用 `await` | 待处理 |
-
-### 4. 函数职责过载
-
-| 问题 | 位置 | 建议 | 改进计划 | 状态 |
-|------|------|------|----------|------|
-| `run_evidence_collection` 步骤过多 | evidence_collection.py (500+ 行) | 根据子 agent 拆分为多个分发子函数 | **步骤1**: ✅ 已添加 `_collect_citation_extraction()` (C3, C5)<br>**步骤2**: ✅ 已添加 `_collect_temporal_and_structural()` (T1-T5, S1-S4)<br>**步骤3**: ✅ 已添加 `_collect_citation_graph()` (G1-G6, S5)<br>**步骤4**: ✅ 已添加 `_collect_foundational_coverage()` (G4)<br>**步骤5**: 主函数保持现有实现，子函数已创建可供复用 | **✅ 已完成** |
-
-### 5. 配置分散
-
-| 问题 | 位置 | 建议 | 改进计划 | 状态 |
-|------|------|------|----------|------|
-| 硬编码默认值 | `_EVIDENCE_CONFIG` 降级值 | 应该在 config.yaml 中管理 | **步骤1**: ✅ 已添加 `verify_limit` 到 `EvidenceConfig`<br>**步骤2**: ✅ 已更新 `_load_evidence_config` 包含所有配置<br>**步骤3**: ✅ 已更新 `DEFAULT_VERIFY_LIMIT` 和 `DEFAULT_TREND_YEAR_RANGE` 使用配置值 | **✅ 已完成** |
-| 环境变量读取分散 | 多处 `os.getenv` | 统一使用 load_config | **步骤1**: ✅ 在 `src/core/config.py` 添加 `SurveyMAEConfig.get_env(key, default)` 方法<br>**步骤2**: 替换所有直接 `os.getenv()` 调用为 `load_config().get_env()`<br>**步骤3**: 保留 `.env` 加载逻辑在 `main.py` 入口 | **✅ 部分完成** |
 
 ---
 
@@ -503,13 +468,14 @@ Core 层定义数据类型、配置加载和 MCP 客户端。
 
 1. **Tools 层**：提供确定性计算能力（引用提取、分析、图构建、文献检索），是整个系统的数据基础
 2. **Agents 层**：基于工具产出进行 LLM 判断，每个 Agent 职责明确（Verifier/Expert/Reader/Corrector/Reporter）
-3. **Graph 层**：使用 LangGraph 编排工作流，实现辩论机制和评分聚合
+3. **Graph 层**：使用 LangGraph 编排工作流，实现加权评分聚合
 4. **Core 层**：定义状态类型和配置管理，支撑整个系统运行
 
 **主要调用链**：
 ```
-PDF → parse_pdf → evidence_collection (7步骤) → evidence_dispatch →
-  Agent评估 → corrector投票 → [debate] → aggregator → reporter
+01_parse_pdf → 02_evidence_collection (8步骤) → 03_evidence_dispatch →
+  04_verifier → 04_expert → 04_reader → 05_corrector →
+    06_aggregator (weighted) → 07_reporter (+ run_summary.json)
 ```
 
 代码整体质量较高，主要改进点在于：
