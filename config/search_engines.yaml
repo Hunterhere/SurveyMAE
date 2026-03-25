@@ -1,6 +1,14 @@
 # Search engine configuration (separate from main.yaml)
 # Secrets should be provided via environment variables referenced below.
 
+# Search/Retrieval settings
+verify_limit: 50                  # Maximum number of references to verify
+api_timeout_seconds: 15            # Timeout for API requests
+fallback_order:                   # Ordered list of sources for fallback
+  - semantic_scholar
+  - openalex
+  - crossref
+
 semantic_scholar:
   api_key: ${SEMANTIC_SCHOLAR_API_KEY}
 

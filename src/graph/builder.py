@@ -350,6 +350,9 @@ def _sanitize_state_for_logging(state: SurveyState) -> dict: #FIXME: why truncat
 
 def _sanitize_output_for_logging(data: dict) -> dict:
     """Sanitize output data for logging - truncate long content."""
+    # TODO: Consider more lenient truncation for large dict/list values (e.g., tool_evidence ~200KB).
+    # Current truncation at 10000 chars can corrupt JSON and break downstream state reads
+    # (e.g., tool_evidence becomes truncated JSON string, graph_analysis dict is lost).
     result = {}
     for key, value in data.items():
         if value is None:
@@ -358,14 +361,11 @@ def _sanitize_output_for_logging(data: dict) -> dict:
             # Truncate long strings
             result[key] = value[:5000] + "..." if len(value) > 5000 else value
         elif isinstance(value, (list, dict)):
-            # Convert to JSON-serializable form
+            # Convert to JSON-serializable form without truncation
             try:
                 import json
                 json_str = json.dumps(value, ensure_ascii=False, default=str)
-                if len(json_str) > 10000:
-                    result[key] = json_str[:10000] + "...[truncated]"
-                else:
-                    result[key] = json.loads(json_str)  # Parse back to dict
+                result[key] = json.loads(json_str)  # Parse back to dict
             except Exception as e:
                 logger.warning(f"Failed to serialize state value for key '{key}': {e}")
                 result[key] = str(value)[:1000]
@@ -394,7 +394,25 @@ async def _wrap_evidence_collection(state: SurveyState) -> dict:
     input_state = dict(state)
     # Get result store for tool artifact persistence (v3)
     store = _get_result_store(state.get("source_pdf_path", ""))
-    result = await run_evidence_collection(state, result_store=store)
+    try: #FIXME: recover when bug is fixed
+        result = await run_evidence_collection(state, result_store=store)
+    except Exception as e:
+        logger.error(f"run_evidence_collection raised: {e}", exc_info=True)
+        # Save error info so it persists in the step JSON
+        _save_workflow_step(
+            "02_evidence_collection", state,
+            {
+                "tool_evidence": {},
+                "ref_metadata_cache": {},
+                "topic_keywords": [],
+                "field_trend_baseline": {},
+                "candidate_key_papers": [],
+                "warnings": [{"code": "EVIDENCE_COLLECTION_ERROR", "message": str(e)}],
+            },
+            input_state=input_state,
+            run_params={"node": "evidence_collection", "error": str(e)}
+        )
+        raise
     _save_workflow_step(
         "02_evidence_collection", state, result,
         input_state=input_state,

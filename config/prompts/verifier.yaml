@@ -24,21 +24,9 @@ template: |
   - **2**: C5 ≥ 0.50
   - **1**: C5 < 0.50
 
-  ### V2: Citation Supportiveness
-  Whether cited sources support the claims made.
-  - **5**: ≥90% of sampled citation-claim pairs are fully supported
-  - **4**: 70-89% supported, some partial support
-  - **3**: 50-69% supported, some irrelevant citations
-  - **2**: 30-49% supported, many mismatches
-  - **1**: <30% supported, many false/irrelevant citations
-
-  ### V3: Citation Accuracy
-  Whether the survey correctly understands the cited work.
-  - **5**: No misinterpretation, overgeneralization, or misattribution
-  - **4**: Minor errors, overall accurate understanding
-  - **3**: Some misinterpretation or overgeneralization
-  - **2**: Frequent misinterpretation or misattribution
-  - **1**: Severe misunderstanding of cited works
+  ### V2: Citation Supportiveness (computed from C6)
+  V2 is automatically computed from C6 (citation-sentence contradiction_rate).
+  Do NOT provide a score for V2 in your response.
 
   ### V4: Internal Consistency
   Whether the survey has internal contradictions.
@@ -64,16 +52,15 @@ template: |
         "llm_reasoning": "Explanation of the score...",
         "flagged_items": ["list of issues"]
       }},
-      "V2_citation_supportiveness": {{
-        "score": 3,
+      "V4_internal_consistency": {{
+        "score": 4,
         "llm_involved": true,
-        "tool_evidence": {{"sample_size": 15, "supported_count": 9}},
-        "llm_reasoning": "Explanation..."
-      }},
-      "V3_citation_accuracy": {{...}},
-      "V4_internal_consistency": {{...}}
+        "tool_evidence": {{}},
+        "llm_reasoning": "Explanation...",
+        "flagged_items": []
+      }}
     }},
-    "overall_score": 3.5,
+    "overall_score": 4.0,
     "confidence": 0.8,
     "evidence_summary": "Summary of evidence used"
   }}
@@ -81,6 +68,7 @@ template: |
 
   Important:
   - All scores must be integers 1-5
+  - Do NOT include V2_citation_supportiveness or V3_citation_accuracy in sub_scores (V2 is auto-computed from C6, V3 merged into C6)
   - confidence should be 0.0-1.0
-  - llm_involved is always true for V1-V4
+  - llm_involved is always true for V1 and V4
   - tool_evidence should cite the specific metrics you used

@@ -2,11 +2,29 @@
 
 Provides centralized configuration loading using pydantic-settings.
 All configuration is separated from code per Document 4 engineering standards.
+
+TODO: 未来可考虑使用 pydantic-settings 简化配置管理:
+    - 安装: pip install pydantic-settings
+    - 优势:
+        1. 原生支持 YAML 文件、环境变量、默认值的分层优先级管理
+        2. 自动从 YAML/环境变量/默认值读取，无需手动 load_config()
+        3. 配置示例:
+            from pydantic_settings import BaseSettings, SettingsConfigDict
+            class EvidenceConfig(BaseSettings):
+                model_config = SettingsConfigDict(
+                    yaml_file="config/main.yaml",
+                    env_prefix="SURVEYMAE_",
+                )
+                foundational_top_k: int = Field(default=30)
+                contradiction_threshold: float = Field(default=0.05)
+            config = EvidenceConfig()  # 自动加载
+    - 当前方案: 使用 from_yaml() 手动加载，字段定义暂保留默认值作为 fallback
 """
 
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import yaml
 from pydantic import BaseModel, Field
@@ -71,11 +89,13 @@ class ModelConfig(BaseModel):
 
     Attributes:
         default: Default LLM configuration.
+        tools: Tool-specific model configurations.
         agents: Agent-specific model configurations.
         providers: Provider-level configurations.
     """
 
     default: LLMConfig = Field(default_factory=LLMConfig)
+    tools: Dict[str, LLMConfig] = Field(default_factory=dict)
     agents: Dict[str, AgentModelConfig] = Field(default_factory=dict)
     providers: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
@@ -94,6 +114,17 @@ class ModelConfig(BaseModel):
 
         # Parse default
         default = LLMConfig(**data.get("default", {}))
+
+        # Parse tool configs
+        tools = {}
+        if "tools" in data:
+            for name, tool_data in data["tools"].items():
+                tools[name] = LLMConfig(
+                    provider=tool_data.get("provider", "openai"),
+                    model=tool_data.get("model", "gpt-4o"),
+                    temperature=tool_data.get("temperature", 0.0),
+                    max_tokens=tool_data.get("max_tokens", 4096),
+                )
 
         # Parse agent configs
         agents = {}
@@ -118,6 +149,7 @@ class ModelConfig(BaseModel):
 
         return cls(
             default=default,
+            tools=tools,
             agents=agents,
             providers=data.get("providers", {}),
         )
@@ -125,21 +157,128 @@ class ModelConfig(BaseModel):
     def get_agent_config(self, agent_name: str) -> LLMConfig:
         """Get LLM config for a specific agent.
 
+        Includes base_url resolved from providers mapping, so the returned
+        LLMConfig is fully usable with ChatOpenAI without additional mapping.
+
+        Usage example:
+            >>> model_config = ModelConfig.from_yaml("config/models.yaml")
+            >>> llm_cfg = model_config.get_agent_config("verifier")
+            >>> # llm_cfg.base_url is now "https://dashscope.aliyuncs.com/compatible-mode/v1" for qwen
+            >>> from langchain_openai import ChatOpenAI
+            >>> llm = ChatOpenAI(model=llm_cfg.model, api_key=llm_cfg.api_key,
+            ...                  base_url=llm_cfg.base_url, temperature=llm_cfg.temperature)
+
         Args:
             agent_name: Name of the agent.
 
         Returns:
-            LLMConfig for the agent, or default if not found.
+            LLMConfig for the agent (with base_url populated), or default if not found.
         """
         if agent_name in self.agents:
             agent = self.agents[agent_name]
+            base_url = self.get_provider_base_url(agent.provider)
+            env_key = self._get_provider_env_key(agent.provider)
+            api_key = os.getenv(env_key) if env_key else None
             return LLMConfig(
                 provider=agent.provider,
                 model=agent.model,
+                api_key=api_key,
+                base_url=base_url,
                 temperature=agent.temperature,
                 max_tokens=agent.max_tokens,
             )
-        return self.default
+        # Fallback to default, also resolve its base_url
+        base_url = self.get_provider_base_url(self.default.provider)
+        env_key = self._get_provider_env_key(self.default.provider)
+        api_key = os.getenv(env_key) if env_key else None
+        return LLMConfig(
+            provider=self.default.provider,
+            model=self.default.model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=self.default.temperature,
+            max_tokens=self.default.max_tokens,
+        )
+
+    def get_tool_config(self, tool_name: str) -> LLMConfig:
+        """Get LLM config for a specific tool.
+
+        Includes base_url resolved from providers mapping, so the returned
+        LLMConfig is fully usable with ChatOpenAI without additional mapping.
+
+        Usage example:
+            >>> model_config = ModelConfig.from_yaml("config/models.yaml")
+            >>> llm_cfg = model_config.get_tool_config("citation_checker")
+            >>> # llm_cfg.base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1" for qwen
+            >>> from langchain_openai import ChatOpenAI
+            >>> llm = ChatOpenAI(model=llm_cfg.model, api_key=llm_cfg.api_key,
+            ...                  base_url=llm_cfg.base_url, temperature=llm_cfg.temperature)
+
+        Args:
+            tool_name: Name of the tool (e.g., "citation_checker", "keyword_extractor").
+
+        Returns:
+            LLMConfig for the tool (with base_url populated), or default if not found.
+        """
+        if tool_name in self.tools:
+            tool = self.tools[tool_name]
+            base_url = self.get_provider_base_url(tool.provider)
+            env_key = self._get_provider_env_key(tool.provider)
+            api_key = os.getenv(env_key) if env_key else None
+            return LLMConfig(
+                provider=tool.provider,
+                model=tool.model,
+                api_key=api_key,
+                base_url=base_url,
+                temperature=tool.temperature,
+                max_tokens=tool.max_tokens,
+            )
+        # Fallback to default, also resolve its base_url
+        base_url = self.get_provider_base_url(self.default.provider)
+        env_key = self._get_provider_env_key(self.default.provider)
+        api_key = os.getenv(env_key) if env_key else None
+        return LLMConfig(
+            provider=self.default.provider,
+            model=self.default.model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=self.default.temperature,
+            max_tokens=self.default.max_tokens,
+        )
+
+    def get_provider_base_url(self, provider: str) -> Optional[str]:
+        """Get base_url for a provider from the providers mapping.
+
+        Usage example:
+            >>> model_config = ModelConfig.from_yaml("config/models.yaml")
+            >>> url = model_config.get_provider_base_url("qwen")
+            >>> print(url)
+            https://dashscope.aliyuncs.com/compatible-mode/v1
+
+        Args:
+            provider: Provider name (e.g., "qwen", "kimi", "deepseek").
+
+        Returns:
+            base_url string if found in providers mapping, None otherwise.
+        """
+        return self.providers.get(provider, {}).get("base_url")
+
+    def _get_provider_env_key(self, provider: str) -> Optional[str]:
+        """Get the environment variable name for a provider's API key.
+
+        Usage example:
+            >>> model_config = ModelConfig.from_yaml("config/models.yaml")
+            >>> import os
+            >>> env_key = model_config._get_provider_env_key("qwen")
+            >>> api_key = os.getenv(env_key)  # e.g., "DASHSCOPE_API_KEY"
+
+        Args:
+            provider: Provider name.
+
+        Returns:
+            Environment variable name (e.g., "DASHSCOPE_API_KEY") or None.
+        """
+        return self.providers.get(provider, {}).get("env_key")
 
     def get_multi_model_config(self, agent_name: str) -> Optional[MultiModelConfig]:
         """Get multi-model config for a specific agent.
@@ -195,28 +334,15 @@ class MCPServerConfig(BaseModel):
     url: Optional[str] = None
 
 
-class DebateConfig(BaseModel):
-    """Configuration for the debate/consensus mechanism.
+class AggregationConfig(BaseModel):
+    """Configuration for score aggregation (v3).
 
     Attributes:
-        max_rounds: Maximum debate rounds before forcing consensus.
-        score_threshold: Score difference threshold to trigger debate.
-        aggregator: Strategy for aggregating scores ("weighted", "average", "max").
-        weights: Per-agent weights for weighted aggregation.
+        weights: Per-dimension weights for weighted aggregation.
+                 Keys are dimension IDs (V1, V2, E1, E2, etc.)
     """
 
-    max_rounds: int = 3
-    score_threshold: float = 2.0
-    aggregator: str = "weighted"
-    weights: Dict[str, float] = Field(
-        default_factory=lambda: {
-            "verifier": 1.0,
-            "expert": 1.2,
-            "reader": 1.0,
-            "corrector": 0.8,
-            "reporter": 1.0,
-        }
-    )
+    weights: Dict[str, float]
 
 
 class ReportConfig(BaseModel):
@@ -254,6 +380,9 @@ class CitationConfig(BaseModel):
 class EvidenceConfig(BaseModel):
     """Configuration for evidence collection.
 
+    Note: 字段不设置默认值，强制从 YAML 读取，确保配置一致性。
+    如 YAML 缺失字段，from_yaml() 会抛出 ValidationError。
+
     Attributes:
         foundational_top_k: Number of top-cited papers to retrieve for G4.
         foundational_match_threshold: Title matching threshold for G4 (0-1).
@@ -262,35 +391,68 @@ class EvidenceConfig(BaseModel):
         clustering_algorithm: Clustering algorithm for S5 ("louvain", "spectral", "leiden").
         clustering_seed: Random seed for clustering.
         citation_sample_size: Number of citation-claim pairs to sample.
-        api_timeout_seconds: Timeout for API requests.
-        fallback_order: Ordered list of sources for fallback.
-        verify_limit: Maximum number of references to verify.
         c6_batch_size: Number of sentence-abstract pairs per batch for C6.
         c6_model: Model to use for C6 batch processing.
         c6_max_concurrency: Maximum concurrent batches for C6.
         contradiction_threshold: Threshold for auto-fail (0-1).
     """
 
-    foundational_top_k: int = 30
-    foundational_match_threshold: float = 0.85
-    trend_query_count: int = 5
-    trend_year_range: tuple[int, int] = (2015, 2025)
-    clustering_algorithm: str = "louvain"
-    clustering_seed: int = 42
-    citation_sample_size: int = 15
-    api_timeout_seconds: int = 30
-    fallback_order: list[str] = field(default_factory=lambda: ["semantic_scholar", "openalex"])
-    verify_limit: int = 50
-    c6_batch_size: int = 10
-    c6_model: str = "qwen3.5-flash"
-    c6_max_concurrency: int = 5
-    contradiction_threshold: float = 0.05
+    # 必填字段（无默认值，强制从 YAML 读取）
+    foundational_top_k: int
+    foundational_match_threshold: float
+    trend_query_count: int
+    trend_year_range: tuple[int, int]
+    clustering_algorithm: str
+    clustering_seed: int
+    citation_sample_size: int
+    c6_batch_size: int
+    c6_model: str
+    c6_max_concurrency: int
+    contradiction_threshold: float
 
     # V2 (Citation-Assertion Alignment) scoring thresholds
-    v2_score_5_threshold: float = 0.01   # <1% -> score 5
-    v2_score_4_threshold: float = 0.02   # 1-2% -> score 4
-    v2_score_3_threshold: float = 0.03   # 2-3% -> score 3
-    v2_score_2_threshold: float = 0.05   # 3-5% -> score 2
+    v2_score_5_threshold: float
+    v2_score_4_threshold: float
+    v2_score_3_threshold: float
+    v2_score_2_threshold: float
+
+
+class SearchEnginesConfig(BaseModel):
+    """Configuration for search engines and retrieval settings.
+
+    Note: 字段不设置默认值，强制从 YAML 读取，确保配置一致性。
+    配置文件: config/search_engines.yaml
+
+    Attributes:
+        verify_limit: Maximum number of references to verify.
+        api_timeout_seconds: Timeout for API requests.
+        fallback_order: Ordered list of sources for fallback.
+    """
+
+    verify_limit: int
+    api_timeout_seconds: int
+    fallback_order: list[str]
+
+    @classmethod
+    def from_yaml(cls, config_path: str = "config/search_engines.yaml") -> "SearchEnginesConfig":
+        """Load search engines configuration from YAML file.
+
+        Args:
+            config_path: Path to the search_engines.yaml file.
+
+        Returns:
+            SearchEnginesConfig instance.
+        """
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        # Extract only the search settings fields
+        search_settings = {
+            "verify_limit": data.get("verify_limit"),
+            "api_timeout_seconds": data.get("api_timeout_seconds"),
+            "fallback_order": data.get("fallback_order"),
+        }
+        return cls(**search_settings)
 
 
 class SurveyMAEConfig(BaseModel):
@@ -304,7 +466,7 @@ class SurveyMAEConfig(BaseModel):
         llm: Default LLM configuration.
         agents: Agent-specific configurations.
         mcp_servers: MCP server configurations.
-        debate: Debate mechanism settings.
+        aggregation: Score aggregation settings (v3).
         report: Report generation settings.
     """
 
@@ -312,7 +474,7 @@ class SurveyMAEConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     agents: List[AgentConfig] = Field(default_factory=list)
     mcp_servers: List[MCPServerConfig] = Field(default_factory=list)
-    debate: DebateConfig = Field(default_factory=DebateConfig)
+    aggregation: AggregationConfig
     report: ReportConfig = Field(default_factory=ReportConfig)
     citation: CitationConfig = Field(default_factory=CitationConfig)
     evidence: EvidenceConfig = Field(default_factory=EvidenceConfig)
@@ -366,8 +528,8 @@ class SurveyMAEConfig(BaseModel):
                     servers.append(MCPServerConfig(**server_data))
             data["mcp_servers"] = servers
 
-        if "debate" in data and isinstance(data["debate"], dict):
-            data["debate"] = DebateConfig(**data["debate"])
+        if "aggregation" in data and isinstance(data["aggregation"], dict):
+            data["aggregation"] = AggregationConfig(**data["aggregation"])
 
         if "report" in data and isinstance(data["report"], dict):
             data["report"] = ReportConfig(**data["report"])

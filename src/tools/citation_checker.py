@@ -5,6 +5,7 @@ Can be used to check if cited papers exist and match claims.
 """
 
 import asyncio
+import os
 import re
 import logging
 import xml.etree.ElementTree as ET
@@ -14,6 +15,9 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any, Iterable, Tuple
 
 import httpx
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from anthropic import AsyncAnthropic
 
 from src.tools.citation_metadata import (
     CitationMetadataChecker,
@@ -21,7 +25,7 @@ from src.tools.citation_metadata import (
 )
 from src.tools.pdf_parser import PDFParser
 from src.tools.result_store import ResultStore
-from src.core.config import load_config, SurveyMAEConfig
+from src.core.config import load_config, SurveyMAEConfig, ModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -824,14 +828,15 @@ class CitationChecker:
 
         logger.info(f"Pairs with abstract: {len(pairs_with_abstract)}, without: {len(insufficient_pairs)}")
 
-        # Initialize LLM using config
+        # Initialize LLM using ModelConfig (resolves base_url from models.yaml providers)
         try:
-            llm_config = self.config.llm
+            model_config = ModelConfig.from_yaml("config/models.yaml") #FIXME: choose yaml path in __init__ method
+            llm_cfg = model_config.get_tool_config("citation_checker")
             llm = ChatOpenAI(
-                model=llm_config.model,
-                api_key=llm_config.api_key,
-                base_url=llm_config.base_url,
-                temperature=0.1,
+                model=llm_cfg.model,
+                api_key=llm_cfg.api_key,
+                base_url=llm_cfg.base_url,
+                temperature=llm_cfg.temperature,
             )
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
@@ -905,7 +910,7 @@ class CitationChecker:
         insufficient = sum(1 for r in batch_results if r.get("llm_judgment") == "insufficient")
 
         # Calculate contradiction rate (excluding insufficient)
-        valid_count = support + contradict
+        valid_count = support + contradict #FIXME: should include insufficient or not? 
         contradiction_rate = contradict / valid_count if valid_count > 0 else 0.0
         auto_fail = contradiction_rate >= contradiction_threshold
 

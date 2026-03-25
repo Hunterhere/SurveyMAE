@@ -26,10 +26,10 @@ class VerifierAgent(BaseAgent):
     - Checks if cited papers actually exist and match the claims
     - Identifies potential hallucinations
 
-    Dimensions evaluated:
-    - factuality: Are the claims factually accurate?
-    - citation_accuracy: Do citations match the content?
-    - hallucination_score: Rate of potentially false claims
+    Dimensions evaluated (v3):
+    - V1: Citation existence (C5 metadata verify rate)
+    - V2: Citation-claim alignment (computed from C6 contradiction_rate)
+    - V4: Internal consistency
     """
 
     def __init__(
@@ -77,11 +77,12 @@ class VerifierAgent(BaseAgent):
         evidence_reports = state.get("evidence_reports", {})
         evidence_report = evidence_reports.get("verifier", "No evidence report available.")
 
-        # Extract C6 result from evidence_report for V2 scoring
-        c6_result = evidence_report.get("C6", {}) if isinstance(evidence_report, dict) else {}
+        # Extract C6 result from tool_evidence for V2 scoring (NOT from evidence_report string)
+        tool_evidence = state.get("tool_evidence", {})
+        c6_result = tool_evidence.get("c6_alignment", {})
         c6_auto_fail = c6_result.get("auto_fail", False)
         contradiction_rate = c6_result.get("contradiction_rate", 0.0)
-        contradictions = c6_result.get("c6_contradictions", [])
+        contradictions = c6_result.get("contradictions", [])
 
         # Calculate V2 score based on C6 results
         v2_score: float = 0.0
@@ -169,19 +170,40 @@ class VerifierAgent(BaseAgent):
                 score, reasoning, evidence, citation_analysis
             )
 
-        # Add V2 scoring info to evidence
-        v2_evidence = {
-            "v2_score": v2_score,
-            "v2_reasoning": v2_reasoning,
-            "contradiction_rate": contradiction_rate,
-            "c6_auto_fail": c6_auto_fail,
-            "contradictions_sample": contradictions[:5],  # Include sample contradictions
-        }
+        # Build complete sub_scores JSON including V2 (computed from C6)
+        # The LLM response contains V1 and V4; we inject V2 here
+        try:
+            import json
+            # Try to extract existing sub_scores from LLM response
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", reasoning, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group(1))
+                sub_scores_data = parsed.get("sub_scores", {})
+            else:
+                json_match2 = re.search(r"\{.*\}", reasoning, re.DOTALL)
+                if json_match2:
+                    parsed = json.loads(json_match2.group(0))
+                    sub_scores_data = parsed.get("sub_scores", {})
+                else:
+                    sub_scores_data = {}
 
-        if evidence:
-            evidence = f"{evidence}\n\nV2 (Citation-Assertion Alignment): {v2_reasoning}"
-        else:
-            evidence = f"V2 (Citation-Assertion Alignment): {v2_reasoning}"
+            # Add V2 sub_score (auto-computed from C6, NOT from LLM)
+            sub_scores_data["V2_citation_claim_alignment"] = {
+                "score": v2_score,
+                "llm_involved": False,
+                "tool_evidence": {
+                    "contradiction_rate": contradiction_rate,
+                    "c6_auto_fail": c6_auto_fail,
+                },
+                "llm_reasoning": v2_reasoning,
+                "flagged_items": [c.get("note", "")[:100] for c in contradictions[:5]] if contradictions else [],
+            }
+
+            # Reconstruct reasoning with complete sub_scores
+            parsed["sub_scores"] = sub_scores_data
+            reasoning = json.dumps(parsed, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"Failed to reconstruct sub_scores JSON: {e}")
 
         return EvaluationRecord(
             agent_name=self.name,

@@ -8,6 +8,22 @@ default:
   temperature: 0.0
   max_tokens: 4096
 
+# Tool-specific model configurations
+tools:
+  # Citation Checker - used for C6 citation-sentence alignment analysis
+  citation_checker:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.1
+    max_tokens: 4096
+
+  # Keyword Extractor - used for LLM-assisted keyword extraction
+  keyword_extractor:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.0
+    max_tokens: 1024
+
 # Agent-specific model configurations
 agents:
   # Verifier Agent - used for fact-checking and citation verification

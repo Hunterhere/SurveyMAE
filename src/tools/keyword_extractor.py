@@ -6,13 +6,16 @@ field trend analysis (T2/T5) and foundational coverage analysis (G4).
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
+from langchain_openai import ChatOpenAI
+from anthropic import AsyncAnthropic
 
-from src.core.config import LLMConfig, load_config
+from src.core.config import LLMConfig, load_config, ModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +71,18 @@ Example: ["retrieval augmented generation", "RAG LLM", "dense passage retrieval"
         self.prompt_template = prompt_template or self.DEFAULT_PROMPT
 
     def _get_llm(self) -> Runnable:
-        """Get or create LLM instance."""
+        """Get or create LLM instance.
+
+        Uses ModelConfig.get_tool_config("keyword_extractor") which resolves
+        base_url from models.yaml providers section automatically.
+        """
         if self.llm is not None:
             return self.llm
 
-        # Create LLM from config - load from main.yaml
         if self.llm_config is None:
             try:
-                cfg = load_config()
-                self.llm_config = LLMConfig(
-                    provider=cfg.llm.provider,
-                    model=cfg.llm.model,
-                    temperature=cfg.llm.temperature,
-                )
+                model_config = ModelConfig.from_yaml("config/models.yaml")
+                self.llm_config = model_config.get_tool_config("keyword_extractor")
             except Exception:
                 # Fallback to qwen if config loading fails
                 self.llm_config = LLMConfig(
@@ -89,51 +91,58 @@ Example: ["retrieval augmented generation", "RAG LLM", "dense passage retrieval"
                     temperature=0.0,
                 )
 
-        # Directly create LLM without using BaseAgent
-        from langchain_openai import ChatOpenAI
-
         provider = self.llm_config.provider or "openai"
 
-        # Map provider names to their base URLs and env keys
-        provider_urls = {
-            "openai": (None, "OPENAI_API_KEY"),
-            "anthropic": (None, "ANTHROPIC_API_KEY"),
-            "kimi": ("https://api.moonshot.cn/v1", "KIMI_API_KEY"),
-            "qwen": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
-            "chatglm": ("https://open.bigmodel.cn/api/paas/v4", "ZHIPU_API_KEY"),
-            "step": ("https://api.stepfun.com/v1", "STEP_API_KEY"),
-            "deepseek": ("https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
-            "gemini": ("https://generativelanguage.googleapis.com/v1beta", "GOOGLE_API_KEY"),
-            "seed": ("https://ark.cn-beijing.volces.com/api/v3", "BYTEAPI_KEY"),
-        }
-
         if provider == "anthropic":
-            raise ValueError("Anthropic provider not supported directly in KeywordExtractor")
+            return self._create_anthropic_llm(self.llm_config)
 
-        # For OpenAI-compatible APIs (most providers)
-        if provider in provider_urls:
-            base_url, env_key = provider_urls[provider]
-            # Use config base_url if provided, otherwise use default
-            base_url = self.llm_config.base_url or base_url
-            # Get API key from config or environment
-            import os
-            api_key = self.llm_config.api_key or os.getenv(env_key)
-
-            return ChatOpenAI(
-                model=self.llm_config.model,
-                api_key=api_key,
-                base_url=base_url,
-                temperature=self.llm_config.temperature,
-                max_tokens=self.llm_config.max_tokens,
-            )
-
-        # Default to OpenAI
         return ChatOpenAI(
             model=self.llm_config.model,
             api_key=self.llm_config.api_key,
             base_url=self.llm_config.base_url,
             temperature=self.llm_config.temperature,
             max_tokens=self.llm_config.max_tokens,
+        )
+
+    def _create_anthropic_llm(self, llm_config: LLMConfig) -> Runnable:
+        """Create an Anthropic-compatible LLM instance."""
+        api_key = llm_config.api_key or os.getenv("ANTHROPIC_API_KEY")
+        client = AsyncAnthropic(api_key=api_key)
+
+        class AnthropicWrapper:
+            def __init__(
+                self, client: AsyncAnthropic, model: str, temperature: float, max_tokens: int
+            ):
+                self.client = client
+                self.model = model
+                self.temperature = temperature
+                self.max_tokens = max_tokens
+
+            async def ainvoke(self, messages: list[BaseMessage]) -> BaseMessage:
+                anthropic_messages = []
+                for msg in messages:
+                    if isinstance(msg, SystemMessage):
+                        anthropic_messages.append({"role": "user", "content": msg.content})
+                        anthropic_messages.append({"role": "assistant", "content": ""})
+                    elif isinstance(msg, HumanMessage):
+                        anthropic_messages.append({"role": "user", "content": msg.content})
+
+                if not anthropic_messages:
+                    anthropic_messages = [{"role": "user", "content": "Hello"}]
+
+                response = await self.client.messages.create(
+                    model=self.model,
+                    messages=anthropic_messages,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                )
+                return HumanMessage(content=response.content[0].text)
+
+        return AnthropicWrapper(
+            client=client,
+            model=llm_config.model,
+            temperature=llm_config.temperature,
+            max_tokens=llm_config.max_tokens,
         )
 
     async def extract_keywords(

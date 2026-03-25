@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import re
 
 from src.core.state import SurveyState
-from src.core.config import load_config
+from src.core.config import load_config, SearchEnginesConfig
 from src.tools.citation_checker import CitationChecker
 from src.tools.citation_analysis import CitationAnalyzer
 
@@ -54,9 +54,10 @@ logger = logging.getLogger(__name__)
 
 
 def _load_evidence_config() -> Dict[str, Any]:
-    """Load evidence configuration from config file."""
+    """Load evidence configuration from config files."""
     try:
         cfg = load_config()
+        search_cfg = SearchEnginesConfig.from_yaml()
         return {
             "foundational_top_k": cfg.evidence.foundational_top_k,
             "foundational_match_threshold": cfg.evidence.foundational_match_threshold,
@@ -65,9 +66,9 @@ def _load_evidence_config() -> Dict[str, Any]:
             "clustering_algorithm": cfg.evidence.clustering_algorithm,
             "clustering_seed": cfg.evidence.clustering_seed,
             "citation_sample_size": cfg.evidence.citation_sample_size,
-            "api_timeout_seconds": cfg.evidence.api_timeout_seconds,
-            "fallback_order": cfg.evidence.fallback_order,
-            "verify_limit": cfg.evidence.verify_limit,
+            "api_timeout_seconds": search_cfg.api_timeout_seconds,
+            "fallback_order": search_cfg.fallback_order,
+            "verify_limit": search_cfg.verify_limit,
             "c6_batch_size": cfg.evidence.c6_batch_size,
             "c6_model": cfg.evidence.c6_model,
             "c6_max_concurrency": cfg.evidence.c6_max_concurrency,
@@ -801,9 +802,8 @@ async def run_evidence_collection(
 
         # Get cluster evidence for S5 calculation
         summary = graph_result.get("summary", {})
-        cluster_summary = summary.get("cocitation_clustering", {})
-        cluster_evidence = cluster_summary.get("cluster_evidence", [])
-        clustering_method = cluster_summary.get("clustering_method", "cocitation")
+        evidence = graph_result.get("evidence", {})
+        cluster_evidence = evidence.get("clusters", [])
 
         # Compute S5 (section-cluster alignment)
         try:
@@ -870,8 +870,8 @@ async def run_evidence_collection(
         tool_evidence = {
             "extraction": extraction,
             "validation": {
-                "orphan_ref_rate": orphan_ref_rate,
-                "metadata_verify_rate": metadata_verify_rate,
+                "C3_orphan_ref_rate": orphan_ref_rate,
+                "C5_metadata_verify_rate": metadata_verify_rate,
                 "references": references,
                 "verified_count": verified_count,
                 "total_refs": total_refs,
@@ -906,7 +906,7 @@ async def run_evidence_collection(
                 "suspicious_centrality": suspicious_papers,
             },
             # C6 citation-sentence alignment
-            "C6": c6_result,
+            "c6_alignment": c6_result,
         }
 
         logger.info(f"Evidence collection complete: {total_refs} references, {len(topic_keywords)} keywords")
@@ -925,10 +925,5 @@ async def run_evidence_collection(
 
     except Exception as e:
         logger.error(f"Evidence collection failed: {e}", exc_info=True)
-        return {
-            "tool_evidence": {},
-            "ref_metadata_cache": {},
-            "topic_keywords": [],
-            "field_trend_baseline": {},
-            "candidate_key_papers": [],
-        }
+        # Re-raise so the workflow wrapper can handle it with full context
+        raise

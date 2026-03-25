@@ -6,7 +6,6 @@ Handles the debate/consensus mechanism between conflicting evaluations.
 import logging
 from typing import Dict, Any
 
-from src.core.config import DebateConfig
 from src.core.state import SurveyState, DebateMessage, EvaluationRecord
 
 logger = logging.getLogger(__name__)

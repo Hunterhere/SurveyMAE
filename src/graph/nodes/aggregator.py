@@ -9,10 +9,10 @@ This module provides:
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
 from statistics import mean, median, stdev
+from typing import Any
 
-from src.core.state import SurveyState, EvaluationRecord, AgentOutput
+from src.core.state import AgentOutput, EvaluationRecord, SurveyState
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ DEFAULT_DIMENSION_WEIGHTS = {
 }
 
 
-async def aggregate_scores(state: SurveyState) -> Dict[str, Any]:
+async def aggregate_scores(state: SurveyState) -> dict[str, Any]:
     """Pure mathematical aggregation of evaluation scores (v3 weighted).
 
     This function:
@@ -82,9 +82,9 @@ def _get_grade(score: float) -> str:
 
 
 def _aggregate_from_agent_outputs(
-    agent_outputs: Dict[str, AgentOutput],
-    corrector_output: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    agent_outputs: dict[str, AgentOutput],
+    corrector_output: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Aggregate scores from structured AgentOutput format (v3 weighted aggregation).
 
     This function:
@@ -106,7 +106,9 @@ def _aggregate_from_agent_outputs(
     weights_config = {}
     try:
         cfg = load_config()
-        weights_config = getattr(cfg.aggregation, "weights", {}) if hasattr(cfg, "aggregation") else {}
+        weights_config = (
+            getattr(cfg.aggregation, "weights", {}) if hasattr(cfg, "aggregation") else {}
+        )
     except Exception:
         pass
 
@@ -138,8 +140,6 @@ def _aggregate_from_agent_outputs(
     all_scores_with_weights = []
 
     for agent_name, output in agent_outputs.items():
-        dimension = output.get("dimension", agent_name)
-
         for sub_id, sub_score in output.get("sub_scores", {}).items():
             # Check if this dimension has a correction
             if sub_id in corrections:
@@ -193,7 +193,7 @@ def _aggregate_from_agent_outputs(
     }
 
 
-def _aggregate_from_evaluations(evaluations: List[EvaluationRecord]) -> Dict[str, Any]:
+def _aggregate_from_evaluations(evaluations: list[EvaluationRecord]) -> dict[str, Any]:
     """Aggregate scores from legacy EvaluationRecord format.
 
     Args:
@@ -212,7 +212,7 @@ def _aggregate_from_evaluations(evaluations: List[EvaluationRecord]) -> Dict[str
         }
 
     # Group by dimension
-    dim_scores: Dict[str, List[EvaluationRecord]] = {}
+    dim_scores: dict[str, list[EvaluationRecord]] = {}
     for eval_record in evaluations:
         dim = eval_record.get("dimension", "unknown")
         if dim not in dim_scores:
@@ -220,9 +220,8 @@ def _aggregate_from_evaluations(evaluations: List[EvaluationRecord]) -> Dict[str
         dim_scores[dim].append(eval_record)
 
     # Calculate aggregated scores per dimension
-    aggregated: Dict[str, Dict] = {}
+    aggregated: dict[str, dict] = {}
     all_scores = []
-    deterministic_scores = []
     llm_scores = []
 
     for dim, evals in dim_scores.items():
@@ -280,13 +279,15 @@ def _aggregate_from_evaluations(evaluations: List[EvaluationRecord]) -> Dict[str
     }
 
 
-def generate_report(aggregation_result: Dict[str, Any], state: SurveyState) -> str:
+def generate_report(aggregation_result: dict[str, Any], state: SurveyState) -> str:
     """Generate markdown report with variance-aware display (v3 format).
 
     This function creates a final report that:
-    1. Shows all dimension scores with source (original/corrected)
-    2. Shows variance information for corrected dimensions
-    3. Includes diagnostic information
+    1. Shows header with overall score and grade
+    2. Shows evidence dashboard with deterministic metrics
+    3. Shows agent assessment with tool_evidence, llm_reasoning, flagged_items
+    4. Shows key findings with recommendations
+    5. Shows footer
 
     Args:
         aggregation_result: Result from aggregate_scores (v3 format with dimension_scores)
@@ -296,130 +297,443 @@ def generate_report(aggregation_result: Dict[str, Any], state: SurveyState) -> s
         Markdown formatted report.
     """
     source_pdf = state.get("source_pdf_path", "")
-    metadata = state.get("metadata", {})
+    tool_evidence = state.get("tool_evidence", {})
+    agent_outputs = state.get("agent_outputs", {})
+    corrector_output = state.get("corrector_output", {})
+    dimension_scores = aggregation_result.get("dimension_scores", {})
 
-    lines = [
-        "# SurveyMAE Evaluation Report",
-        "",
-        f"**Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "",
-        f"**Source**: {source_pdf or 'N/A'}",
-        "",
-    ]
+    sections = []
 
-    # Overall score section
+    # Header
+    sections.append(_render_header(source_pdf, aggregation_result))
+
+    # Section 1: Evidence Dashboard
+    sections.append(_render_evidence_dashboard(tool_evidence))
+
+    # Section 2: Agent Assessment
+    sections.append(
+        _render_agent_assessment(agent_outputs, dimension_scores, corrector_output, tool_evidence)
+    )
+
+    # Section 3: Key Findings
+    sections.append(_render_key_findings(dimension_scores, tool_evidence, agent_outputs))
+
+    # Footer
+    sections.append(_render_footer())
+
+    return "\n\n".join(sections)
+
+
+def _render_header(source_pdf: str, aggregation_result: dict[str, Any]) -> str:
+    """Render report header with overall score and grade."""
     overall = aggregation_result.get("overall_score", 0.0)
     grade = aggregation_result.get("grade", "F")
-    lines.append(f"## Overall Score: {overall:.2f}/10")
-    lines.append("")
-    lines.append(f"**Grade**: {grade}")
-    lines.append("")
 
-    # Score summary table (v3: dimension_scores)
+    return f"""# SurveyMAE Evaluation Report
+
+**Source**: {source_pdf or "N/A"} | **Generated**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+**Overall Score**: {overall:.2f}/10 (Grade: {grade})
+
+---"""
+
+
+def _render_evidence_dashboard(tool_evidence: dict[str, Any]) -> str:
+    """Render Section 1: Evidence Dashboard with deterministic metrics."""
+    lines = ["## 1. Evidence Dashboard", ""]
+
+    # Citation Integrity
+    validation = tool_evidence.get("validation", {})
+    c6 = tool_evidence.get("c6_alignment", {})
+    analysis = tool_evidence.get("analysis", {})
+    graph = tool_evidence.get("graph_analysis", {})
+
+    # Extract values
+    c3 = validation.get("C3_orphan_ref_rate")
+    c5 = validation.get("C5_metadata_verify_rate")
+    c6_rate = c6.get("contradiction_rate")
+
+    # Generate notes based on thresholds
+    c3_note = _threshold_note(c3, [(0.10, "Low orphan rate"), (0.20, ""), (0, "High orphan rate")])
+    c5_note = _threshold_note(
+        c5, [(0.90, "Strong verification"), (0.70, ""), (0, "Many unverified refs")]
+    )
+    c6_note = _threshold_note(
+        c6_rate, [(0.9, "Auto-fail triggered"), (0.1, "Some contradictions"), (0.05, "Very few contradictions"), (0, "")]
+    )
+
     lines.extend(
         [
-            "## Score Summary",
+            "### Citation Integrity",
+            "| Metric | Value | Note |",
+            "|--------|-------|------|",
+            f"| C3 Orphan Ref Rate | {c3:.2f} | {c3_note} |",
+            f"| C5 Metadata Verify Rate | {c5:.2f} | {c5_note} |",
+            f"| C6 Contradiction Rate | {c6_rate:.3f} | {c6_note} |",
             "",
-            "| Dimension | Score | Source | Agent |",
-            "|-----------|-------|--------|-------|",
         ]
     )
 
-    dimension_scores = aggregation_result.get("dimension_scores", {})
-    for dim_id, data in dimension_scores.items():
-        score = data.get("final_score", 5.0)
-        source = data.get("source", "original")
-        agent = data.get("agent", "unknown")
-        lines.append(f"| {dim_id} | {score:.1f}/5 | {source} | {agent} |")
+    # Temporal Coverage (analysis is flat: T1-T5 are direct keys)
+    t1 = analysis.get("T1_year_span")
+    t2 = analysis.get("T2_foundational_retrieval_gap")
+    t4 = analysis.get("T4_temporal_continuity")
+    t5 = analysis.get("T5_trend_alignment")
+    year_dist = analysis.get("year_distribution", {})
+    if year_dist:
+        years = list(year_dist.keys())
+        year_range = f"({min(years)}-{max(years)})" if years else "(N/A-N/A)"
+    else:
+        year_range = "(N/A-N/A)"
 
-    lines.append("")
+    t2_note = _threshold_note(
+        t2, [(2, "Covers foundational period"), (5, ""), (0, "May miss early work")]
+    )
+    t4_note = _threshold_note(
+        t4, [(1, "No significant gap"), (3, ""), (0, "Significant temporal gap")]
+    )
+    t5_note = _threshold_note(
+        t5, [(0.7, "Well-aligned with field"), (0.4, ""), (0, "Misaligned with field trend")]
+    )
 
-    # Variance section for corrected dimensions
-    corrected_dims = [(dim_id, data) for dim_id, data in dimension_scores.items()
-                      if data.get("source") == "corrected"]
-    if corrected_dims:
-        lines.extend(
-            [
-                "## Variance (Multi-Model Voting)",
-                "",
-            ]
-        )
-        for dim_id, data in corrected_dims:
-            variance = data.get("variance", {})
-            if variance:
-                std = variance.get("std", 0.0)
-                scores = variance.get("scores", [])
-                lines.append(f"- **{dim_id}**: scores={scores}, std={std:.2f}")
-        lines.append("")
-
-    # Recommendations
-    lines.extend(["", "## Recommendations", ""])
-    recommendations = _generate_recommendations(dimension_scores, overall)
-    lines.extend(recommendations)
-
-    # Footer
     lines.extend(
         [
+            "### Temporal Coverage",
+            "| Metric | Value | Note |",
+            "|--------|-------|------|",
+            f"| T1 Year Span | {t1} years {year_range} | |",
+            f"| T2 Foundational Gap | {t2} years | {t2_note} |",
+            f"| T4 Max Citation Gap | {t4} years | {t4_note} |",
+            f"| T5 Trend Alignment | {t5:.2f} | {t5_note} |",
             "",
-            "---",
+        ]
+    )
+
+    # Structure & Graph (graph_analysis is flat)
+    g4 = graph.get("G4_coverage_rate")
+    s5 = graph.get("S5_nmi")
+    g6_isolates = graph.get("G6_isolates", 0)
+    total_refs = max(tool_evidence.get("validation", {}).get("total_refs", 1), 1)
+    g6 = g6_isolates / total_refs if total_refs > 0 else 0
+
+    g4_note = _threshold_note(
+        g4, [(0.7, "Strong coverage"), (0.4, ""), (0, "Many key papers missing")]
+    )
+    s5_note = _threshold_note(
+        s5, [(0.7, "Well-organized structure"), (0.4, ""), (0, "Weak structure-content alignment")]
+    )
+    g6_note = _threshold_note(
+        g6, [(0.10, "Low isolation"), (0.25, ""), (0, "Many isolated references")]
+    )
+
+    lines.extend(
+        [
+            "### Structure & Graph",
+            "| Metric | Value | Note |",
+            "|--------|-------|------|",
+            f"| G4 Foundational Coverage | {g4:.2f} | {g4_note} |",
+            f"| S5 Section-Cluster Alignment | {s5:.2f} | {s5_note} |",
+            f"| G6 Isolated Node Ratio | {g6:.2f} | {g6_note} |",
             "",
-            "*Report generated by SurveyMAE - Multi-Agent Survey Evaluation Framework*",
         ]
     )
 
     return "\n".join(lines)
 
 
-def _generate_recommendations(
-    dimension_scores: Dict[str, Dict],
-    overall_score: float,
-) -> List[str]:
-    """Generate recommendations based on evaluation results (v3 format)."""
-    recommendations = []
+def _threshold_note(value: float | None, thresholds: list[tuple]) -> str:
+    """Generate deterministic note based on threshold rules.
 
-    # Check each dimension for low scores
-    low_score_dims = []
-    for dim_id, data in dimension_scores.items():
-        score = data.get("final_score", 5.0)
-        # Score is on 1-5 scale, convert threshold: 7/10 * 5 = 3.5
-        if score < 3.5:
-            low_score_dims.append((dim_id, score))
+    Args:
+        value: metric value (float)
+        thresholds: list of (threshold, note) pairs, sorted descending
 
-    if low_score_dims:
-        recommendations.append("**Areas Requiring Attention:**")
-        for dim_id, score in low_score_dims:
-            recommendations.append(
-                f"- **{dim_id}** (Score: {score:.1f}/5) - Consider improving this aspect."
+    Returns:
+        The note for the first threshold that value exceeds.
+    """
+    if value is None:
+        return "N/A"
+    for threshold, note in thresholds:
+        if value >= threshold:
+            return note
+    return thresholds[-1][1] if thresholds else ""
+
+
+def _render_agent_assessment(
+    agent_outputs: dict[str, Any],
+    dimension_scores: dict[str, Any],
+    corrector_output: dict[str, Any],
+    tool_evidence: dict[str, Any],
+) -> str:
+    """Render Section 2: Agent Assessment with scores, evidence, reasoning, and flagged items."""
+    lines = ["## 2. Agent Assessment", ""]
+
+    # Agent order and mapping
+    agent_info = {
+        "verifier": {"title": "Factuality", "dimension": "factuality"},
+        "expert": {"title": "Depth", "dimension": "depth"},
+        "reader": {"title": "Coverage", "dimension": "readability"},
+    }
+
+    corrections = corrector_output.get("corrections", {}) if corrector_output else {}
+
+    for agent_name, info in agent_info.items():
+        if agent_name not in agent_outputs:
+            continue
+
+        output = agent_outputs[agent_name]
+        sub_scores = output.get("sub_scores", {})
+
+        lines.append(f"### {info['title']} ({agent_name.capitalize()}Agent)")
+        lines.append("")
+
+        # Score table with tool_evidence and variance badge
+        lines.append("| Sub-dimension | Score | Evidence |")
+        lines.append("|---------------|-------|----------|")
+
+        for sub_id, sub_data in sub_scores.items():
+            score = sub_data.get("score", 5.0)
+            tool_ev = sub_data.get("tool_evidence", {})
+
+            # Format tool evidence summary
+            evidence_summary = _format_tool_evidence(sub_id, tool_ev)
+
+            # Variance badge
+            variance_badge = ""
+            if sub_id in corrections:
+                variance = corrections[sub_id].get("variance", {})
+                std = variance.get("std", 0.0)
+                high_disagreement = variance.get("high_disagreement", False)
+                if high_disagreement:
+                    variance_badge = f" *(corrected, HIGH VARIANCE std={std:.2f})*"
+                else:
+                    variance_badge = f" *(corrected, std={std:.2f})*"
+
+            dim_name = sub_id.replace("_", " ").title()
+            lines.append(
+                f"| {dim_name} | {score:.0f}/5{variance_badge} | {evidence_summary} |"
             )
 
-    # Check for high variance in corrected dimensions
-    high_variance_dims = []
-    for dim_id, data in dimension_scores.items():
-        if data.get("source") == "corrected":
-            variance = data.get("variance", {})
-            if variance and variance.get("high_disagreement", False):
-                high_variance_dims.append(dim_id)
+        lines.append("")
 
-    if high_variance_dims:
-        recommendations.append("")
-        recommendations.append("**High Variance Detected:**")
-        recommendations.append("The following dimensions show high disagreement between models:")
-        for dim_id in high_variance_dims:
-            recommendations.append(f"- {dim_id}")
-        for item in high_variance_dims:
-            recommendations.append(f"- {item}")
+        # Agent Analysis: reasoning from lowest-scoring dimension
+        lowest_dim = min(sub_scores.items(), key=lambda x: x[1].get("score", 5.0))
+        lowest_id, lowest_data = lowest_dim
+        reasoning = lowest_data.get("llm_reasoning", "")
+        if reasoning:
+            lines.append(f"**Agent Analysis** ({lowest_id}):")
+            lines.append(f"{reasoning}")
+            lines.append("")
 
-    # General recommendations
-    if overall_score < 7.0:
-        recommendations.append("")
-        recommendations.append("**General Recommendations:**")
-        recommendations.append("1. Review and address the low-scoring dimensions identified above.")
-        recommendations.append("2. Consider seeking expert feedback on technical content.")
-        recommendations.append("3. Verify all citations are accurate and properly formatted.")
+        # Flagged Items: collect all flagged items from this agent
+        all_flagged = []
+        for sub_id, sub_data in sub_scores.items():
+            flagged = sub_data.get("flagged_items")
+            if flagged:
+                all_flagged.extend(flagged if isinstance(flagged, list) else [flagged])
+
+        lines.append("**Flagged Items:**")
+        if all_flagged:
+            for item in all_flagged:
+                lines.append(f"- {item}")
+        else:
+            lines.append("- No specific items flagged.")
+        lines.append("")
+
+        # Special: Missing key papers for ExpertAgent
+        if agent_name == "expert":
+            missing_papers = tool_evidence.get("key_papers", {}).get("missing_key_papers", [])
+            if missing_papers:
+                lines.append("**Missing Key Papers:**")
+                for paper in missing_papers[:5]:  # Limit to 5
+                    title = paper.get("title", "Unknown")
+                    year = paper.get("year", "N/A")
+                    lines.append(f"- {title} ({year})")
+            else:
+                lines.append("**Missing Key Papers:**")
+                lines.append("- No missing key papers detected.")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _format_tool_evidence(sub_id: str, tool_ev: dict[str, Any]) -> str:
+    """Format tool_evidence for display in score table."""
+    if not tool_ev:
+        return "N/A"
+
+    # Try to extract key metrics based on dimension
+    if "V1" in sub_id:
+        value = tool_ev.get("value") or tool_ev.get("metadata_verify_rate")
+        if value:
+            return f"C5={value:.2f}"
+    elif "V2" in sub_id:
+        sample = tool_ev.get("sample_size")
+        supported = tool_ev.get("supported_count")
+        if sample and supported:
+            return f"{supported}/{sample} supported"
+    elif "E1" in sub_id:
+        value = tool_ev.get("value") or tool_ev.get("foundational_coverage_rate")
+        if value:
+            return f"G4={value:.2f}"
+    elif "E2" in sub_id:
+        value = tool_ev.get("value") or tool_ev.get("section_cluster_alignment")
+        if value:
+            return f"S5={value:.2f}"
+    elif "R1" in sub_id:
+        metrics = tool_ev.get("metrics", {})
+        t5 = metrics.get("T5")
+        if t5:
+            return f"T5={t5:.2f}"
+    elif "R2" in sub_id:
+        metrics = tool_ev.get("metrics", {})
+        s3 = metrics.get("S3")
+        if s3:
+            return f"S3={s3:.2f}"
+    elif "R3" in sub_id:
+        metrics = tool_ev.get("metrics", {})
+        s5 = metrics.get("S5")
+        if s5:
+            return f"S5={s5:.2f}"
+
+    # Fallback: just stringify
+    return str(tool_ev)[:50]
+
+
+def _render_key_findings(
+    dimension_scores: dict[str, Any],
+    tool_evidence: dict[str, Any],
+    agent_outputs: dict[str, Any],
+) -> str:
+    """Render Section 3: Key Findings with areas requiring attention and strengths."""
+    lines = ["## 3. Key Findings & Recommendations", ""]
+
+    # Areas Requiring Attention: dimensions with score < 3.5
+    low_scores = [
+        (dim_id, data)
+        for dim_id, data in dimension_scores.items()
+        if data.get("final_score", 5.0) < 3.5
+    ]
+    low_scores.sort(key=lambda x: x[1].get("final_score", 5.0))  # Sort ascending
+
+    if low_scores:
+        lines.append("### Areas Requiring Attention")
+        lines.append("")
+
+        for dim_id, data in low_scores:
+            score = data.get("final_score", 5.0)
+            agent = data.get("agent", "unknown")
+
+            # Get reasoning from agent_outputs
+            reasoning = ""
+            for agent_name, output in agent_outputs.items():
+                sub_scores = output.get("sub_scores", {})
+                if dim_id in sub_scores:
+                    reasoning = sub_scores[dim_id].get("llm_reasoning", "")
+                    break
+
+            # Generate recommendation based on dimension
+            recommendation = _generate_dimension_recommendation(
+                dim_id, tool_evidence, agent_outputs
+            )
+
+            lines.append(f"**{dim_id}** (Score: {score:.1f}/5, Agent: {agent})")
+            if reasoning:
+                lines.append(f"Agent assessment: {reasoning}")
+            lines.append(f"Recommendation: {recommendation}")
+            lines.append("")
+
+    # Strengths: dimensions with score >= 4.0
+    strengths = [
+        (dim_id, data)
+        for dim_id, data in dimension_scores.items()
+        if data.get("final_score", 5.0) >= 4.0
+    ]
+    strengths.sort(key=lambda x: x[1].get("final_score", 5.0), reverse=True)  # Sort descending
+
+    if strengths:
+        lines.append("### Strengths")
+        lines.append("")
+
+        for dim_id, data in strengths:
+            score = data.get("final_score", 5.0)
+            # Get supporting evidence
+            evidence = _get_strength_evidence(dim_id, tool_evidence, agent_outputs)
+            lines.append(f"- **{dim_id}** ({score:.1f}/5): {evidence}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _generate_dimension_recommendation(
+    dim_id: str, tool_evidence: dict, agent_outputs: dict
+) -> str:
+    """Generate recommendation based on dimension ID."""
+    # Recommendations based on dimension prefix
+    if dim_id.startswith("V1"):
+        validation = tool_evidence.get("validation", {})
+        unverified = validation.get("unverified_references", [])
+        if unverified:
+            return f"Verify unverified references, particularly: {', '.join(unverified[:3])}"
+        return "Verify unverified references."
+    elif dim_id.startswith("V2"):
+        c6 = tool_evidence.get("c6_alignment", {})
+        contradictions = c6.get("contradictions", [])
+        if contradictions:
+            notes = [c.get("note", "")[:50] for c in contradictions[:3]]
+            return f"Review flagged citation-claim contradictions: {'; '.join(notes)}"
+        return "Review citation-claim alignment."
+    elif dim_id.startswith("E1"):
+        key_papers = tool_evidence.get("key_papers", {})
+        missing = key_papers.get("missing_key_papers", [])
+        if missing:
+            titles = [p.get("title", "")[:30] for p in missing[:3]]
+            return f"Consider adding key papers: {'; '.join(titles)}"
+        return "Review foundational coverage."
+    elif dim_id.startswith("E4"):
+        return "Add comparative analysis, method limitations, and open questions."
+    elif dim_id.startswith("R1"):
+        t5 = tool_evidence.get("analysis", {}).get("temporal", {}).get("T5_trend_alignment")
+        if t5:
+            return f"Improve temporal coverage; current trend alignment is T5={t5:.2f}."
+        return "Improve temporal coverage."
+    elif dim_id.startswith("R2"):
+        s3 = tool_evidence.get("analysis", {}).get("structural", {}).get("S3_citation_gini")
+        if s3:
+            return f"Balance citation distribution across sections (current Gini={s3:.2f})."
+        return "Balance information across sections."
+    elif dim_id.startswith("R3"):
+        return "Improve structural organization."
+    elif dim_id.startswith("R4"):
+        return "Review writing quality issues."
     else:
-        recommendations.append("")
-        recommendations.append("**General Recommendations:**")
-        recommendations.append("1. The survey is of acceptable quality.")
-        recommendations.append("2. Minor improvements can be made in the areas noted above.")
+        return "Review and improve this aspect."
 
-    return recommendations
+
+def _get_strength_evidence(dim_id: str, tool_evidence: dict, agent_outputs: dict) -> str:
+    """Get supporting evidence for a strength."""
+    if dim_id.startswith("V4"):
+        return "No internal contradictions detected"
+    elif dim_id.startswith("V1"):
+        c5 = tool_evidence.get("validation", {}).get("C5_metadata_verify_rate")
+        if c5 and c5 >= 0.9:
+            return f"Strong verification rate (C5={c5:.2f})"
+    elif dim_id.startswith("E3"):
+        return "Technical descriptions are accurate"
+    elif dim_id.startswith("R1"):
+        t5 = tool_evidence.get("analysis", {}).get("temporal", {}).get("T5_trend_alignment")
+        if t5 and t5 >= 0.7:
+            return f"Well-aligned with field trend (T5={t5:.2f})"
+    return "Good overall performance"
+
+
+def _render_footer() -> str:
+    """Render report footer."""
+    return """---
+
+*Report generated by SurveyMAE v3 - Multi-Agent Survey Evaluation Framework*
+*Deterministic metrics are exact values. LLM-based scores may vary across models.*
+*Dimensions marked (corrected) were re-scored via multi-model voting.*"""

@@ -149,11 +149,11 @@ def build_verifier_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
     graph_analysis = evidence.get("graph_analysis", {})
 
     # Extract C3, C5
-    orphan_rate = validation.get("orphan_ref_rate")
-    verify_rate = validation.get("metadata_verify_rate")
+    orphan_rate = validation.get("C3_orphan_ref_rate")
+    verify_rate = validation.get("C5_metadata_verify_rate")
 
-    # Extract C6 (citation_sentence_alignment)
-    c6_result = graph_analysis.get("C6", {})
+    # Extract C6 (citation_sentence_alignment) - C6 is at tool_evidence.c6_alignment
+    c6_result = evidence.get("c6_alignment", {})
 
     # Build warnings
     warnings = []

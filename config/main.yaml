@@ -52,13 +52,6 @@ evidence:
   # Sampling related
   citation_sample_size: 15
 
-  # Fallback/Degradation settings
-  api_timeout_seconds: 30
-  fallback_order:
-    - semantic_scholar
-    - openalex
-    - crossref
-
 # Agent Configurations
 agents:
   - name: verifier
@@ -118,18 +111,6 @@ mcp_servers:
   # Example: Remote Tavily Search MCP (uncomment and configure to use)
   # - name: search
   #   url: http://localhost:8000/sse
-
-# Debate/Consensus Configuration
-debate:
-  max_rounds: 3
-  score_threshold: 2.0
-  aggregator: weighted
-  weights:
-    verifier: 1.0
-    expert: 1.2
-    reader: 1.0
-    corrector: 0.8
-    reporter: 1.0
 
 # Aggregation Configuration (v3)
 aggregation:

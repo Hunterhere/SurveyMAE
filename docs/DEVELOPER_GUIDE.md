@@ -384,6 +384,19 @@ default:
   temperature: 0.0
   max_tokens: 4096
 
+# Tool 特定配置
+tools:
+  citation_checker:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.1
+    max_tokens: 4096
+  keyword_extractor:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.0
+    max_tokens: 1024
+
 # Agent 特定配置
 agents:
   verifier:
@@ -462,6 +475,44 @@ corrector:
 ```
 
 配置后，多模型配置通过 `AgentConfig.multi_model` 字段自动加载到 CorrectorAgent。
+
+**Tool 模型配置：**
+
+Tool（如 `citation_checker`、`keyword_extractor`）的 LLM 配置在 `tools` 节管理，通过 `ModelConfig.get_tool_config()` 自动解析 `base_url` 和 `api_key`，无需硬编码 provider 映射。
+
+```yaml
+tools:
+  citation_checker:
+    provider: qwen
+    model: qwen3.5-flash
+    temperature: 0.1
+    max_tokens: 4096
+```
+
+代码中使用方式：
+
+```python
+from src.core.config import ModelConfig
+from langchain_openai import ChatOpenAI
+
+model_config = ModelConfig.from_yaml("config/models.yaml")
+llm_cfg = model_config.get_tool_config("citation_checker")
+# llm_cfg.base_url  — 从 providers 自动解析（无需硬编码）
+# llm_cfg.api_key   — 从对应 env_key 环境变量自动读取
+
+llm = ChatOpenAI(
+    model=llm_cfg.model,
+    api_key=llm_cfg.api_key,
+    base_url=llm_cfg.base_url,
+    temperature=llm_cfg.temperature,
+)
+```
+
+**复用规范（新 Tool 接入时）：**
+
+1. 在 `config/models.yaml` 的 `tools` 节添加配置
+2. 在 Tool 代码中调用 `ModelConfig.from_yaml("config/models.yaml").get_tool_config("<tool_name>")` 获取完整 LLMConfig
+3. **禁止**在 Tool 代码中硬编码 provider→base_url 映射表（统一由 `ModelConfig` 维护）
 
 ### Prompt 模板 (config/prompts/)
 

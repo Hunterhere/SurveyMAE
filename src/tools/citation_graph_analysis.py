@@ -929,10 +929,10 @@ class CitationGraphAnalyzer:
 
         if len(common_refs) < 2:
             return {
-                "nmi": None,
-                "ari": None,
+                "nmi": 0,
+                "ari": 0,
                 "status": "insufficient_data",
-                "message": f"Only {len(common_refs)} common references, need at least 2",
+                "message": f"Only {len(common_refs)} common references (need >=2), returning default 0 for nmi/ari",
                 "common_ref_count": len(common_refs),
             }
 

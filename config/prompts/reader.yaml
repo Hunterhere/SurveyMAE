@@ -61,11 +61,30 @@ template: |
         "score": 4,
         "llm_involved": true,
         "tool_evidence": {{"metrics": {{"T5": 0.65, "T2": 1, "T4": 1}}}},
-        "llm_reasoning": "Explanation..."
+        "llm_reasoning": "Explanation...",
+        "flagged_items": ["list of timeliness issues"]
       }},
-      "R2_information_balance": {{...}},
-      "R3_structural_clarity": {{...}},
-      "R4_writing_quality": {{...}}
+      "R2_information_balance": {{
+        "score": 4,
+        "llm_involved": true,
+        "tool_evidence": {{"metrics": {{"S2": 0.8, "S3": 0.3}}}},
+        "llm_reasoning": "Explanation...",
+        "flagged_items": ["list of balance issues"]
+      }},
+      "R3_structural_clarity": {{
+        "score": 4,
+        "llm_involved": true,
+        "tool_evidence": {{"metrics": {{"S5": 0.7}}}},
+        "llm_reasoning": "Explanation...",
+        "flagged_items": ["list of structural issues"]
+      }},
+      "R4_writing_quality": {{
+        "score": 4,
+        "llm_involved": true,
+        "tool_evidence": {{}},
+        "llm_reasoning": "Explanation...",
+        "flagged_items": ["list of writing quality issues"]
+      }}
     }},
     "overall_score": 4.0,
     "confidence": 0.8,
