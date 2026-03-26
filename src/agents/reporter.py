@@ -95,11 +95,10 @@ class ReportAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"Failed to save run_summary.json: {e}")
 
-        # Return combined result
+        # Return combined result (deterministic_metrics is inside run_summary)
         return {
             "final_report_md": final_report,
             "aggregated_scores": aggregation_result.get("dimension_scores", {}),
-            "deterministic_metrics": aggregation_result.get("deterministic_metrics", {}),
             "overall_score": aggregation_result.get("overall_score", 0.0),
             "grade": aggregation_result.get("grade", "F"),
             "total_weight": aggregation_result.get("total_weight", 0.0),

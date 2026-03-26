@@ -9,102 +9,116 @@
 | 功能 | 状态 | 说明 |
 |------|------|------|
 | 工具层独立持久化 | ✅ | extraction.json, validation.json, c6_alignment.json, analysis.json, graph_analysis.json, trend_baseline.json, key_papers.json |
-| run_summary.json | ✅ | 包含 agent_scores, corrected_scores, overall_score, grade |
+| run_summary.json | ✅ | 包含 agent_scores, corrected_scores, overall_score, grade, deterministic_metrics |
 | 增量保存 | ✅ | 02_evidence_collection.json 不含完整 ref_metadata_cache |
 | C6 批处理 | ✅ | 支持 batch_size, contradiction_threshold |
 | C6 auto_fail 短路 | ✅ | contradiction_rate >= threshold 时 V2=1 |
 | Corrector 纯校正 | ✅ | 只对高风险维度投票 |
 | 加权聚合 | ✅ | 使用 config weights |
+| metric_index | ✅ | 集成在 run.json 的 metrics_index 字段中 |
+| 文件编号 | ✅ | 04_verifier/expert/reader, 05_corrector, 06_aggregator, 07_reporter |
+| Aggregator 持久化 | ✅ | 输出 06_aggregated_scores.json |
+| V3 维度删除 | ✅ | verifier.yaml 和 verifier.py 已移除 V3 |
 
 ---
 
 ## 未实现或不符合的功能
 
-### 1. V3 (citation_accuracy) 维度仍存在 ✅ 已修复
+### 1. V2/C6 动态 hallucination_risk 问题 🔴 设计缺陷
 
-**问题**：Plan v3 要求将 V2（引用支持性）和 V3（引用准确性）合并到 C6，但当前 VerifierAgent 仍输出 V1-V4 四个子维度。
+**问题描述**
 
-**修复内容**（2026-03-25）：
-- `config/prompts/verifier.yaml`：移除 V3 from prompt and output format; V2 标注为 auto-computed from C6
-- `src/agents/verifier.py`：
-  - C6 读取路径修正：`evidence_report.get("C6")` → `tool_evidence.get("c6_alignment")`
-  - V2 sub_score 注入：`evaluate()` 在返回前将计算好的 V2（基于 C6 contradiction_rate）注入 reasoning JSON
-- `src/graph/nodes/evidence_dispatch.py`：`build_verifier_evidence()` C6 路径 `graph_analysis.C6` → `evidence.c6_alignment`
+Plan v3 设计中，V2 的 hallucination_risk 需要动态变化：
 
-**修复后输出**：
-```json
-"V1_citation_existence": 4,   // LLM 评分
-"V2_citation_claim_alignment": 3,  // 自动从 C6 contradiction_rate 计算
-"V4_internal_consistency": 4  // LLM 评分
-```
+| 场景 | C6 状态 | V2 来源 | V2 hallucination_risk | 期望 Corrector 行为 |
+|------|---------|---------|----------------------|---------------------|
+| A | auto_fail=true | 自动计算 (score=1) | `low` | **跳过投票** |
+| B | auto_fail=false | VerifierAgent LLM 评判 | `medium` | **需要投票检查** |
+
+**根本原因**
+
+1. **V2 被硬编码在 LOW_RISK_DIMENSIONS**
+
+   [corrector.py:41-46](src/agents/corrector.py#L41-L46):
+   ```python
+   LOW_RISK_DIMENSIONS = [
+       "V1",  # Citation existence (based on C5 threshold)
+       "V2",  # Citation-claim alignment (based on C6, hallucination_risk=low)
+       "E1",  # Foundational coverage (based on G4 threshold)
+       "R1",  # Timeliness (based on T5 threshold)
+   ]
+   ```
+   V2 始终被标记为 low risk，无论 C6.auto_fail 状态如何。
+
+2. **VerifierAgent 注入 V2 时不设置 hallucination_risk**
+
+   [verifier.py:191-200](src/agents/verifier.py#L191-L200):
+   ```python
+   sub_scores_data["V2_citation_claim_alignment"] = {
+       "score": v2_score,
+       "llm_involved": False,
+       "tool_evidence": {...},
+       # 缺少 hallucination_risk 字段！
+   }
+   ```
+
+3. **Corrector 默认 hallucination_risk 为 "medium"**
+
+   [corrector.py:237](src/agents/corrector.py#L237):
+   ```python
+   risk = output["sub_scores"][sub_id].get("hallucination_risk", "medium")
+   ```
+
+4. **Corrector 投票逻辑基于 HIGH_RISK_DIMENSIONS 白名单**
+
+   [corrector.py:238](src/agents/corrector.py#L238):
+   ```python
+   if risk in ["medium", "high"] and sub_id in HIGH_RISK_DIMENSIONS:
+   ```
+   即使 V2 被检测为 medium risk，也因为不在 HIGH_RISK_DIMENSIONS 白名单中而不投票。
+
+**修复难点**
+
+要正确实现此逻辑，需要：
+
+1. **VerifierAgent** 在注入 V2 时，根据 C6.auto_fail 状态设置正确的 hallucination_risk：
+   - C6.auto_fail=true → `hallucination_risk: "low"`（确定性计算，无需投票）
+   - C6.auto_fail=false → `hallucination_risk: "medium"`（LLM 评判，需要投票）
+
+2. **移除 V2 从 LOW_RISK_DIMENSIONS 硬编码列表**
+
+3. **将 V2 加入 HIGH_RISK_DIMENSIONS**，或在运行时动态判断
+
+当前架构的问题是：V2 的 hallucination_risk 在 VerifierAgent 注入时就已经固定，但 VerifierAgent 本身没有根据 C6 状态做条件判断的逻辑。
+
+**Plan v3 相关设计**
+
+> Plan v3 §2.6.4：Corrector 仅对 hallucination_risk=medium/high 的 7 个子维度投票：V4, E2, E3, E4, R2, R3, R4。
+
+> Plan v3 §2.6.1：V2 虽然有 LLM 参与（VerifierAgent 审查 contradiction 列表），但其 hallucination_risk=low（因为核心判断依据是 C6 的确定性统计），因此 Corrector 不对 V2 做投票。
+
+这里存在矛盾：Plan v3 一说 V2 hallucination_risk=low 不投票，一说当 C6.auto_fail=false 时需要 LLM 评判。实际实现需要区分这两种场景。
 
 ---
 
-### 2. metric_index.json 未实现
+### 2. 确定性指标与 LLM 指标分离未完整实现
 
-**问题**：Plan v3 §3.4.3 要求生成 metric_index.json，记录指标索引、config 快照、数据流关系。
+**问题**：Plan v3 要求 Aggregator 返回 deterministic_metrics 字段，但当前实现返回空字典。
 
-**Plan v3 要求**：
-```json
-{
-  "run_id": "...",
-  "config_snapshot": {...},
-  "metrics": {
-    "C3": { "computed_by": "...", "source_file": "...", "consumed_by": [...] },
-    ...
-  },
-  "agent_dimensions": {...}
+**当前实现**
+
+[aggregator.py:189](src/graph/nodes/aggregator.py#L189):
+```python
+return {
+    "dimension_scores": dimension_scores,
+    "deterministic_metrics": {},  # First-layer metrics stored separately
+    "overall_score": round(overall_score, 2),
+    "grade": grade,
+    "total_weight": round(total_weight, 2),
 }
 ```
 
-**当前状态**：未实现。
-
----
-
-### 3. V2 不在高风险维度列表
-
-**问题**：Plan v3 §2.6.4 要求 Corrector 对 V2（仅当 C6.auto_fail=false 时）和 V4 等 7 个高风险维度投票。
-
-但当前代码中：
-```python
-HIGH_RISK_DIMENSIONS = [
-    "V4", "E2", "E3", "E4", "R2", "R3", "R4"
-]
-```
-
-缺少 V2。
-
-**修复建议**：根据 C6.auto_fail 状态动态决定是否对 V2 投票。
-
----
-
-### 4. 确定性指标与 LLM 指标分离未完整实现
-
-**问题**：Plan v3 要求 Aggregator 分别报告 deterministic_metrics 和 llm_score。
-
-**当前实现**：aggregator.py 只返回 dimension_scores，未区分确定性指标（V1, E1, R1 基于阈值）和 LLM 指标。
-
-**修复建议**：在 AggregatedScores 中添加 deterministic_metrics 字段。
-
----
-
-### 5. evidence_dispatch 未实现 C6.auto_fail 预填 V2=1
-
-**问题**：Plan v3 §2.6.1 要求当 C6.auto_fail=true 时，VerifierAgent 的 V2 维度预填 1 分，不再调用 LLM。
-
-**当前实现**：VerifierAgent 仍会调用 LLM 评估 V2。
-
-**修复建议**：在 evidence_dispatch 或 VerifierAgent 入口检查 C6.auto_fail，若为 true，直接设置 V2=1。
-
----
-
-### 6. Aggregator 未写入 06_aggregated_scores.json
-
-**问题**：Plan v3 §3.1 要求 Aggregator 步骤输出到 06_aggregated_scores.json。
-
-**当前实现**：AggregatedScores 只存在于 Reporter 的 run_summary 中。
-
-**修复建议**：在 aggregator.py 或 builder.py 中添加持久化调用。
+**修复建议**：Reporter 的 `_extract_deterministic_metrics()` 方法已经正确提取了确定性指标并保存在 run_summary 中，但 aggregator.py 层面未完成此工作。
 
 ---
 
@@ -112,19 +126,16 @@ HIGH_RISK_DIMENSIONS = [
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
-| Hallucination_risk 标记 | ⚠️ | 需要验证 AgentSubScore 是否都有 hallucination_risk 字段 |
-| C6 输入 sources_file 映射 | ⚠️ | 需要验证 metric_index 是否记录正确的数据流 |
-| corrector_output 独立性 | ⚠️ | 需要验证 corrector_output 是否独立于 agent_outputs |
+| Hallucination_risk 标记 | ⚠️ | VerifierAgent 注入 V2 时未设置 hallucination_risk |
+| C6 输入 sources_file 映射 | ✅ | metrics_index 记录正确的数据流 |
+| corrector_output 独立性 | ✅ | corrector_output 独立于 agent_outputs |
 
 ---
 
 ## 修复优先级
 
-| 优先级 | 问题 | 修复工作量 |
-|--------|------|-----------|
-| 高 | V3 维度仍存在 | 小 |
-| 高 | metric_index.json 未实现 | 中 |
-| 中 | V2 投票逻辑 | 小 |
-| 中 | 确定性/LLM 指标分离 | 小 |
-| 低 | Aggregator 持久化 | 小 |
-| 低 | C6.auto_fail 预填 | 小 |
+| 优先级 | 问题 | 修复工作量 | 状态 |
+|--------|------|-----------|------|
+| 高 | V2/C6 动态 hallucination_risk | 大（需架构修改） | 🔴 设计缺陷 |
+| 低 | 确定性指标分离 | 小 | ⚠️ 部分实现 |
+| - | 其他 | - | ✅ 已完成 |

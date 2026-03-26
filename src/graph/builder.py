@@ -433,16 +433,15 @@ async def _wrap_evidence_dispatch(state: SurveyState) -> dict:
     return result
 
 
-async def _wrap_agent(agent_name: str, agent, state: SurveyState) -> dict:
+async def _wrap_agent(agent_name: str, agent, state: SurveyState, step_prefix: str = "04") -> dict:
     """Wrapper for agent evaluation nodes with result saving."""
     input_state = dict(state)
     result = await agent.process(state)
     _save_workflow_step(
-        f"04_{agent_name}", state, result,
+        f"{step_prefix}_{agent_name}", state, result,
         input_state=input_state,
         run_params={"node": agent_name, "agent_class": agent.__class__.__name__}
     )
-    return result
     return result
 
 
@@ -509,10 +508,19 @@ def create_workflow(
     agents = _create_agents(config, agent_classes)
 
     # Add nodes for each agent (with wrapper for saving results)
+    # Step numbers: 04=verifier/expert/reader, 05=corrector, 07=reporter
+    STEP_PREFIXES = {
+        "verifier": "04",
+        "expert": "04",
+        "reader": "04",
+        "corrector": "05",
+        "reporter": "07",
+    }
     for agent in agents:
+        step_prefix = STEP_PREFIXES.get(agent.name, "04")
         # Create a partial wrapper for this agent
-        async def agent_node_wrapper(state: SurveyState, a=agent):
-            return await _wrap_agent(a.name, a, state)
+        async def agent_node_wrapper(state: SurveyState, a=agent, sp=step_prefix):
+            return await _wrap_agent(a.name, a, state, step_prefix=sp)
         workflow.add_node(agent.name, agent_node_wrapper)
 
     # Add PDF parsing node
@@ -529,6 +537,9 @@ def create_workflow(
 
     # Add a "gather" node to wait for all agents to complete
     workflow.add_node("gather", _gather_evaluations)
+
+    # Add aggregator node (step 06)
+    workflow.add_node("aggregator", _run_aggregator)
 
     # Define the workflow flow
     # 1. Start -> Parse PDF
@@ -554,25 +565,28 @@ def create_workflow(
     # 6. Corrector -> gather (wait for all to complete)
     workflow.add_edge("corrector", "gather")
 
-    # 7. gather -> Check if debate needed -> debate or reporter
+    # 7. gather -> Check if debate needed -> aggregator (or debate then aggregator)
     workflow.add_conditional_edges(
         "gather",
         should_end,
         {
-            "END": "reporter",
+            "END": "aggregator",
             "debate": "debate",
         },
     )
 
-    # 8. Debate -> Continue or Reporter
+    # 8. Debate -> Continue or Aggregator
     workflow.add_conditional_edges(
         "debate",
         should_continue_debate,
         {
             "continue": "debate",  # Another round
-            "reporter": "reporter",
+            "reporter": "aggregator",
         },
     )
+
+    # 9. Aggregator -> Reporter
+    workflow.add_edge("aggregator", "reporter")
 
     # 9. Reporter -> END
     workflow.add_edge("reporter", END)
@@ -718,3 +732,26 @@ async def _gather_evaluations(state: SurveyState) -> dict:
 
     # Return empty dict - the state already has all evaluations
     return {}
+
+
+async def _run_aggregator(state: SurveyState) -> dict:
+    """Run aggregation and save results to 06_aggregated_scores.json.
+
+    This node performs the weighted aggregation of all agent scores
+    and persists the result before reporter generates the final report.
+
+    Args:
+        state: The current workflow state.
+
+    Returns:
+        Dict containing aggregation_result for reporter to use.
+    """
+    from src.graph.nodes.aggregator import aggregate_scores
+
+    aggregation_result = await aggregate_scores(state)
+    _save_workflow_step(
+        "06_aggregator", state, aggregation_result,
+        input_state=dict(state),
+        run_params={"node": "aggregator", "step": "06"}
+    )
+    return {"aggregation_result": aggregation_result}
