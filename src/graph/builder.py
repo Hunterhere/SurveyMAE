@@ -533,7 +533,7 @@ def create_workflow(
     workflow.add_node("evidence_dispatch", _wrap_evidence_dispatch)
 
     # Add debate node
-    workflow.add_node("debate", run_debate)
+    workflow.add_node("debate", run_debate) #why still debate, already remove from v3?
 
     # Add a "gather" node to wait for all agents to complete
     workflow.add_node("gather", _gather_evaluations)

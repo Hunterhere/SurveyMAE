@@ -1,6 +1,7 @@
 """Literature search tool backed by BibGuard fetchers.
 
-Provides a unified interface to query multiple scholarly sources.
+Provides a unified interface to query multiple scholarly sources with
+parallel dispatch, per-source retry, and configurable degradation.
 """
 
 from __future__ import annotations
@@ -9,10 +10,11 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass
-from functools import wraps
-from typing import Any, Callable, Iterable, Optional, TypeVar
+from typing import Any, Callable, Iterable, Optional
 
-from src.core.search_config import load_search_engine_config
+import requests as _requests
+
+from src.core.search_config import SearchEngineConfig, SourceConfig, load_search_engine_config
 from src.tools.fetchers.arxiv_fetcher import ArxivFetcher, ArxivMetadata
 from src.tools.fetchers.crossref_fetcher import CrossRefFetcher, CrossRefResult
 from src.tools.fetchers.dblp_fetcher import DBLPFetcher, DBLPResult
@@ -22,71 +24,14 @@ from src.tools.fetchers.semantic_scholar_fetcher import (
     SemanticScholarFetcher,
     SemanticScholarResult,
 )
+from src.tools.parallel_dispatcher import ParallelDispatcher
 
 logger = logging.getLogger(__name__)
 
-# Retry configuration
-DEFAULT_MAX_RETRIES = 3
-DEFAULT_RETRY_DELAY = 1.0  # seconds
-DEFAULT_RETRY_BACKOFF = 2.0  # exponential backoff multiplier
 
-T = TypeVar("T")
-
-
-def with_retry(
-    max_retries: int = DEFAULT_MAX_RETRIES,
-    delay: float = DEFAULT_RETRY_DELAY,
-    backoff: float = DEFAULT_RETRY_BACKOFF,
-    exceptions: tuple = (Exception,),
-) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Decorator to retry a function on failure with exponential backoff.
-
-    Args:
-        max_retries: Maximum number of retry attempts.
-        delay: Initial delay between retries in seconds.
-        backoff: Multiplier for exponential backoff.
-        exceptions: Tuple of exceptions to catch and retry on.
-
-    Returns:
-        Decorated function with retry logic.
-    """
-
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> T:
-            last_exception: Optional[Exception] = None
-            current_delay = delay
-
-            for attempt in range(max_retries + 1):
-                try:
-                    return func(*args, **kwargs)
-                except exceptions as e:
-                    last_exception = e
-                    if attempt < max_retries:
-                        logger.warning(
-                            "Attempt %d/%d failed for %s: %s. Retrying in %.1fs...",
-                            attempt + 1,
-                            max_retries + 1,
-                            func.__name__,
-                            e,
-                            current_delay,
-                        )
-                        time.sleep(current_delay)
-                        current_delay *= backoff
-                    else:
-                        logger.error(
-                            "All %d attempts failed for %s: %s",
-                            max_retries + 1,
-                            func.__name__,
-                            e,
-                        )
-            # This should never happen but satisfies type checker
-            raise last_exception if last_exception else Exception("Retry failed")
-
-        return wrapper
-
-    return decorator
-
+# ---------------------------------------------------------------------------
+# Normalized result dataclass (public, unchanged)
+# ---------------------------------------------------------------------------
 
 @dataclass
 class LiteratureResult:
@@ -109,8 +54,12 @@ class LiteratureResult:
         return asdict(self)
 
 
+# ---------------------------------------------------------------------------
+# Main class
+# ---------------------------------------------------------------------------
+
 class LiteratureSearch:
-    """Search literature across multiple sources."""
+    """Search literature across multiple sources with parallel dispatch."""
 
     DEFAULT_SOURCES = ("arxiv", "crossref", "semantic_scholar", "openalex", "dblp")
     ALL_SOURCES = DEFAULT_SOURCES + ("scholar",)
@@ -125,26 +74,34 @@ class LiteratureSearch:
         fetchers: Optional[dict[str, Any]] = None,
         config_path: Optional[str] = None,
     ) -> None:
+        # Load full config (new format or legacy)
+        self._config = load_search_engine_config(config_path)
+
         if fetchers is not None:
             self.fetchers = {k.lower(): v for k, v in fetchers.items()}
-            return
+        else:
+            # Allow explicit credential overrides
+            if semantic_scholar_api_key is None:
+                semantic_scholar_api_key = self._config.semantic_scholar_api_key
+            if crossref_mailto is None:
+                crossref_mailto = self._config.crossref_mailto
+            if openalex_email is None:
+                openalex_email = self._config.openalex_email
 
-        config = load_search_engine_config(config_path)
-        if semantic_scholar_api_key is None:
-            semantic_scholar_api_key = config.semantic_scholar_api_key
-        if crossref_mailto is None:
-            crossref_mailto = config.crossref_mailto
-        if openalex_email is None:
-            openalex_email = config.openalex_email
+            self.fetchers: dict[str, Any] = {
+                "arxiv": ArxivFetcher(),
+                "crossref": CrossRefFetcher(mailto=crossref_mailto or "surveymae@example.com"),
+                "semantic_scholar": SemanticScholarFetcher(api_key=semantic_scholar_api_key),
+                "openalex": OpenAlexFetcher(email=openalex_email),
+                "dblp": DBLPFetcher(),
+                "scholar": ScholarFetcher(),
+            }
 
-        self.fetchers = {
-            "arxiv": ArxivFetcher(),
-            "crossref": CrossRefFetcher(mailto=crossref_mailto or "surveymae@example.com"),
-            "semantic_scholar": SemanticScholarFetcher(api_key=semantic_scholar_api_key),
-            "openalex": OpenAlexFetcher(email=openalex_email),
-            "dblp": DBLPFetcher(),
-            "scholar": ScholarFetcher(),
-        }
+        self._dispatcher = ParallelDispatcher(self._config)
+
+    # ------------------------------------------------------------------
+    # Public interface (signatures unchanged)
+    # ------------------------------------------------------------------
 
     def list_sources(self) -> list[str]:
         """Return available source identifiers."""
@@ -182,39 +139,20 @@ class LiteratureSearch:
         max_results: int = 5,
         include_scholar: bool = False,
     ) -> list[LiteratureResult]:
-        """Search for a paper by title across sources."""
+        """Search for a paper by title across sources (parallel)."""
         if not title:
             raise ValueError("title is required")
 
         resolved = self._resolve_sources(sources, include_scholar=include_scholar)
-        results: list[LiteratureResult] = []
 
-        for source in resolved:
+        def build_op(source: str) -> Callable[[], Any]:
             fetcher = self.fetchers[source]
-            raw = None
-            try:
-                if source == "arxiv":
-                    raw = fetcher.search_by_title(title, max_results=max_results)
-                elif source == "crossref":
-                    raw = fetcher.search_by_title(title, max_results=max_results)
-                elif source == "semantic_scholar":
-                    raw = fetcher.search_by_title(title, max_results=max_results)
-                elif source == "openalex":
-                    raw = fetcher.search_by_title(title, max_results=max_results)
-                elif source == "dblp":
-                    raw = fetcher.search_by_title(title)
-                elif source == "scholar":
-                    raw = fetcher.search_by_title(title)
-            except Exception as exc:
-                logger.warning("Search failed for %s: %s", source, exc)
-                continue
+            if source in ("dblp", "scholar"):
+                return lambda: fetcher.search_by_title(title)
+            return lambda: fetcher.search_by_title(title, max_results=max_results)
 
-            for item in self._ensure_list(raw):
-                normalized = self._normalize_result(source, item)
-                if normalized:
-                    results.append(normalized)
-
-        return results
+        raw_items = self._dispatcher.dispatch(resolved, build_op)
+        return self._normalize_items_with_source(raw_items, resolved)
 
     def fetch_by_doi(
         self,
@@ -222,33 +160,20 @@ class LiteratureSearch:
         *,
         sources: Optional[Iterable[str]] = None,
     ) -> list[LiteratureResult]:
-        """Fetch metadata by DOI across supported sources."""
+        """Fetch metadata by DOI across supported sources (parallel)."""
         if not doi:
             raise ValueError("doi is required")
 
         resolved = self._resolve_sources(sources, only=self.DOI_SOURCES)
-        results: list[LiteratureResult] = []
 
-        for source in resolved:
+        def build_op(source: str) -> Callable[[], Any]:
             fetcher = self.fetchers[source]
-            raw = None
-            try:
-                if source == "crossref":
-                    raw = fetcher.search_by_doi(doi)
-                elif source == "semantic_scholar":
-                    raw = fetcher.fetch_by_doi(doi)
-                elif source == "openalex":
-                    raw = fetcher.fetch_by_doi(doi)
-            except Exception as exc:
-                logger.warning("DOI fetch failed for %s: %s", source, exc)
-                continue
+            if source == "crossref":
+                return lambda: fetcher.search_by_doi(doi)
+            return lambda: fetcher.fetch_by_doi(doi)
 
-            for item in self._ensure_list(raw):
-                normalized = self._normalize_result(source, item)
-                if normalized:
-                    results.append(normalized)
-
-        return results
+        raw_items = self._dispatcher.dispatch(resolved, build_op)
+        return self._normalize_items_with_source(raw_items, resolved)
 
     def fetch_by_arxiv_id(
         self,
@@ -256,31 +181,20 @@ class LiteratureSearch:
         *,
         sources: Optional[Iterable[str]] = None,
     ) -> list[LiteratureResult]:
-        """Fetch metadata by arXiv ID across supported sources."""
+        """Fetch metadata by arXiv ID across supported sources (parallel)."""
         if not arxiv_id:
             raise ValueError("arxiv_id is required")
 
         resolved = self._resolve_sources(sources, only=self.ARXIV_SOURCES)
-        results: list[LiteratureResult] = []
 
-        for source in resolved:
+        def build_op(source: str) -> Callable[[], Any]:
             fetcher = self.fetchers[source]
-            raw = None
-            try:
-                if source == "arxiv":
-                    raw = fetcher.fetch_by_id(arxiv_id)
-                elif source == "semantic_scholar":
-                    raw = fetcher.fetch_by_arxiv_id(arxiv_id)
-            except Exception as exc:
-                logger.warning("arXiv fetch failed for %s: %s", source, exc)
-                continue
+            if source == "arxiv":
+                return lambda: fetcher.fetch_by_id(arxiv_id)
+            return lambda: fetcher.fetch_by_arxiv_id(arxiv_id)
 
-            for item in self._ensure_list(raw):
-                normalized = self._normalize_result(source, item)
-                if normalized:
-                    results.append(normalized)
-
-        return results
+        raw_items = self._dispatcher.dispatch(resolved, build_op)
+        return self._normalize_items_with_source(raw_items, resolved)
 
     def search_by_keywords(
         self,
@@ -291,7 +205,7 @@ class LiteratureSearch:
         sort_by: str = "citation_count",
         include_scholar: bool = False,
     ) -> list[LiteratureResult]:
-        """Search for papers by keywords across sources.
+        """Search for papers by keywords across sources (parallel).
 
         Args:
             keywords: Keyword query string.
@@ -306,47 +220,30 @@ class LiteratureSearch:
         if not keywords:
             raise ValueError("keywords is required")
 
-        # Default to sources that support citation sorting
         if sources is None:
             sources = ["semantic_scholar", "openalex"]
 
         resolved = self._resolve_sources(sources, include_scholar=include_scholar)
-        results: list[LiteratureResult] = []
 
-        for source in resolved:
+        def build_op(source: str) -> Callable[[], Any]:
             fetcher = self.fetchers[source]
-            raw = None
-            try:
-                # Use search endpoint with keywords
-                if source == "semantic_scholar":
-                    # Semantic Scholar search uses query param
-                    raw = fetcher.search_by_title(keywords, max_results=max_results)
-                elif source == "openalex":
-                    # OpenAlex search uses 'search' param
+            if source == "openalex":
+                # OpenAlex keyword search uses the 'search' param directly
+                def _openalex_keyword_search() -> list[Any]:
                     url = f"{fetcher.BASE_URL}/works"
                     params = {"search": keywords, "per-page": max_results}
-                    import requests as _requests
+                    resp = _requests.get(url, params=params, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    results = data.get("results", []) if isinstance(data, dict) else []
+                    return [fetcher._parse_work(w) for w in results if w]
+                return _openalex_keyword_search
+            if source in ("dblp", "scholar"):
+                return lambda: fetcher.search_by_title(keywords)
+            return lambda: fetcher.search_by_title(keywords, max_results=max_results)
 
-                    response = _requests.get(url, params=params, timeout=10)
-                    response.raise_for_status()
-                    data = response.json()
-                    raw = data.get("results", []) if isinstance(data, dict) else []
-                elif source == "crossref":
-                    raw = fetcher.search_by_title(keywords, max_results=max_results)
-                elif source == "dblp":
-                    raw = fetcher.search_by_title(keywords)
-                elif source == "arxiv":
-                    raw = fetcher.search_by_title(keywords, max_results=max_results)
-                elif source == "scholar":
-                    raw = fetcher.search_by_title(keywords)
-            except Exception as exc:
-                logger.warning("Keyword search failed for %s: %s", source, exc)
-                continue
-
-            for item in self._ensure_list(raw):
-                normalized = self._normalize_result(source, item)
-                if normalized:
-                    results.append(normalized)
+        raw_items = self._dispatcher.dispatch(resolved, build_op)
+        results = self._normalize_items_with_source(raw_items, resolved)
 
         # Sort by citation count if requested
         if sort_by == "citation_count":
@@ -373,6 +270,7 @@ class LiteratureSearch:
         """Search for paper counts by year to build field trend baseline.
 
         This is used for T5 (trend_alignment) metric calculation.
+        Uses parallel dispatch + OpenAlex group_by optimization.
 
         Args:
             keywords: Keyword query for the field.
@@ -384,13 +282,11 @@ class LiteratureSearch:
         """
         if year_range is None:
             import datetime as _dt
-
             current_year = _dt.datetime.now().year
             year_range = (max(2000, current_year - 25), current_year)
 
         start_year, end_year = year_range
 
-        # Use Semantic Scholar or OpenAlex for year-based search
         if sources is None:
             sources = ["semantic_scholar", "openalex"]
 
@@ -398,48 +294,26 @@ class LiteratureSearch:
         yearly_counts: dict[str, int] = {str(y): 0 for y in range(start_year, end_year + 1)}
         failed_sources: list[str] = []
 
-        for source in resolved:
-            try:
-                if source == "semantic_scholar":
-                    # Apply retry to semantic scholar search
-                    count = self._search_field_trend_semantic_scholar(
-                        fetcher=self.fetchers[source],
-                        keywords=keywords,
-                        start_year=start_year,
-                        end_year=end_year,
-                    )
-                    for year_str, c in count.items():
-                        yearly_counts[year_str] += c
-                elif source == "openalex":
-                    # Apply retry to openalex search
-                    count = self._search_field_trend_openalex(
-                        fetcher=self.fetchers[source],
-                        keywords=keywords,
-                        start_year=start_year,
-                        end_year=end_year,
-                    )
-                    for year_str, c in count.items():
-                        yearly_counts[year_str] += c
-            except Exception as exc:
-                logger.warning("Field trend search failed for %s: %s", source, exc)
-                failed_sources.append(source)
-                continue
+        def build_op(source: str) -> Callable[[], dict[str, int]]:
+            if source == "semantic_scholar":
+                return lambda: self._trend_semantic_scholar(keywords, start_year, end_year)
+            if source == "openalex":
+                return lambda: self._trend_openalex_group_by(keywords, start_year, end_year)
+            return lambda: {}
 
-        # Log summary of failures
-        if failed_sources:
-            logger.warning(
-                "Field trend search failed for all retries on sources: %s. "
-                "Results may be incomplete.",
-                failed_sources,
-            )
+        raw_items = self._dispatcher.dispatch(resolved, build_op)
 
-        # Check if all sources failed
-        if len(failed_sources) == len(resolved) and not any(
-            yearly_counts.values()
-        ):
-            logger.error(
-                "All sources failed for field trend search. Returning empty results."
-            )
+        # raw_items is a list of dict[str, int] from each source
+        for item in raw_items:
+            if isinstance(item, dict):
+                for year_str, count in item.items():
+                    if year_str in yearly_counts:
+                        yearly_counts[year_str] += count
+
+        # Determine which sources actually contributed
+        if not any(yearly_counts.values()):
+            failed_sources = list(resolved)
+            logger.error("All sources failed for field trend search. Returning empty results.")
 
         return {
             "yearly_counts": yearly_counts,
@@ -447,56 +321,6 @@ class LiteratureSearch:
             "keywords": keywords,
             "failed_sources": failed_sources,
         }
-
-    @with_retry(max_retries=2, delay=0.5)
-    def _search_field_trend_semantic_scholar(
-        self,
-        fetcher: SemanticScholarFetcher,
-        keywords: str,
-        start_year: int,
-        end_year: int,
-    ) -> dict[str, int]:
-        """Search Semantic Scholar for field trend with retry."""
-        yearly_counts: dict[str, int] = {}
-        results = fetcher.search_by_title(keywords, max_results=50)
-        for r in self._ensure_list(results):
-            if r.year:
-                year_str = r.year if isinstance(r.year, str) else str(r.year)
-                if year_str.isdigit():
-                    y = int(year_str)
-                    if start_year <= y <= end_year:
-                        yearly_counts[year_str] = yearly_counts.get(year_str, 0) + 1
-        return yearly_counts
-
-    @with_retry(max_retries=2, delay=0.5)
-    def _search_field_trend_openalex(
-        self,
-        fetcher: OpenAlexFetcher,
-        keywords: str,
-        start_year: int,
-        end_year: int,
-    ) -> dict[str, int]:
-        """Search OpenAlex for field trend with retry."""
-        import requests as _requests
-
-        yearly_counts: dict[str, int] = {}
-        for year in range(start_year, end_year + 1):
-            url = f"{fetcher.BASE_URL}/works"
-            params = {
-                "search": keywords,
-                "filter": f"publication_year:{year}",
-                "per-page": 1,
-            }
-            response = _requests.get(url, params=params, timeout=10)
-            if response.ok:
-                data = response.json()
-                count = (
-                    data.get("meta", {}).get("count", 0)
-                    if isinstance(data, dict)
-                    else 0
-                )
-                yearly_counts[str(year)] = count
-        return yearly_counts
 
     async def search_top_cited(
         self,
@@ -514,18 +338,15 @@ class LiteratureSearch:
         Returns:
             List of paper dicts with title, citation_count, year, venue, etc.
         """
-        # Handle both string and list input
         if isinstance(keywords, list):
-            keywords = " ".join(keywords[:3])  # Use first 3 keywords
+            keywords = " ".join(keywords[:3])
 
-        # Use search_by_keywords which already sorts by citation_count
         results = self.search_by_keywords(
             keywords=keywords,
             max_results=top_k,
             sort_by="citation_count",
         )
 
-        # Convert to dict format for foundational coverage analysis
         papers = []
         for r in results:
             papers.append(
@@ -540,8 +361,89 @@ class LiteratureSearch:
                     "abstract": r.abstract or "",
                 }
             )
-
         return papers
+
+    # ------------------------------------------------------------------
+    # Field trend helpers (optimized)
+    # ------------------------------------------------------------------
+
+    def _trend_semantic_scholar(
+        self, keywords: str, start_year: int, end_year: int,
+    ) -> dict[str, int]:
+        """Semantic Scholar trend: search once, bucket by year."""
+        fetcher = self.fetchers["semantic_scholar"]
+        results = fetcher.search_by_title(keywords, max_results=50)
+        yearly: dict[str, int] = {}
+        for r in self._ensure_list(results):
+            if r.year:
+                year_str = r.year if isinstance(r.year, str) else str(r.year)
+                if year_str.isdigit():
+                    y = int(year_str)
+                    if start_year <= y <= end_year:
+                        yearly[year_str] = yearly.get(year_str, 0) + 1
+        return yearly
+
+    def _trend_openalex_group_by(
+        self, keywords: str, start_year: int, end_year: int,
+    ) -> dict[str, int]:
+        """OpenAlex trend: single request using group_by (replaces N serial requests)."""
+        fetcher = self.fetchers["openalex"]
+        url = f"{fetcher.BASE_URL}/works"
+        params = {
+            "search": keywords,
+            "filter": f"publication_year:{start_year}-{end_year}",
+            "group_by": "publication_year",
+        }
+        resp = _requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        yearly: dict[str, int] = {}
+        for entry in data.get("group_by", []):
+            key = str(entry.get("key", ""))
+            count = entry.get("count", 0)
+            if key.isdigit():
+                y = int(key)
+                if start_year <= y <= end_year:
+                    yearly[key] = count
+        return yearly
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _normalize_items_with_source(
+        self, raw_items: list[Any], sources: list[str],
+    ) -> list[LiteratureResult]:
+        """Normalize raw fetcher items to LiteratureResult.
+
+        The dispatcher returns a flat list of raw fetcher objects from all
+        sources.  We infer the source from the item type.
+        """
+        results: list[LiteratureResult] = []
+        for item in raw_items:
+            source = self._infer_source(item)
+            if source:
+                normalized = self._normalize_result(source, item)
+                if normalized:
+                    results.append(normalized)
+        return results
+
+    def _infer_source(self, item: Any) -> Optional[str]:
+        """Infer the source name from a raw fetcher result type."""
+        if isinstance(item, ArxivMetadata):
+            return "arxiv"
+        if isinstance(item, CrossRefResult):
+            return "crossref"
+        if isinstance(item, SemanticScholarResult):
+            return "semantic_scholar"
+        if isinstance(item, OpenAlexResult):
+            return "openalex"
+        if isinstance(item, DBLPResult):
+            return "dblp"
+        if isinstance(item, ScholarResult):
+            return "scholar"
+        return None
 
     def _resolve_sources(
         self,
@@ -656,6 +558,10 @@ class LiteratureSearch:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
 def _split_authors(authors: str) -> list[str]:
     if not authors:
         return []
@@ -669,6 +575,10 @@ def _as_dict(value: Any) -> dict[str, Any]:
         return value
     return {"value": str(value)}
 
+
+# ---------------------------------------------------------------------------
+# MCP server (unchanged interface)
+# ---------------------------------------------------------------------------
 
 def create_literature_search_mcp_server():
     """Create an MCP server for literature search."""

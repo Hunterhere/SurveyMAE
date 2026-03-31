@@ -420,39 +420,42 @@ class EvidenceConfig(BaseModel):
 class SearchEnginesConfig(BaseModel):
     """Configuration for search engines and retrieval settings.
 
-    Note: 字段不设置默认值，强制从 YAML 读取，确保配置一致性。
-    配置文件: config/search_engines.yaml
+    Reads from the new-format ``config/search_engines.yaml`` which uses
+    ``concurrency:``, ``degradation:``, and ``sources:`` sections.
+    Exposes legacy-compatible properties so callers don't need changes.
 
-    Attributes:
-        verify_limit: Maximum number of references to verify.
-        api_timeout_seconds: Timeout for API requests.
-        fallback_order: Ordered list of sources for fallback.
+    配置文件: config/search_engines.yaml
     """
 
-    verify_limit: int
-    api_timeout_seconds: int
-    fallback_order: list[str]
+    verify_limit: int = 50
+    api_timeout_seconds: int = 15
+    fallback_order: list[str] = Field(default_factory=lambda: ["semantic_scholar", "openalex", "crossref"])
 
     @classmethod
     def from_yaml(cls, config_path: str = "config/search_engines.yaml") -> "SearchEnginesConfig":
         """Load search engines configuration from YAML file.
 
-        Args:
-            config_path: Path to the search_engines.yaml file.
-
-        Returns:
-            SearchEnginesConfig instance.
+        Supports both the new extended format and the legacy flat format.
         """
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
-        # Extract only the search settings fields
-        search_settings = {
-            "verify_limit": data.get("verify_limit"),
-            "api_timeout_seconds": data.get("api_timeout_seconds"),
-            "fallback_order": data.get("fallback_order"),
-        }
-        return cls(**search_settings)
+        # Extract verify_limit / api_timeout_seconds (same position in both formats)
+        verify_limit = data.get("verify_limit", 50)
+        api_timeout_seconds = data.get("api_timeout_seconds", 15)
+
+        # fallback_order: try degradation.fallback_order first, then top-level
+        degradation = data.get("degradation", {}) or {}
+        fallback_order = degradation.get(
+            "fallback_order",
+            data.get("fallback_order", ["semantic_scholar", "openalex", "crossref"]),
+        )
+
+        return cls(
+            verify_limit=verify_limit,
+            api_timeout_seconds=api_timeout_seconds,
+            fallback_order=fallback_order,
+        )
 
 
 class SurveyMAEConfig(BaseModel):

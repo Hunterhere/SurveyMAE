@@ -1262,7 +1262,12 @@ class VerificationReport:
 
 
 class CitationMetadataChecker:
-    """Fetch and compare metadata for bibliography entries."""
+    """Fetch and compare metadata for bibliography entries.
+
+    Uses concurrent dispatch: all requested sources are queried in parallel,
+    and the first valid result (ordered by config priority) is returned.
+    Per-source timeout and retry are driven by ``search_engines.yaml``.
+    """
 
     DEFAULT_SOURCES = ("arxiv", "crossref", "semantic_scholar", "openalex", "dblp")
 
@@ -1275,13 +1280,13 @@ class CitationMetadataChecker:
         author_threshold: Optional[float] = None,
         config_path: Optional[str] = None,
     ) -> None:
-        config = load_search_engine_config(config_path)
+        self._config = load_search_engine_config(config_path)
         if semantic_scholar_api_key is None:
-            semantic_scholar_api_key = config.semantic_scholar_api_key
+            semantic_scholar_api_key = self._config.semantic_scholar_api_key
         if crossref_mailto is None:
-            crossref_mailto = config.crossref_mailto
+            crossref_mailto = self._config.crossref_mailto
         if openalex_email is None:
-            openalex_email = config.openalex_email
+            openalex_email = self._config.openalex_email
 
         self.comparator = MetadataComparator(
             title_threshold=title_threshold,
@@ -1293,36 +1298,68 @@ class CitationMetadataChecker:
         self.openalex_fetcher = OpenAlexFetcher(email=openalex_email)
         self.dblp_fetcher = DBLPFetcher()
 
+        self._verify_dispatch: dict[str, Any] = {
+            "arxiv": self._verify_with_arxiv,
+            "crossref": self._verify_with_crossref,
+            "semantic_scholar": self._verify_with_semantic_scholar,
+            "openalex": self._verify_with_openalex,
+            "dblp": self._verify_with_dblp,
+        }
+
     async def verify_bib_entry(
         self,
         bib_entry: BibEntry,
         sources: Optional[Iterable[str]] = None,
     ) -> VerificationReport:
-        """Verify a single bib entry using external metadata sources."""
-        sources_checked: list[str] = []
-        sources_to_check = list(sources or self.DEFAULT_SOURCES)
+        """Verify a single bib entry using external metadata sources.
 
-        for source in sources_to_check:
-            source = source.lower().strip()
-            sources_checked.append(source)
+        All requested sources are queried **concurrently**.  The first
+        successful result (ordered by config priority) is returned.
+        Per-source timeout is applied so a slow source doesn't block others.
+        """
+        sources_to_check = [
+            s.lower().strip() for s in (sources or self.DEFAULT_SOURCES)
+        ]
 
-            if source == "arxiv":
-                result = await self._verify_with_arxiv(bib_entry)
-            elif source == "crossref":
-                result = await self._verify_with_crossref(bib_entry)
-            elif source == "semantic_scholar":
-                result = await self._verify_with_semantic_scholar(bib_entry)
-            elif source == "openalex":
-                result = await self._verify_with_openalex(bib_entry)
-            elif source == "dblp":
-                result = await self._verify_with_dblp(bib_entry)
-            else:
-                continue
+        # Build per-source coroutines wrapped with timeout
+        async def _safe_verify(source: str) -> tuple[str, Optional[VerificationReport]]:
+            fn = self._verify_dispatch.get(source)
+            if fn is None:
+                return source, None
+            src_cfg = self._config.sources.get(source)
+            timeout = src_cfg.timeout_seconds if src_cfg else 10.0
+            try:
+                result = await asyncio.wait_for(fn(bib_entry), timeout=timeout)
+                return source, result
+            except asyncio.TimeoutError:
+                logger.warning("[verify] %s timed out after %.1fs", source, timeout)
+                return source, None
+            except Exception as exc:
+                logger.warning("[verify] %s failed: %s", source, exc)
+                return source, None
 
-            if result is not None:
-                result.sources_checked = sources_checked
-                return result
+        # Dispatch all sources concurrently
+        tasks = [_safe_verify(s) for s in sources_to_check]
+        outcomes = await asyncio.gather(*tasks)
 
+        # Pick best result by config priority (lower = higher priority)
+        sources_checked = [s for s, _ in outcomes]
+        best: Optional[VerificationReport] = None
+        best_priority = float("inf")
+
+        for source, report in outcomes:
+            if report is not None:
+                src_cfg = self._config.sources.get(source)
+                priority = src_cfg.priority if src_cfg else 99
+                if priority < best_priority:
+                    best = report
+                    best_priority = priority
+
+        if best is not None:
+            best.sources_checked = sources_checked
+            return best
+
+        # All sources failed
         unable = self.comparator.create_unable_result(
             bib_entry=bib_entry,
             reason="Unable to fetch metadata from configured sources",

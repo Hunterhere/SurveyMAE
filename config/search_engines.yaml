@@ -1,19 +1,98 @@
-# Search engine configuration (separate from main.yaml)
+# Search engine configuration
 # Secrets should be provided via environment variables referenced below.
 
-# Search/Retrieval settings
-verify_limit: 50                  # Maximum number of references to verify
-api_timeout_seconds: 15            # Timeout for API requests
-fallback_order:                   # Ordered list of sources for fallback
-  - semantic_scholar
-  - openalex
-  - crossref
+# ============================================================
+# Global settings
+# ============================================================
+verify_limit: 100
+api_timeout_seconds: 15
 
-semantic_scholar:
-  api_key: ${SEMANTIC_SCHOLAR_API_KEY}
+# ============================================================
+# Concurrency strategy
+# ============================================================
+concurrency:
+  max_concurrent_sources: 3
+  # merge_strategy:
+  #   first_wins      - use first non-empty response (lowest latency)
+  #   union            - merge all results, deduplicate
+  #   weighted_union   - high-priority source results kept, low-priority fills gaps
+  merge_strategy: weighted_union
+  per_source_timeout_seconds: 10
 
-crossref:
-  mailto: surveymae@example.com
+# ============================================================
+# Degradation / fallback
+# ============================================================
+degradation:
+  # Tried sequentially when all concurrent sources fail
+  fallback_order:
+    - crossref
+    - dblp
+    - openalex
+  # What to do when every source (including fallbacks) fails:
+  #   empty  - return [] and log ERROR (never crash)
+  #   raise  - propagate exception to caller
+  on_all_failed: empty
 
-openalex:
-  email: ${OPENALEX_EMAIL}
+# ============================================================
+# Per-source configuration
+# ============================================================
+sources:
+  semantic_scholar:
+    enabled: true
+    priority: 1
+    concurrent: true
+    max_retries: 2
+    retry_delay_seconds: 2.0
+    retry_backoff: 2.0
+    retry_on_status: [429, 500, 502, 503, 504]
+    timeout_seconds: 8
+    api_key: ${SEMANTIC_SCHOLAR_API_KEY}
+
+  openalex:
+    enabled: true
+    priority: 2
+    concurrent: true
+    max_retries: 1
+    retry_delay_seconds: 1.0
+    retry_backoff: 1.5
+    retry_on_status: [429, 500, 502, 503]
+    timeout_seconds: 10
+    email: ${OPENALEX_EMAIL}
+
+  crossref:
+    enabled: true
+    priority: 3
+    concurrent: false          # reserve as fallback
+    max_retries: 2
+    retry_delay_seconds: 1.0
+    retry_backoff: 2.0
+    retry_on_status: [429, 500, 503]
+    timeout_seconds: 12
+    mailto: surveymae@example.com
+
+  arxiv:
+    enabled: true
+    priority: 4
+    concurrent: false
+    max_retries: 1
+    retry_delay_seconds: 3.0   # arxiv requires >= 3s between requests
+    retry_backoff: 1.0
+    retry_on_status: [429, 503]
+    timeout_seconds: 15
+
+  dblp:
+    enabled: true
+    priority: 5
+    concurrent: false
+    max_retries: 1
+    retry_delay_seconds: 1.5
+    retry_backoff: 1.5
+    retry_on_status: [429, 500, 503]
+    timeout_seconds: 10
+
+  scholar:
+    enabled: false             # disabled by default (scraping risk)
+    priority: 6
+    concurrent: false
+    max_retries: 0
+    timeout_seconds: 20
