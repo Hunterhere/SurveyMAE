@@ -915,6 +915,9 @@ async def run_evidence_collection(
         tool_evidence = _convert_numpy_types(tool_evidence)
         candidate_key_papers = _convert_numpy_types(candidate_key_papers)
 
+        # Dump tool_evidence schema for Step 0 refactoring
+        # dump_tool_evidence_schema(tool_evidence, "docs/tool_evidence_schema.json") #[x]: used to debug
+
         return {
             "tool_evidence": tool_evidence,
             "ref_metadata_cache": ref_metadata_cache,
@@ -927,3 +930,22 @@ async def run_evidence_collection(
         logger.error(f"Evidence collection failed: {e}", exc_info=True)
         # Re-raise so the workflow wrapper can handle it with full context
         raise
+
+
+def dump_tool_evidence_schema(tool_evidence: Dict[str, Any], output_path: str) -> None:
+    """Dump tool_evidence to JSON file for schema documentation.
+
+    This is used in Step 0 of the refactoring plan to establish the contract
+    between evidence_collection output and evidence_dispatch extraction paths.
+
+    Args:
+        tool_evidence: The tool_evidence dict to dump.
+        output_path: Path to output JSON file.
+    """
+    import json
+    import os
+
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(tool_evidence, f, indent=2, ensure_ascii=False, default=str)
+    logger.info(f"Dumped tool_evidence schema to {output_path}")

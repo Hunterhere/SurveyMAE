@@ -5,8 +5,10 @@ Provides common functionality for LLM calls, tool invocation, and state manageme
 """
 
 import asyncio
+import json
 import logging
 import os
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,7 +28,7 @@ except ImportError:
 
 from src.core.config import AgentConfig, LLMConfig, MultiModelConfig
 from src.core.mcp_client import MCPManager
-from src.core.state import SurveyState, EvaluationRecord
+from src.core.state import SurveyState, EvaluationRecord, AgentOutput, AgentSubScore
 
 logger = logging.getLogger(__name__)
 
@@ -381,25 +383,296 @@ class BaseAgent(ABC):
         messages.append(HumanMessage(content=user_content))
         return messages
 
-    @abstractmethod
+    def _parse_sub_dimension_output(self, response: str) -> Dict[str, Any]:
+        """Parse structured JSON output from LLM for a sub-dimension evaluation.
+
+        This method extracts a JSON object from the LLM response and validates
+        the required schema fields.
+
+        Args:
+            response: The raw LLM response text.
+
+        Returns:
+            A dict with sub_id, score, llm_reasoning, flagged_items, tool_evidence_used.
+        """
+        # Try to extract JSON from the response
+        result = self._extract_json(response)
+
+        # Validate required fields
+        if result and isinstance(result, dict):
+            # Ensure required fields exist with defaults
+            parsed = {
+                "sub_id": result.get("sub_id", ""),
+                "score": result.get("score", 3),
+                "llm_reasoning": result.get("llm_reasoning", ""),
+                "flagged_items": result.get("flagged_items", []),
+                "tool_evidence_used": result.get("tool_evidence_used", {}),
+            }
+
+            # Validate score is 1-5
+            if not isinstance(parsed["score"], int) or not (1 <= parsed["score"] <= 5):
+                # Try to extract from text
+                score_match = re.search(r'"score"\s*:\s*(\d+)', response)
+                if score_match:
+                    parsed["score"] = int(score_match.group(1))
+                else:
+                    # Fallback to regex for plain text scores
+                    score_match = re.search(r'\b([1-5])\b', response[:100])
+                    if score_match:
+                        parsed["score"] = int(score_match.group(1))
+                    else:
+                        parsed["score"] = 3  # Default
+
+            return parsed
+
+        # Fallback: try regex extraction
+        return self._parse_sub_dimension_output_fallback(response)
+
+    def _parse_sub_dimension_output_fallback(self, response: str) -> Dict[str, Any]:
+        """Fallback parsing when JSON extraction fails.
+
+        Attempts to extract score and reasoning from plain text responses.
+
+        Args:
+            response: The raw LLM response text.
+
+        Returns:
+            A dict with extracted values and defaults for missing fields.
+        """
+        score = 3
+        reasoning = response[:500] if response else ""
+
+        # Try to extract score
+        score_match = re.search(r'\b([1-5])\b', response[:100])
+        if score_match:
+            score = int(score_match.group(1))
+
+        # Try to extract flagged items
+        flagged_items = []
+        if "missing" in response.lower() or "gap" in response.lower():
+            flagged_items.append("Potential coverage gap detected")
+
+        return {
+            "sub_id": "",
+            "score": score,
+            "llm_reasoning": reasoning,
+            "flagged_items": flagged_items,
+            "tool_evidence_used": {},
+        }
+
+    def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
+        """Extract JSON object from text that may have extra content.
+
+        Args:
+            text: The raw text containing JSON.
+
+        Returns:
+            The parsed JSON dict, or None if parsing fails.
+        """
+        if not text:
+            return None
+        text = text.strip()
+
+        # Try direct parse first
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Try to find JSON in markdown code blocks
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Try to find any {...} pattern
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
     async def evaluate(
         self,
         state: SurveyState,
         section_name: Optional[str] = None,
     ) -> EvaluationRecord:
-        """Perform evaluation and return a record.
+        """Perform evaluation using dispatch_specs from evidence_dispatch.
 
-        This is the main method that subclasses must implement.
-        It should analyze the survey content and produce an evaluation record.
+        This method reads dispatch_specs[self.name] from state and evaluates
+        each sub-dimension specified there. Pre-filled scores from short-circuits
+        are merged with LLM evaluation results.
 
         Args:
-            state: The current workflow state containing survey content.
-            section_name: Optional specific section to evaluate.
+            state: The current workflow state containing dispatch_specs.
+            section_name: Optional specific section to evaluate (unused in refactored version).
 
         Returns:
-            An EvaluationRecord with the evaluation result.
+            An EvaluationRecord with the evaluation result (for backward compatibility).
         """
-        pass
+        # Get dispatch_specs for this agent
+        dispatch_specs = state.get("dispatch_specs", {})
+        agent_spec = dispatch_specs.get(self.name, {})
+        sub_dimension_contexts = agent_spec.get("sub_dimension_contexts", {})
+        pre_filled_scores = agent_spec.get("pre_filled_scores", {})
+        state_fields = agent_spec.get("state_fields", ["parsed_content"])
+        agent_meta = agent_spec.get("agent_meta", {})
+
+        # Collect parsed_content from state (if requested in state_fields)
+        parsed_content = state.get("parsed_content", "")
+
+        # Load the prompt template
+        system_prompt = self._load_prompt(self.name, agent_name=self.name, parsed_content=parsed_content[:20000])
+
+        # Evaluate each sub-dimension
+        all_sub_scores: Dict[str, AgentSubScore] = {}
+
+        # First, merge pre-filled scores (from short-circuits)
+        for sub_id, pre_fill_data in pre_filled_scores.items():
+            all_sub_scores[sub_id] = AgentSubScore(
+                score=pre_fill_data.get("score", 1),
+                llm_involved=False,
+                hallucination_risk="low",  # Pre-filled scores are deterministic
+                tool_evidence={},
+                llm_reasoning=pre_fill_data.get("reason", "Auto-filled due to short-circuit"),
+                flagged_items=[],
+                variance=None,
+            )
+
+        # Then, evaluate sub-dimensions that need LLM
+        for sub_id, context in sub_dimension_contexts.items():
+            # Format the sub-dimension context as a string for the prompt
+            context_str = self._format_sub_dimension_context(context)
+
+            # Create user content with parsed_content and context
+            user_content = f"""## Survey Content
+
+{parsed_content[:20000]}
+
+## Evidence Context
+
+{context_str}
+"""
+
+            # Call LLM
+            response = await self._call_llm(
+                self._create_messages(system_prompt, user_content)
+            )
+
+            # Parse the response
+            parsed = self._parse_sub_dimension_output(response)
+
+            # Get hallucination_risk from context
+            hallucination_risk = context.get("hallucination_risk", None) #FIXME: what default value
+
+            all_sub_scores[sub_id] = AgentSubScore(
+                score=parsed.get("score", 3),
+                llm_involved=True,
+                hallucination_risk=hallucination_risk,
+                tool_evidence=parsed.get("tool_evidence_used", {}),
+                llm_reasoning=parsed.get("llm_reasoning", ""),
+                flagged_items=parsed.get("flagged_items", []),
+                variance=None,
+            )
+
+            # Extension point: Future tool augmentation could happen here
+            # Example: await self._augment_with_tools(sub_id, all_sub_scores[sub_id], state)
+
+        # Calculate overall score
+        if all_sub_scores:
+            overall_score = sum(s["score"] for s in all_sub_scores.values()) / len(all_sub_scores)
+        else:
+            overall_score = 3.0
+
+        # Calculate confidence based on LLM involvement
+        llm_count = sum(1 for s in all_sub_scores.values() if s["llm_involved"])
+        confidence = 0.7 if llm_count > 0 else 1.0
+
+        # Build evidence summary
+        evidence_summary = f"Evaluated {len(all_sub_scores)} sub-dimensions: {', '.join(all_sub_scores.keys())}"
+
+        # Store sub_scores for process() to use
+        self._sub_scores = all_sub_scores
+
+        # Return EvaluationRecord for backward compatibility
+        return EvaluationRecord(
+            agent_name=self.name,
+            dimension=agent_meta.get("dimension", "unknown"),
+            score=overall_score,
+            reasoning=evidence_summary,
+            evidence=evidence_summary,
+            confidence=confidence,
+        )
+
+    def _format_sub_dimension_context(self, context: Dict[str, Any]) -> str:
+        """Format a sub-dimension context dict as a readable string.
+
+        Args:
+            context: The context dict from dispatch_specs.
+
+        Returns:
+            A formatted string representation.
+        """
+        lines = []
+
+        lines.append(f"Sub-dimension: {context.get('sub_id', '')} - {context.get('name', '')}")
+        lines.append(f"Description: {context.get('description', '')}")
+        lines.append("")
+
+        # Rubric
+        rubric = context.get("rubric", "")
+        if rubric:
+            lines.append("## Rubric")
+            lines.append(rubric)
+            lines.append("")
+
+        # Evidence metrics
+        evidence_metrics = context.get("evidence_metrics", {})
+        if evidence_metrics:
+            lines.append("## Evidence Metrics")
+            for metric_id, metric_data in evidence_metrics.items():
+                value = metric_data.get("value")
+                definition = metric_data.get("definition", "")
+                lines.append(f"- {metric_id}: {value} ({definition})")
+            lines.append("")
+
+        # Supplementary data
+        supplementary_data = context.get("supplementary_data", {})
+        if supplementary_data:
+            lines.append("## Supplementary Data")
+            for key, value in supplementary_data.items():
+                if isinstance(value, list) and len(value) > 5:
+                    lines.append(f"- {key}: {len(value)} items (showing first 5)")
+                    for item in value[:5]:
+                        lines.append(f"  - {item}")
+                elif isinstance(value, dict):
+                    lines.append(f"- {key}:")
+                    for k, v in list(value.items())[:5]:
+                        lines.append(f"  - {k}: {v}")
+                else:
+                    lines.append(f"- {key}: {value}")
+            lines.append("")
+
+        # Warnings
+        warnings = context.get("warnings", [])
+        if warnings:
+            lines.append("## Warnings")
+            for warning in warnings:
+                lines.append(f"- {warning}")
+            lines.append("")
+
+        # Output schema
+        output_schema = context.get("output_schema", {})
+        if output_schema:
+            lines.append("## Expected Output Schema")
+            lines.append(json.dumps(output_schema, indent=2))
+
+        return "\n".join(lines)
 
     async def process(
         self,
@@ -416,119 +689,51 @@ class BaseAgent(ABC):
         Returns:
             A dictionary of state updates to be merged.
         """
-        from src.core.state import AgentOutput, AgentSubScore
-        import json
-        import re
-
-        def extract_json(text: str) -> dict:
-            """Extract JSON object from text that may have extra content."""
-            if not text:
-                return {}
-            text = text.strip()
-            # Try direct parse first
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                pass
-            # Try to find JSON in markdown code blocks
-            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-            # Try to find any {...} pattern
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    pass
-            return {}
-
         try:
             record = await self.evaluate(state)
 
-            # Handle case where evaluate() returns a dict (including TypedDict)
-            # TypedDict doesn't support isinstance() with the TypedDict type,
-            # so we check if it's a dict and then create a proper EvaluationRecord
-            # TypedDict instances are dict subclasses at runtime
-            if hasattr(record, 'get') and hasattr(record, 'keys'):
-                # It's dict-like - convert to EvaluationRecord
-                try:
-                    record = EvaluationRecord(
-                        agent_name=record.get("agent_name", self.name),
-                        dimension=record.get("dimension", "unknown"),
-                        score=record.get("score", record.get("overall_score", 5.0)),
-                        reasoning=str(record.get("reasoning", record.get("evidence_summary", ""))),
-                        evidence=record.get("evidence", record.get("evidence_summary")),
-                        confidence=record.get("confidence", 0.5),
-                    )
-                except Exception:
-                    # If conversion fails, create default
-                    record = EvaluationRecord(
-                        agent_name=self.name,
-                        dimension="unknown",
-                        score=5.0,
-                        reasoning="Evaluation conversion failed",
-                        evidence=None,
-                        confidence=0.5,
-                    )
-
-            # Now record should be an EvaluationRecord
             # Convert EvaluationRecord to AgentOutput format
-            # Parse the JSON from reasoning if possible
-            # Note: TypedDict is dict at runtime, use dict access pattern
-            sub_scores = {}
-            reasoning_text = str(record.get("reasoning", "")) if record.get("reasoning") else ""
-            parsed = extract_json(reasoning_text)
-            if parsed and "sub_scores" in parsed:
-                # Convert parsed sub_scores to AgentSubScore format
-                for key, value in parsed["sub_scores"].items():
-                    sub_scores[key] = AgentSubScore(
-                        score=value.get("score", record.get("score", 5.0)),
-                        llm_involved=value.get("llm_involved", True),
-                        tool_evidence=value.get("tool_evidence", {}),
-                        llm_reasoning=value.get("llm_reasoning", ""),
-                        flagged_items=value.get("flagged_items"),
-                        variance=value.get("variance"),
-                    )
-            else:
-                # Create a simple sub_score from the overall record
-                reasoning_str = str(record.get("reasoning", ""))[:500] if record.get("reasoning") else ""
-                sub_scores = {
-                    f"{record.get('dimension', 'unknown')}_overall": AgentSubScore(
-                        score=record.get("score", 5.0),
-                        llm_involved=True,
-                        tool_evidence={},
-                        llm_reasoning=reasoning_str,
-                        flagged_items=None,
-                        variance=None,
-                    )
-                }
+            # The evaluate() method now returns EvaluationRecord with sub_scores info
+            # But we need to reconstruct the full AgentOutput with per-sub-dimension scores
 
-            # Ensure record attributes are strings
-            agent_name = str(record.get("agent_name", "")) if record.get("agent_name") else self.name
-            dimension = str(record.get("dimension", "")) if record.get("dimension") else "unknown"
-            evidence_summary = str(record.get("evidence", "")) if record.get("evidence") else ""
+            # Get dispatch_specs for this agent
+            dispatch_specs = state.get("dispatch_specs", {})
+            agent_spec = dispatch_specs.get(self.name, {})
+            agent_meta = agent_spec.get("agent_meta", {})
+
+            # Use sub_scores from evaluate() - no need to re-run LLM
+            sub_scores = getattr(self, "_sub_scores", {})
+
+            # Calculate overall score
+            if sub_scores:
+                overall_score = sum(s["score"] for s in sub_scores.values()) / len(sub_scores)
+            else:
+                overall_score = 3.0
+
+            # Calculate confidence
+            llm_count = sum(1 for s in sub_scores.values() if s["llm_involved"])
+            confidence = 0.7 if llm_count > 0 else 1.0
 
             agent_output = AgentOutput(
-                agent_name=agent_name,
-                dimension=dimension,
+                agent_name=self.name,
+                dimension=agent_meta.get("dimension", "unknown"),
                 sub_scores=sub_scores,
-                overall_score=float(record.get("score", 5.0)) if record.get("score") else 5.0,
-                confidence=float(record.get("confidence", 0.5)) if record.get("confidence") else 0.5,
-                evidence_summary=evidence_summary,
+                overall_score=overall_score,
+                confidence=confidence,
+                evidence_summary=f"Evaluated {len(sub_scores)} sub-dimensions",
             )
 
             return {
                 "evaluations": [record],
                 "agent_outputs": {self.name: agent_output},
             }
+
         except Exception as e:
             import traceback
+
             logger.error(f"Agent {self.name} evaluation failed: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
+
             return {
                 "evaluations": [
                     EvaluationRecord(

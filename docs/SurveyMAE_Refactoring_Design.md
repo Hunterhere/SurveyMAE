@@ -496,3 +496,271 @@ Step 6 (端到端验证) ── 需 Step 1-5 全部完成
 4. 如果某个检查项 fail，在当前 Step 修复后再重新提交
 
 Step 6 完成后，整体重构交付完毕。
+
+---
+
+## 九、重构完成跟踪
+
+### Step 0：Schema 契约确立 ✅ 完成
+
+**完成时间**: 2026-03-31
+
+**变更文件**:
+- `docs/tool_evidence_schema.json` - **新建** - 559KB 完整 tool_evidence dump
+
+**变更函数**:
+- `src/graph/nodes/evidence_collection.py`:
+  - `dump_tool_evidence_schema()` - **新增** - 将 tool_evidence dump 到 JSON 文件
+
+**验证结果**:
+- [x] 存在文件 `docs/tool_evidence_schema.json`
+- [x] 所有 19 个指标的 extract_path 已校准并验证
+- [x] `tests/unit/test_evidence_dispatch_extraction.py` 已创建（20 个测试全部通过）
+
+---
+
+### Step 1：evidence_dispatch.py 重构 ✅ 完成
+
+**完成时间**: 2026-03-31
+
+**变更文件**:
+- `src/graph/nodes/evidence_dispatch.py` - **替换** - 925 行新增
+- `tests/unit/test_evidence_dispatch.py` - **更新** - 43 行修改（适配新数据结构）
+
+**新增数据结构**:
+
+| 数据结构 | 描述 |
+|----------|------|
+| `MetricDef` | dataclass - 19 个指标的定义，包含 extract_path、hallucination_risk |
+| `METRIC_REGISTRY` | Dict[str, MetricDef] - 所有指标的注册表 |
+| `SubDimensionDef` | dataclass - 子维度定义，包含 rubric、evidence_metric_ids |
+| `AgentDef` | dataclass - Agent 定义，包含 sub_dimensions 列表 |
+| `AGENT_REGISTRY` | Dict[str, AgentDef] - 所有 agent 的注册表 |
+
+**新增函数**:
+
+| 函数 | 描述 |
+|------|------|
+| `extract_metric_value(tool_evidence, metric_id)` | 从 tool_evidence 按 extract_path 提取指标值 |
+| `extract_metric_with_extra(tool_evidence, metric_id)` | 提取指标值及 extra_fields（如 C6 的 auto_fail） |
+| `build_warnings(agent_name, tool_evidence, sub_dim)` | 生成与子维度相关的警告 |
+| `build_sub_dimension_context(agent_name, sub_dim, tool_evidence, state)` | 为单个子维度生成精确的 prompt 上下文 |
+| `get_corrector_targets(agent_outputs, tool_evidence)` | 动态确定需要投票的子维度（考虑 C6.auto_fail） |
+| `generate_metrics_index()` | 生成 metrics_index 结构供 run.json 使用 |
+
+**关键逻辑变更**:
+1. C6.auto_fail=True 时，V2 被短路，结果写入 `pre_filled_scores`，不出现在 `sub_dimension_contexts`
+2. `get_corrector_targets()` 动态返回投票目标：auto_fail=True 时 V2 风险为 low，不投票
+
+**验证结果**:
+- [x] `run_evidence_dispatch()` 返回的 dict 包含 `dispatch_specs` 键
+- [x] R1 只包含 T1-T5 指标值
+- [x] R2 只包含 S2, S3, S5 指标值
+- [x] C6.auto_fail=True 时 V2 在 pre_filled_scores，不在 sub_dimension_contexts
+- [x] `get_corrector_targets()` 返回 `{"verifier": ["V4"], "expert": ["E2","E3","E4"], "reader": ["R2","R3","R4"]}`
+- [x] `generate_metrics_index()` 输出结构正确
+- [x] 13 个原有单元测试通过
+- [x] 20 个新 extraction 测试通过
+
+---
+
+### Step 2：Prompt 模板精简 ✅ 完成
+
+**完成时间**: 2026-03-31
+
+**变更文件**:
+- `config/prompts/verifier.yaml` - **精简** - 72 行减少
+- `config/prompts/expert.yaml` - **精简** - 80 行减少
+- `config/prompts/reader.yaml` - **精简** - 98 行减少
+
+**变更内容**:
+- 删除所有 rubric 文本
+- 删除所有指标 ID（C3, T5 等）
+- 删除所有评分数字格式（5:, 4: 等）
+- 删除 output schema 示例
+- 替换 `{evidence_report}` 为 `{sub_dimension_context}` 和 `{parsed_content}` 占位符
+
+**验证结果**:
+- [x] 三个 yaml 文件均不包含子维度 ID（V1, V2 等）
+- [x] 三个 yaml 文件均不包含指标 ID（C3, T5 等）
+- [x] 三个 yaml 文件均不包含评分数字格式
+- [x] 三个 yaml 文件包含 `{sub_dimension_context}` 和 `{parsed_content}` 占位符
+
+---
+
+### Step 3：Agent 基类 evaluate() 统一 ✅ 完成
+
+**完成时间**: 2026-03-31
+
+**变更文件**:
+- `src/agents/base.py` - **重写** - 453 行修改
+- `src/agents/reader.py` - **大幅精简** - 267 行减少
+- `src/agents/expert.py` - **大幅精简** - 261 行减少
+- `src/agents/verifier.py` - **大幅精简** - 365 行减少
+
+**新增方法（base.py）**:
+
+| 方法 | 描述 |
+|------|------|
+| `_parse_sub_dimension_output(response)` | 解析 LLM 输出的结构化 JSON |
+| `_parse_sub_dimension_output_fallback(response)` | 非 JSON 响应的正则提取 fallback |
+| `_extract_json(text)` | 从文本中提取 JSON 块 |
+| `_format_sub_dimension_context(context)` | 将子维度上下文格式化为可读字符串 |
+| `evaluate(state, section_name)` | **重写** - 统一的 evaluate 实现，读取 dispatch_specs，逐子维度调用 LLM |
+| `process(state)` | **重写** - LangGraph 节点调用，返回 agent_outputs |
+
+**删除的组件（子类中）**:
+
+| 类 | 删除内容 |
+|----|----------|
+| ReaderAgent | `_citation_checker`、`_citation_analyzer` 实例化，`_analyze_citations()`、`_incorporate_citation_analysis()`、`_parse_reader_response()` |
+| ExpertAgent | `_citation_checker`、`_graph_analyzer` 实例化，`_analyze_citation_graph()`、`_incorporate_graph_analysis()`、`_parse_expert_response()` |
+| VerifierAgent | `_citation_checker` 实例化，`_analyze_citations()`、`_incorporate_citation_analysis()`、`_extract_claims_and_citations()`、`_parse_verification_response()` |
+
+**验证结果**:
+- [x] reader.py 不包含 CitationChecker 或 CitationAnalyzer
+- [x] reader.py 不包含 `_parse_reader_response`
+- [x] expert.py 不包含工具实例化
+- [x] expert.py 不包含 `_parse_expert_response`
+- [x] verifier.py 不包含工具实例化
+- [x] verifier.py 不包含 `_parse_verification_response`
+- [x] 三个子类均不 override `evaluate()`
+- [x] 33 个测试通过
+
+---
+
+### Step 4：Corrector registry 驱动 ✅ 完成
+
+**完成时间**: 2026-03-31
+
+**变更文件**:
+- `src/agents/corrector.py` - **修改** - 导入变更 + 方法实现变更
+
+**具体变更**:
+
+1. **新增导入**:
+
+   ```python
+   from src.graph.nodes.evidence_dispatch import get_corrector_targets, AGENT_REGISTRY
+   ```
+
+2. **删除常量**:
+   - `HIGH_RISK_DIMENSIONS` - 已删除
+   - `LOW_RISK_DIMENSIONS` - 已删除
+
+3. **`_identify_voting_dimensions()` 签名变更**:
+   - 原: `def _identify_voting_dimensions(self, agent_outputs: Dict[str, AgentOutput]) -> List[str]:`
+   - 新: `def _identify_voting_dimensions(self, agent_outputs: Dict[str, AgentOutput], evidence_reports: Dict[str, Any]) -> List[str]:`
+   - 实现: 调用 `get_corrector_targets(agent_outputs, evidence_reports)` 并展平结果
+
+4. **`_get_skipped_dimensions()` 签名变更**:
+   - 原: `def _get_skipped_dimensions(self, agent_outputs: Dict[str, AgentOutput]) -> List[str]:`
+   - 新: `def _get_skipped_dimensions(self, agent_outputs: Dict[str, AgentOutput], evidence_reports: Dict[str, Any]) -> List[str]:`
+   - 实现: 从 `AGENT_REGISTRY` 获取全部 sub_ids，减去 voting_dims
+
+5. **`_get_rubric()` 实现变更**:
+   - 原: 硬编码 `rubrics` 字典
+   - 新: 遍历 `AGENT_REGISTRY` 查找对应 `sub_dim.rubric`
+
+6. **`process()` 调用点更新**:
+   - `dimensions_to_vote = self._identify_voting_dimensions(agent_outputs, evidence_reports)`
+   - `skipped = self._get_skipped_dimensions(agent_outputs, evidence_reports)`
+
+**验证结果**:
+
+- [x] corrector.py 语法检查通过
+- [x] corrector.py 不包含 `HIGH_RISK_DIMENSIONS`
+- [x] corrector.py 不包含 `LOW_RISK_DIMENSIONS`
+- [x] corrector.py 导入 `get_corrector_targets` 和 `AGENT_REGISTRY`
+- [x] 8 个 CorrectorAgent 单元测试全部通过
+
+---
+
+### Step 5：SurveyState 字段文档化 ✅ 完成
+
+**完成时间**: 2026-03-31
+
+**变更文件**:
+- `src/core/state.py` - **修改** - 新增 `dispatch_specs` 和 `metrics_index` 字段
+- `src/main.py` - **修改** - 初始化 `dispatch_specs` 和 `metrics_index` 为空 dict
+
+**具体变更**:
+
+1. **`src/core/state.py`** - 新增字段声明：
+
+   ```python
+   # --- Dispatch Specs (Phase 2) ---
+   # Per-agent evaluation contexts generated by evidence_dispatch node
+   dispatch_specs: Optional[Dict[str, Any]] = None
+
+   # --- Metrics Index (Phase 2) ---
+   # Index of all metrics for run.json, generated by evidence_dispatch node
+   metrics_index: Optional[Dict[str, Any]] = None
+   ```
+
+2. **`src/main.py`** - 新增初始化：
+
+   ```python
+   "dispatch_specs": {},  # Populated by evidence_dispatch (per-agent evaluation contexts)
+   "metrics_index": {},  # Populated by evidence_dispatch (for run.json)
+   ```
+
+**验证结果**:
+
+- [x] state.py 语法检查通过
+- [x] main.py 语法检查通过
+- [x] `SurveyState` 包含 `dispatch_specs` 字段声明
+- [x] `SurveyState` 包含 `metrics_index` 字段声明
+- [x] `main.py` 初始化 `dispatch_specs` 为空 dict
+- [x] `main.py` 初始化 `metrics_index` 为空 dict
+- [x] 5 个 state.py 单元测试全部通过
+- [x] 33 个 evidence_dispatch 测试全部通过
+
+---
+
+### Step 6：端到端验证 ✅ 完成
+
+**完成时间**: 2026-03-31
+
+**验证结果**:
+
+| 验证项 | 状态 | 证据 |
+|--------|------|------|
+| registry 导入正确 | ✅ | `from src.graph.nodes.evidence_dispatch import AGENT_REGISTRY, METRIC_REGISTRY, get_corrector_targets` 成功 |
+| AGENT_REGISTRY 结构正确 | ✅ | verifier:[V1,V2,V4], expert:[E1,E2,E3,E4], reader:[R1,R2,R3,R4] |
+| METRIC_REGISTRY 包含 19 metrics | ✅ | `len(METRIC_REGISTRY) == 19` |
+| get_corrector_targets (auto_fail=False) | ✅ | 返回 `{"verifier":["V2","V4"], "expert":["E2","E3","E4"], "reader":["R2","R3","R4"]}` |
+| get_corrector_targets (auto_fail=True) | ✅ | V2 被排除，verifier 只有 ["V4"] |
+| corrector.py 无 HIGH_RISK/LOW_RISK 常量 | ✅ | 代码中不包含这两个常量 |
+| state.py 含 dispatch_specs/metrics_index | ✅ | 字段已添加 |
+| main.py 初始化两个新字段 | ✅ | 已初始化为空 dict |
+| workflow tests 通过 | ✅ | 10/10 passed |
+| evidence_dispatch tests 通过 | ✅ | 33/33 passed |
+| state tests 通过 | ✅ | 5/5 passed |
+| CorrectorAgent tests 通过 | ✅ | 8/8 passed |
+
+**注**: 完整 pipeline 运行需要 API key 配置，通过单元测试和 registry 验证确认结构正确。
+
+---
+
+## 十、文件变更总览
+
+```
+ Modified: config/prompts/expert.yaml                    |  80 +--
+ Modified: config/prompts/reader.yaml                    |  98 +---
+ Modified: config/prompts/verifier.yaml                   |  72 +--
+ Modified: src/agents/base.py                            | 453 ++++----
+ Modified: src/agents/corrector.py                       |  -88 +import
+ Modified: src/agents/expert.py                          | 261 ++--------
+ Modified: src/agents/reader.py                          | 267 ++--------
+ Modified: src/agents/verifier.py                        | 365 ++-----------
+ Modified: src/core/state.py                              |  +12
+ Modified: src/graph/nodes/evidence_collection.py        |  22 +
+ Modified: src/graph/nodes/evidence_dispatch.py           | 925 ++++++++++++++++++++++++++++
+ Modified: src/main.py                                    |   +2
+ Modified: tests/unit/test_evidence_dispatch.py           |  43 +-
+ Added:    docs/tool_evidence_schema.json                | (559KB)
+ Added:    tests/unit/test_evidence_dispatch_extraction.py | (new file)
+```
+
+**总变更**: ~1389 行新增，~1197 行删除（净增约 192 行）

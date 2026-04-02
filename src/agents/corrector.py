@@ -23,27 +23,9 @@ from src.core.state import (
     CorrectionRecord,
     VarianceRecord,
 )
+from src.graph.nodes.evidence_dispatch import get_corrector_targets, AGENT_REGISTRY
 
 logger = logging.getLogger(__name__)
-
-# Sub-dimensions that require multi-model voting (hallucination_risk: medium/high)
-HIGH_RISK_DIMENSIONS = [
-    "V4",  # Internal consistency
-    "E2",  # Classification reasonableness
-    "E3",  # Technical accuracy
-    "E4",  # Critical analysis depth
-    "R2",  # Information balance
-    "R3",  # Structural clarity
-    "R4",  # Writing quality
-]
-
-# Dimensions that are skipped (low hallucination risk, threshold-based)
-LOW_RISK_DIMENSIONS = [
-    "V1",  # Citation existence (based on C5 threshold)
-    "V2",  # Citation-claim alignment (based on C6, hallucination_risk=low)
-    "E1",  # Foundational coverage (based on G4 threshold)
-    "R1",  # Timeliness (based on T5 threshold)
-]
 
 
 class CorrectorAgent(BaseAgent):
@@ -132,7 +114,7 @@ class CorrectorAgent(BaseAgent):
         from statistics import median
 
         agent_outputs = state.get("agent_outputs", {})
-        evidence_reports = state.get("evidence_reports", {})
+        tool_evidence = state.get("tool_evidence", {})
 
         if not agent_outputs:
             logger.warning("No agent_outputs found in state")
@@ -147,8 +129,8 @@ class CorrectorAgent(BaseAgent):
             }
 
         # Identify dimensions to vote on
-        dimensions_to_vote = self._identify_voting_dimensions(agent_outputs)
-        skipped = self._get_skipped_dimensions(agent_outputs)
+        dimensions_to_vote = self._identify_voting_dimensions(agent_outputs, tool_evidence)
+        skipped = self._get_skipped_dimensions(agent_outputs, tool_evidence)
 
         logger.info(f"Corrector voting on {len(dimensions_to_vote)} dimensions: {dimensions_to_vote}")
         logger.info(f"Skipping {len(skipped)} low-risk dimensions: {skipped}")
@@ -229,25 +211,45 @@ class CorrectorAgent(BaseAgent):
 
         return {"corrector_output": corrector_output}
 
-    def _identify_voting_dimensions(self, agent_outputs: Dict[str, AgentOutput]) -> List[str]:
-        """Identify which sub-dimensions need voting."""
+    def _identify_voting_dimensions(self, agent_outputs: Dict[str, AgentOutput], tool_evidence: Dict[str, Any]) -> List[str]:
+        """Identify which sub-dimensions need voting using registry-driven approach.
+
+        Args:
+            agent_outputs: The agent_outputs dict from state.
+            tool_evidence: The tool_evidence dict for checking C6.auto_fail.
+
+        Returns:
+            List of sub_ids that need multi-model voting.
+        """
+        targets = get_corrector_targets(agent_outputs, tool_evidence)
+        # Flatten to list of sub_ids
         voting_dims = []
-        for agent_name, output in agent_outputs.items():
-            for sub_id in output.get("sub_scores", {}):
-                risk = output["sub_scores"][sub_id].get("hallucination_risk", "medium")
-                if risk in ["medium", "high"] and sub_id in HIGH_RISK_DIMENSIONS:
-                    voting_dims.append(sub_id)
+        for agent_name, sub_ids in targets.items():
+            voting_dims.extend(sub_ids)
         return voting_dims
 
-    def _get_skipped_dimensions(self, agent_outputs: Dict[str, AgentOutput]) -> List[str]:
-        """Get list of dimensions that are skipped."""
-        skipped = []
-        for agent_name, output in agent_outputs.items():
-            for sub_id in output.get("sub_scores", {}):
-                risk = output["sub_scores"][sub_id].get("hallucination_risk", "medium")
-                if risk == "low" or sub_id in LOW_RISK_DIMENSIONS:
-                    skipped.append(sub_id)
-        return list(set(skipped))
+    def _get_skipped_dimensions(self, agent_outputs: Dict[str, AgentOutput], tool_evidence: Dict[str, Any]) -> List[str]:
+        """Get list of dimensions that are skipped using registry-driven approach.
+
+        Args:
+            agent_outputs: The agent_outputs dict from state.
+            tool_evidence: The tool_evidence dict for checking C6.auto_fail.
+
+        Returns:
+            List of sub_ids that are skipped.
+        """
+        targets = get_corrector_targets(agent_outputs, tool_evidence)
+        # All sub-dimensions across all agents
+        all_sub_ids = set()
+        for agent_def in AGENT_REGISTRY.values():
+            for sub_dim in agent_def.sub_dimensions:
+                all_sub_ids.add(sub_dim.sub_id)
+        # Voting dims from registry
+        voting_dims = set()
+        for sub_ids in targets.values():
+            voting_dims.update(sub_ids)
+        # Skipped = all - voting
+        return list(all_sub_ids - voting_dims)
 
     def _get_dimension_info(self, dim_id: str, agent_outputs: Dict[str, AgentOutput]) -> Dict[str, Any]:
         """Get dimension info from agent_outputs."""
@@ -304,17 +306,19 @@ Output ONLY a JSON object: {{"score": <number>}}
             raise
 
     def _get_rubric(self, dim_id: str) -> str:
-        """Get rubric text for a dimension."""
-        rubrics = {
-            "V4": "Internal Consistency: Check if the survey has any self-contradictions. 5=No contradictions, 4=1 minor contradiction, 3=2-3 contradictions or 1 severe, 2=Multiple contradictions, 1=Systematic contradictions.",
-            "E2": "Method Classification Reasonableness: Evaluate if the method classification aligns with academic consensus. 5=S5(NMI)>=0.7 + LLM confirms reasonable, 4=Mostly reasonable, 3=Some issues, 2=Significant issues, 1=Unreasonable classification.",
-            "E3": "Technical Accuracy: Check for technical errors in method descriptions. 5=No errors, 4=1-2 minor errors, 3=A few errors, 2=Multiple errors, 1=Many severe errors.",
-            "E4": "Critical Analysis Depth: Evaluate the depth of comparative analysis and critique. 5=Systematic comparison tables + clear trends + specific limitations, 4=Comparison and trends but limited limitations, 3=Some listing with minimal critique, 2=Mostly listing, 1=Pure summary with no analysis.",
-            "R2": "Information Balance: Check if information distribution across sections is reasonable. 5=Well-balanced, 4=Mostly balanced, 3=Slightly imbalanced, 2=Imbalanced, 1=Severely imbalanced.",
-            "R3": "Structural Clarity: Evaluate hierarchical structure and reading path. 5=S5>=0.7 + clear hierarchy, 4=Good structure, 3=Acceptable structure, 2=Poor structure, 1=Confusing structure.",
-            "R4": "Writing Quality: Evaluate language fluency and terminology consistency. 5=Excellent, 4=Good, 3=Acceptable, 2=Needs improvement, 1=Poor.",
-        }
-        return rubrics.get(dim_id, "Rate this dimension from 1-5 based on quality.")
+        """Get rubric text for a dimension from AGENT_REGISTRY.
+
+        Args:
+            dim_id: Sub-dimension ID (e.g., V4, E2, R3).
+
+        Returns:
+            Rubric string for the dimension.
+        """
+        for agent_def in AGENT_REGISTRY.values():
+            for sub_dim in agent_def.sub_dimensions:
+                if sub_dim.sub_id == dim_id:
+                    return sub_dim.rubric
+        return "Rate this dimension from 1-5 based on quality."
 
     def _process_multi_model_results(
         self,

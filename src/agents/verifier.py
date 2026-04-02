@@ -1,18 +1,27 @@
 """Knowledge Verification Agent (VerifierAgent).
 
-Validates factual accuracy by cross-referencing claims with external sources.
-Uses citation checker tools to search for and verify citations.
+This agent validates factual accuracy and citation quality of a survey.
+It assesses citation existence, claim alignment, and internal consistency.
+
+Dimensions evaluated (v3):
+- V1: Citation Existence - whether references are real and verifiable
+- V2: Citation-Claim Alignment - whether survey correctly understands cited papers
+- V4: Internal Consistency - whether the survey has internal contradictions
+
+Note: V2 scoring is handled by the short-circuit mechanism in evidence_dispatch.
+When C6.auto_fail=True, V2 is auto-scored as 1 without calling the agent.
+
+Extension point: This agent can be extended to override evaluate() to add
+tool-augmented scoring for specific sub-dimensions.
 """
 
 import logging
-import re
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from src.agents.base import BaseAgent
-from src.core.config import AgentConfig, LLMConfig, load_config
+from src.core.config import AgentConfig
 from src.core.mcp_client import MCPManager
 from src.core.state import SurveyState, EvaluationRecord
-from src.tools.citation_checker import CitationChecker
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +29,11 @@ logger = logging.getLogger(__name__)
 class VerifierAgent(BaseAgent):
     """Agent responsible for verifying factual claims and citations.
 
-    This agent:
-    - Extracts citations and claims from the survey text
-    - Uses CitationChecker to verify citations exist and match claims
-    - Checks if cited papers actually exist and match the claims
-    - Identifies potential hallucinations
-
-    Dimensions evaluated (v3):
-    - V1: Citation existence (C5 metadata verify rate)
-    - V2: Citation-claim alignment (computed from C6 contradiction_rate)
-    - V4: Internal consistency
+    This agent uses the base class evaluate() implementation which:
+    1. Reads dispatch_specs["verifier"] from state
+    2. Evaluates each sub-dimension (V1, V4) using the provided evidence context
+    3. V2 is pre-filled by evidence_dispatch when C6.auto_fail=True
+    4. Returns structured AgentOutput with per-sub-dimension scores
     """
 
     def __init__(
@@ -41,319 +45,28 @@ class VerifierAgent(BaseAgent):
 
         Args:
             config: Agent configuration.
-            mcp: MCP manager for search tool access.
+            mcp: Optional MCP manager for search tool access.
+
+        Note:
+            This agent does NOT instantiate CitationChecker in __init__() because
+            evidence_collection has already performed citation extraction and validation.
+            The evaluation uses dispatch_specs from evidence_dispatch.
         """
         super().__init__(
             name="verifier",
             config=config or AgentConfig(name="verifier"),
             mcp=mcp,
         )
-        # Initialize citation checker for direct tool calls
-        self._citation_checker = CitationChecker()
+        # Extension point: If you override evaluate() to add tool-augmented scoring,
+        # you can instantiate tools here. Example:
+        # self._citation_checker = CitationChecker()
 
-    async def evaluate(
-        self,
-        state: SurveyState,
-        section_name: Optional[str] = None,
-    ) -> EvaluationRecord:
-        """Evaluate the factuality and citation accuracy of survey content.
-
-        This agent evaluates three sub-dimensions:
-        - V1: Citation existence (based on C5 metadata_verify_rate)
-        - V2: Citation-assertion alignment (based on C6, with auto-fail shortcut)
-        - V4: Internal consistency (LLM-based analysis)
-
-        Args:
-            state: The current workflow state.
-            section_name: Optional section to focus on.
-
-        Returns:
-            EvaluationRecord with factuality scores.
-        """
-        content = state.get("parsed_content", "")
-        source_pdf = state.get("source_pdf_path", "")
-
-        # Get evidence report from state
-        evidence_reports = state.get("evidence_reports", {})
-        evidence_report = evidence_reports.get("verifier", "No evidence report available.")
-
-        # Extract C6 result from tool_evidence for V2 scoring (NOT from evidence_report string)
-        tool_evidence = state.get("tool_evidence", {})
-        c6_result = tool_evidence.get("c6_alignment", {})
-        c6_auto_fail = c6_result.get("auto_fail", False)
-        contradiction_rate = c6_result.get("contradiction_rate", 0.0)
-        contradictions = c6_result.get("contradictions", [])
-
-        # Calculate V2 score based on C6 results
-        v2_score: float = 0.0
-        v2_reasoning: str = ""
-
-        # Load V2 scoring thresholds from config
-        cfg = load_config()
-        v2_thresholds = {
-            "score_5": cfg.evidence.v2_score_5_threshold,
-            "score_4": cfg.evidence.v2_score_4_threshold,
-            "score_3": cfg.evidence.v2_score_3_threshold,
-            "score_2": cfg.evidence.v2_score_2_threshold,
-        }
-
-        if c6_auto_fail:
-            # C6 threshold exceeded - auto-fail V2
-            v2_score = 1.0
-            v2_reasoning = (
-                f"C6 auto-fail triggered: contradiction_rate={contradiction_rate:.1%} >= "
-                f"threshold ({v2_thresholds['score_2']:.1%}). V2 dimension auto-scored as 1 (minimum)."
-            )
-        else:
-            # Normal V2 scoring based on contradiction_rate
-            if contradiction_rate < v2_thresholds["score_5"]:
-                v2_score = 5.0
-                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} < {v2_thresholds['score_5']:.1%}, excellent alignment"
-            elif contradiction_rate < v2_thresholds["score_4"]:
-                v2_score = 4.0
-                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} in [{v2_thresholds['score_5']:.1%}, {v2_thresholds['score_4']:.1%}), good alignment"
-            elif contradiction_rate < v2_thresholds["score_3"]:
-                v2_score = 3.0
-                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} in [{v2_thresholds['score_4']:.1%}, {v2_thresholds['score_3']:.1%}), moderate issues"
-            elif contradiction_rate < v2_thresholds["score_2"]:
-                v2_score = 2.0
-                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} in [{v2_thresholds['score_3']:.1%}, {v2_thresholds['score_2']:.1%}), multiple issues"
-            else:
-                v2_score = 1.0
-                v2_reasoning = f"contradiction_rate={contradiction_rate:.1%} >= {v2_thresholds['score_2']:.1%}, auto-fail threshold"
-
-        # Load the verification prompt for V1 and V4 dimensions
-        system_prompt = self._load_prompt(
-            "verifier",
-            agent_name=self.name,
-            section=section_name or "entire survey",
-            evidence_report=evidence_report,
-        )
-
-        # Use citation checker to extract and validate citations
-        citation_analysis = await self._analyze_citations(source_pdf, content)
-
-        # Extract claims for verification
-        claims_and_citations = self._extract_claims_and_citations(content)
-
-        # Prepare user content with extracted claims and citation analysis
-        user_content = f"""
-        Survey Content to Verify:
-        ---
-        {content[:15000]}
-        ---
-
-        Citation Analysis Results:
-        {citation_analysis}
-
-        Extracted Claims and Citations:
-        {claims_and_citations}
-
-        Please verify each claim by:
-        1. Checking if the cited papers exist and are accessible (V1)
-        2. Verifying if the claims match the actual paper content (V2)
-        3. Identifying any potential hallucinations (V4)
-        4. Providing a factuality score from 0-10
-
-        Return your evaluation with evidence for each claim.
-        """
-
-        # Call LLM for verification
-        response = await self._call_llm(self._create_messages(system_prompt, user_content))
-
-        # Parse the response to extract scores
-        score, reasoning, evidence = self._parse_verification_response(response)
-
-        # Incorporate citation validation results into the score
-        if citation_analysis:
-            score, reasoning, evidence = self._incorporate_citation_analysis(
-                score, reasoning, evidence, citation_analysis
-            )
-
-        # Build complete sub_scores JSON including V2 (computed from C6)
-        # The LLM response contains V1 and V4; we inject V2 here
-        try:
-            import json
-            # Try to extract existing sub_scores from LLM response
-            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", reasoning, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group(1))
-                sub_scores_data = parsed.get("sub_scores", {})
-            else:
-                json_match2 = re.search(r"\{.*\}", reasoning, re.DOTALL)
-                if json_match2:
-                    parsed = json.loads(json_match2.group(0))
-                    sub_scores_data = parsed.get("sub_scores", {})
-                else:
-                    sub_scores_data = {}
-
-            # Add V2 sub_score (auto-computed from C6, NOT from LLM)
-            sub_scores_data["V2_citation_claim_alignment"] = {
-                "score": v2_score,
-                "llm_involved": False,
-                "tool_evidence": {
-                    "contradiction_rate": contradiction_rate,
-                    "c6_auto_fail": c6_auto_fail,
-                },
-                "llm_reasoning": v2_reasoning,
-                "flagged_items": [c.get("note", "")[:100] for c in contradictions[:5]] if contradictions else [],
-            }
-
-            # Reconstruct reasoning with complete sub_scores
-            parsed["sub_scores"] = sub_scores_data
-            reasoning = json.dumps(parsed, ensure_ascii=False)
-        except Exception as e:
-            logger.warning(f"Failed to reconstruct sub_scores JSON: {e}")
-
-        return EvaluationRecord(
-            agent_name=self.name,
-            dimension="factuality",
-            score=score,
-            reasoning=reasoning,
-            evidence=evidence,
-            confidence=0.85,
-        )
-
-    async def _analyze_citations(
-        self,
-        pdf_path: str,
-        content: str,
-    ) -> Dict[str, Any]:
-        """Analyze citations using CitationChecker tool.
-
-        Args:
-            pdf_path: Path to the PDF file.
-            content: Survey content.
-
-        Returns:
-            Citation analysis results.
-        """
-        try:
-            if pdf_path:
-                # Use the PDF-based citation extraction (async)
-                result = await self._citation_checker.extract_citations_with_context_from_pdf(pdf_path)
-                return {
-                    "citations_count": len(result.get("citations", [])),
-                    "references_count": len(result.get("references", [])),
-                    "backend": result.get("backend", "unknown"),
-                    "has_citations": len(result.get("citations", [])) > 0,
-                    "has_references": len(result.get("references", [])) > 0,
-                }
-            else:
-                # Fallback to text-based extraction
-                citations = self._citation_checker.extract_citations(content)
-                return {
-                    "citations_count": len(citations),
-                    "references_count": 0,
-                    "backend": "text",
-                    "has_citations": len(citations) > 0,
-                    "has_references": False,
-                }
-        except Exception as e:
-            logger.warning(f"Citation analysis failed: {e}")
-            return {
-                "citations_count": 0,
-                "references_count": 0,
-                "backend": "error",
-                "error": str(e),
-            }
-
-    def _incorporate_citation_analysis(
-        self,
-        score: float,
-        reasoning: str,
-        evidence: Optional[str],
-        citation_analysis: Dict[str, Any],
-    ) -> tuple:
-        """Incorporate citation analysis into the evaluation score.
-
-        Args:
-            score: Original LLM score.
-            reasoning: Original reasoning.
-            evidence: Original evidence.
-            citation_analysis: Citation analysis results.
-
-        Returns:
-            Updated (score, reasoning, evidence) tuple.
-        """
-        citations_count = citation_analysis.get("citations_count", 0)
-        references_count = citation_analysis.get("references_count", 0)
-
-        # Check for citation-related issues
-        issues = []
-
-        if citations_count == 0:
-            issues.append("No citations found in the survey")
-
-        if references_count == 0:
-            issues.append("No reference list found")
-
-        # If there are citations but no references, that's a problem
-        if citations_count > 0 and references_count == 0:
-            issues.append("Citations found but no reference list - possible hallucination")
-
-        # Add citation analysis to evidence
-        citation_evidence = (
-            f"Citation count: {citations_count}, Reference count: {references_count}"
-        )
-        if issues:
-            citation_evidence += f"\nIssues: {'; '.join(issues)}"
-            # Reduce score for citation issues
-            score = min(score, 7.0) if issues else score
-
-        if evidence:
-            evidence = f"{citation_evidence}\n{evidence}"
-        else:
-            evidence = citation_evidence
-
-        return score, reasoning, evidence
-
-    def _extract_claims_and_citations(self, content: str) -> str:
-        """Extract claims and their citations from content.
-
-        Args:
-            content: The survey text content.
-
-        Returns:
-            A formatted string of claims with citations.
-        """
-        # Pattern to find citations like [1], [1-3], [1, 2, 3]
-        citation_pattern = r"\[(?:[0-9]+(?:[-,]\s*[0-9]+)*)\]"
-
-        # Find all citations
-        citations = re.findall(citation_pattern, content)
-
-        # Get unique citations
-        unique_citations = list(dict.fromkeys(citations))
-
-        return f"Found citations: {', '.join(unique_citations)}"
-
-    def _parse_verification_response(self, response: str) -> tuple:
-        """Parse the LLM verification response.
-
-        Args:
-            response: The raw response from the verification LLM.
-
-        Returns:
-            Tuple of (score, reasoning, evidence).
-        """
-        # Simple parsing - in production, use structured output parsing
-        lines = response.strip().split("\n")
-
-        score = 5.0  # Default score
-        reasoning = response
-        evidence = None
-
-        for line in lines:
-            line_lower = line.lower()
-            if "score" in line_lower and ":" in line:
-                try:
-                    score = float(line.split(":")[-1].strip())
-                    score = max(0.0, min(10.0, score))  # Clamp to [0, 10]
-                except ValueError:
-                    pass
-
-            if "evidence:" in line_lower:
-                evidence = line.split(":", 1)[-1].strip()
-
-        return score, reasoning, evidence
+    # Extension point: Override evaluate() to add tool-augmented scoring for specific sub-dimensions.
+    # The base class evaluate() will be used if not overridden.
+    #
+    # Example:
+    # async def evaluate(self, state, section_name=None):
+    #     # Call base class evaluate
+    #     record = await super().evaluate(state, section_name)
+    #     # Add tool-augmented refinement
+    #     ...

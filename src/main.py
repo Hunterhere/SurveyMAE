@@ -76,11 +76,8 @@ async def run_evaluation(
             "domain": "general",  # Could be extracted or provided
         },
         # Phase 2 new fields
-        "evidence_reports": {},  # Populated by evidence_dispatch
-        "evidence_report": {},  # Populated by evidence_dispatch (for compatibility)
-        "verifier_evidence": {},  # Populated by evidence_dispatch
-        "expert_evidence": {},  # Populated by evidence_dispatch
-        "reader_evidence": {},  # Populated by evidence_dispatch
+        "dispatch_specs": {},  # Populated by evidence_dispatch (per-agent evaluation contexts)
+        "metrics_index": {},  # Populated by evidence_dispatch (for run.json)
     }
 
     # Create and compile the workflow
