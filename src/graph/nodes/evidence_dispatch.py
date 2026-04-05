@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from src.core.state import SurveyState
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.graph.nodes.evidence_dispatch")
 
 
 # =============================================================================

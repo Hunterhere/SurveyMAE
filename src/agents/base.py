@@ -27,10 +27,11 @@ except ImportError:
     AsyncAnthropic = None
 
 from src.core.config import AgentConfig, LLMConfig, MultiModelConfig
+from src.core.log import get_run_stats
 from src.core.mcp_client import MCPManager
 from src.core.state import SurveyState, EvaluationRecord, AgentOutput, AgentSubScore
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.agents.base")
 
 
 class BaseAgent(ABC):
@@ -255,6 +256,11 @@ class BaseAgent(ABC):
                     llm_with_tools = self.llm.bind_tools(tools)
 
                 response = await llm_with_tools.ainvoke(messages)
+                # Estimate token counts from message content
+                usage = getattr(response, "usage", None)
+                tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
+                tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
+                get_run_stats().record_llm(tokens_in=tokens_in, tokens_out=tokens_out)
                 return response.content
 
             except Exception as e:
@@ -301,6 +307,10 @@ class BaseAgent(ABC):
                 results.append({"model": key, "response": "", "error": str(resp)})
             else:
                 content = resp.content if hasattr(resp, "content") else str(resp)
+                usage = getattr(resp, "usage", None)
+                tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
+                tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
+                get_run_stats().record_llm(tokens_in=tokens_in, tokens_out=tokens_out)
                 results.append({"model": key, "response": content})
 
         return results

@@ -26,8 +26,9 @@ from src.tools.citation_metadata import (
 from src.tools.pdf_parser import PDFParser
 from src.tools.result_store import ResultStore
 from src.core.config import load_config, SurveyMAEConfig, ModelConfig
+from src.core.log import create_progress
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.citation_checker")
 
 
 @dataclass
@@ -634,15 +635,20 @@ class CitationChecker:
     ) -> None:
         checker = CitationMetadataChecker()
         verified = 0
-        for ref in references:
-            if not (ref.title or ref.doi or ref.arxiv_id):
-                continue
-            bib_entry = bib_entry_from_dict(ref.to_dict())
-            report = await checker.verify_bib_entry(bib_entry, sources=sources)
-            ref.validation = report.to_dict()
-            verified += 1
-            if verify_limit is not None and verified >= verify_limit:
-                break
+        progress = create_progress()
+        with progress:
+            task = progress.add_task("验证引用", total=len(references))
+            for ref in references:
+                if not (ref.title or ref.doi or ref.arxiv_id):
+                    progress.update(task, advance=1)
+                    continue
+                bib_entry = bib_entry_from_dict(ref.to_dict())
+                report = await checker.verify_bib_entry(bib_entry, sources=sources)
+                ref.validation = report.to_dict()
+                verified += 1
+                progress.update(task, advance=1)
+                if verify_limit is not None and verified >= verify_limit:
+                    break
 
     def _persist_extraction(self, pdf_path: str, result: CitationExtractionResult) -> None:
         if not self.result_store:

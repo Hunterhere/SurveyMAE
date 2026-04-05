@@ -16,7 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.core.mcp_client")
 
 
 @dataclass

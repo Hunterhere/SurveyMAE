@@ -39,7 +39,7 @@ from src.graph.nodes.evidence_dispatch import run_evidence_dispatch
 from src.tools.pdf_parser import PDFParser
 from src.tools.result_store import ResultStore
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.graph")
 
 # Shared PDF parser instance for workflow
 _pdf_parser: Optional[PDFParser] = None
@@ -48,18 +48,22 @@ _pdf_parser: Optional[PDFParser] = None
 _result_store: Optional[ResultStore] = None
 
 
-def _get_result_store(source_pdf_path: str = "") -> ResultStore:
-    """Get or create the shared ResultStore instance."""
+def _get_result_store(source_pdf_path: str = "", run_dir: str = "./output/runs") -> ResultStore:
+    """Get or create the shared ResultStore instance.
+
+    Args:
+        source_pdf_path: Used to derive run_id if run_dir is not provided.
+        run_dir: Explicit run directory (run_dir/run_id/). Takes precedence.
+    """
     global _result_store
     if _result_store is None:
-        # Generate run_id based on source PDF
         run_id = None
         if source_pdf_path:
             import hashlib
             pdf_hash = hashlib.md5(source_pdf_path.encode()).hexdigest()[:8]
             from datetime import datetime, timezone
             run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{pdf_hash}"
-        _result_store = ResultStore(base_dir="./output/runs", run_id=run_id)
+        _result_store = ResultStore(base_dir=run_dir, run_id=run_id)
     return _result_store
 
 
@@ -259,9 +263,8 @@ def _save_workflow_step(
 ) -> None:
     """Save workflow step data with incremental output (v3 design).
 
-    For v3, step JSON files only save incremental output:
-    - 02_evidence_collection: does not include ref_metadata_cache (see validation.json)
-    - Other steps: save only the step's output
+    For v3, step JSON files are saved to papers/{paper_id}/nodes/{step_name}.json
+    and only contain incremental output.
 
     Args:
         step_name: Name of the workflow step
@@ -293,7 +296,6 @@ def _save_workflow_step(
             # Reference it instead of including the full data
             if step_name == "02_evidence_collection":
                 if "ref_metadata_cache" in output_data:
-                    # Replace with reference to validation.json
                     output_data["ref_metadata_cache"] = {
                         "_ref": "see validation.json",
                         "_note": "Full ref_metadata_cache stored in tool artifact"
@@ -305,11 +307,9 @@ def _save_workflow_step(
             if run_params:
                 step_record["run_params"] = run_params
 
-            # Save step data
-            step_file = store.papers_dir / paper_id / f"{step_name}.json"
-            step_file.parent.mkdir(parents=True, exist_ok=True)
-            step_file.write_text(json.dumps(step_record, indent=2, ensure_ascii=False), encoding="utf-8")
-            logger.info(f"Saved {step_name} to {step_file}")
+            # Save to papers/{paper_id}/nodes/{step_name}.json
+            store.save_node_step(paper_id, step_name, step_record)
+            logger.info(f"Saved {step_name} to nodes/{step_name}.json")
     except Exception as e:
         logger.warning(f"Failed to save workflow step {step_name}: {e}")
 
@@ -474,6 +474,7 @@ def _get_agent_classes():
 
 def create_workflow(
     config: Optional[SurveyMAEConfig] = None,
+    run_dir: str = "./output/runs",
 ) -> StateGraph:
     """Create the SurveyMAE evaluation workflow graph.
 
@@ -487,14 +488,15 @@ def create_workflow(
     7. reporter -> Generate final report
 
     Args:
-        config: Optional configuration for customization.
+        config:   Optional configuration for customization.
+        run_dir:  Base directory for ResultStore (default: ./output/runs).
 
     Returns:
         Compiled StateGraph ready for execution.
     """
     # Initialize metrics_index and write to run.json
     metrics_index = _init_metrics_index(config)
-    store = _get_result_store()
+    store = _get_result_store(run_dir=run_dir)
     if store:
         store._init_run_file(metrics_index=metrics_index)
 

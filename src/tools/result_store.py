@@ -79,8 +79,11 @@ class ResultStore:
             return self._paper_cache[source_path]
 
         paper_id = self._hash_file(source_path)
+        # Create paper dir + tools/ and nodes/ subdirs
         paper_dir = self.papers_dir / paper_id
         paper_dir.mkdir(parents=True, exist_ok=True)
+        (paper_dir / "tools").mkdir(parents=True, exist_ok=True)
+        (paper_dir / "nodes").mkdir(parents=True, exist_ok=True)
 
         stat = Path(source_path).stat()
         source = {
@@ -96,32 +99,32 @@ class ResultStore:
         return paper_id
 
     def save_extraction(self, paper_id: str, extraction: dict[str, Any]) -> Path:
-        """Save citation extraction results (citations + references)."""
-        return self._write_json(self._paper_dir(paper_id) / "extraction.json", extraction)
+        """Save citation extraction results (citations + references) to tools/."""
+        return self._write_json(self._tools_dir(paper_id) / "extraction.json", extraction)
 
     def save_validation(self, paper_id: str, validation: dict[str, Any]) -> Path:
-        """Save validation results (C3, C5) + ref_metadata_cache."""
-        return self._write_json(self._paper_dir(paper_id) / "validation.json", validation)
+        """Save validation results (C3, C5) + ref_metadata_cache to tools/."""
+        return self._write_json(self._tools_dir(paper_id) / "validation.json", validation)
 
     def save_c6_alignment(self, paper_id: str, data: dict[str, Any]) -> Path:
-        """Save C6 citation-sentence alignment results."""
-        return self._write_json(self._paper_dir(paper_id) / "c6_alignment.json", data)
+        """Save C6 citation-sentence alignment results to tools/."""
+        return self._write_json(self._tools_dir(paper_id) / "c6_alignment.json", data)
 
     def save_citation_analysis(self, paper_id: str, data: dict[str, Any]) -> Path:
-        """Save CitationAnalyzer T/S series metrics (T1-T5, S1-S4)."""
-        return self._write_json(self._paper_dir(paper_id) / "analysis.json", data)
+        """Save CitationAnalyzer T/S series metrics (T1-T5, S1-S4) to tools/."""
+        return self._write_json(self._tools_dir(paper_id) / "analysis.json", data)
 
     def save_graph_analysis(self, paper_id: str, data: dict[str, Any]) -> Path:
-        """Save CitationGraphAnalysis G series metrics + S5."""
-        return self._write_json(self._paper_dir(paper_id) / "graph_analysis.json", data)
+        """Save CitationGraphAnalysis G series metrics + S5 to tools/."""
+        return self._write_json(self._tools_dir(paper_id) / "graph_analysis.json", data)
 
     def save_trend_baseline(self, paper_id: str, data: dict[str, Any]) -> Path:
-        """Save field_trend_baseline (yearly publication counts)."""
-        return self._write_json(self._paper_dir(paper_id) / "trend_baseline.json", data)
+        """Save field_trend_baseline (yearly publication counts) to tools/."""
+        return self._write_json(self._tools_dir(paper_id) / "trend_baseline.json", data)
 
     def save_key_papers(self, paper_id: str, data: dict[str, Any]) -> Path:
-        """Save candidate_key_papers + G4 coverage + missing/suspicious lists."""
-        return self._write_json(self._paper_dir(paper_id) / "key_papers.json", data)
+        """Save candidate_key_papers + G4 coverage + missing/suspicious lists to tools/."""
+        return self._write_json(self._tools_dir(paper_id) / "key_papers.json", data)
 
     def append_error(self, paper_id: str, record: dict[str, Any]) -> None:
         record = dict(record)
@@ -132,6 +135,25 @@ class ResultStore:
         record = dict(record)
         record.setdefault("ts", _utc_now())
         self._append_jsonl(self._paper_dir(paper_id) / "agent_logs.jsonl", record)
+
+    def save_node_step(self, paper_id: str, step_name: str, data: dict[str, Any]) -> Path:
+        """Save a workflow node step output to nodes/."""
+        return self._write_json(self._nodes_dir(paper_id) / f"{step_name}.json", data)
+
+    def _paper_dir(self, paper_id: str) -> Path:
+        path = self.papers_dir / paper_id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _tools_dir(self, paper_id: str) -> Path:
+        path = self.papers_dir / paper_id / "tools"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _nodes_dir(self, paper_id: str) -> Path:
+        path = self.papers_dir / paper_id / "nodes"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def update_index(
         self,

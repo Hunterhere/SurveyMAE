@@ -12,7 +12,7 @@
 ```python
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(Name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 ```
@@ -209,13 +209,13 @@ output/runs/{run_id}/
     ├── source.json              # 源文件信息（SHA256、mtime、size）
     ├── extraction.json          # 引用抽取结果（citations + references）
     ├── validation.json          # C3/C5 验证结果 + ref_metadata_cache
-    ├── c6_alignment.json        # C6 引用-句子对齐分析
+    ├── c6_alignment.json         # C6 引用-句子对齐分析
     ├── analysis.json            # T/S 系列指标（T1-T5, S1-S4）
-    ├── graph_analysis.json      # G 系列 + S5 指标
-    ├── trend_baseline.json      # 领域趋势基线（年度发表量）
+    ├── graph_analysis.json       # G 系列 + S5 指标
+    ├── trend_baseline.json       # 领域趋势基线（年度发表量）
     ├── key_papers.json          # 关键候选论文 + G4 覆盖率
-    ├── errors.jsonl             # ❌ 错误日志（追加写入）
-    └── agent_logs.jsonl         # ❌ Agent 运行时日志（追加写入）
+    ├── errors.jsonl             # 错误日志（追加写入）
+    └── agent_logs.jsonl         # Agent 运行时日志（追加写入）
 ```
 
 **关键方法：**
@@ -230,6 +230,7 @@ output/runs/{run_id}/
 | `save_graph_analysis(paper_id, data)` | 保存图分析指标 |
 | `save_trend_baseline(paper_id, data)` | 保存趋势基线 |
 | `save_key_papers(paper_id, data)` | 保存关键论文 |
+| `save_node_step(paper_id, step_name, data)` | 保存 workflow 节点步骤（nodes/ 目录） |
 | `append_error(paper_id, record)` | 追加错误记录到 errors.jsonl |
 | `append_agent_log(paper_id, record)` | 追加 Agent 日志到 agent_logs.jsonl |
 | `update_index(paper_id, status)` | 更新论文状态 |
@@ -242,24 +243,32 @@ output/runs/{run_id}/
 
 ```
 output/runs/{run_id}/papers/{paper_hash}/
-├── 01_parse_pdf.json           # PDF 解析结果
-├── 02_evidence_collection.json  # 证据收集结果
-├── 03_evidence_dispatch.json   # 证据分发结果
-├── 04_verifier.json           # Verifier 评估结果
-├── 04_expert.json            # Expert 评估结果
-├── 04_reader.json            # Reader 评估结果
-├── 04_corrector.json         # Corrector 评估结果
-└── 04_reporter.json          # 最终报告
+├── nodes/                        # workflow 步骤（v3 重构后）
+│   ├── 01_parse_pdf.json
+│   ├── 02_evidence_collection.json
+│   ├── 03_evidence_dispatch.json
+│   ├── 04_verifier.json
+│   ├── 04_expert.json
+│   ├── 04_reader.json
+│   ├── 05_corrector.json
+│   └── 06_aggregator.json
+└── tools/                        # 工具层独立输出
+    ├── extraction.json
+    ├── validation.json
+    ├── c6_alignment.json
+    ├── analysis.json
+    ├── graph_analysis.json
+    ├── trend_baseline.json
+    └── key_papers.json
 ```
 
-每个 JSON 文件结构：
+每个节点 JSON 文件结构：
 
 ```json
 {
   "step": "04_verifier",
   "timestamp": "2026-03-12T10:21:41+00:00",
   "source_pdf": "test_survey2.pdf",
-  "input": { ... },
   "output": { ... },
   "run_params": {
     "node": "verifier",
@@ -270,11 +279,7 @@ output/runs/{run_id}/papers/{paper_hash}/
 
 ### 3.3 最终报告持久化
 
-`src/main.py:104` 将评估报告保存为 Markdown：
-
-```
-output/reports/{pdf_name}_{timestamp}.md
-```
+报告保存到 `run_dir/reports/{pdf_name}_{timestamp}.md`。
 
 ---
 
@@ -294,16 +299,16 @@ checkpointer = checkpointer or MemorySaver()
 
 | 问题 | 严重程度 | 说明 |
 |------|----------|------|
-| **Python logging 不落盘** | 🔴 高 | `basicConfig()` 仅输出到控制台，无 `FileHandler`，日志不持久化 |
-| **无独立日志文件** | 🔴 高 | 没有 `app.log` / `evaluation.log` 之类的日志文件 |
-| **errors.jsonl 使用率极低** | 🟡 中 | `append_error()` 方法存在但几乎未被调用，错误信息通过 Python logging 输出 |
-| **agent_logs.jsonl 使用率极低** | 🟡 中 | `append_agent_log()` 方法存在但几乎未被调用 |
-| **工作流节点入口缺少细粒度日志** | 🟡 中 | `run_evaluation()` 缺少各阶段开始/完成的细粒度日志 |
-| **无日志轮转** | 🟡 中 | 无 `RotatingFileHandler` 或 `TimedRotatingFileHandler` |
-| **无结构化日志格式** | 🟡 中 | 日志格式为普通文本，机器解析不友好 |
-| **无日志分级配置** | 🟡 中 | 无法通过配置文件控制各模块日志级别 |
-| **LangGraph checkpoint 不持久化** | 🟡 中 | 仅 `MemorySaver`，无磁盘持久化 |
-| **Verbose 模式仅针对 "src" logger** | 🟢 低 | `logging.getLogger("src").setLevel(logging.DEBUG)` 可能漏掉第三方库日志 |
+| **Python logging 不落盘** | 高 | `basicConfig()` 仅输出到控制台，无 `FileHandler`，日志不持久化 |
+| **无独立日志文件** | 高 | 没有 `app.log` / `evaluation.log` 之类的日志文件 |
+| **errors.jsonl 使用率极低** | 中 | `append_error()` 方法存在但几乎未被调用，错误信息通过 Python logging 输出 |
+| **agent_logs.jsonl 使用率极低** | 中 | `append_agent_log()` 方法存在但几乎未被调用 |
+| **工作流节点入口缺少细粒度日志** | 中 | `run_evaluation()` 缺少各阶段开始/完成的细粒度日志 |
+| **无日志轮转** | 中 | 无 `RotatingFileHandler` 或 `TimedRotatingFileHandler` |
+| **无结构化日志格式** | 中 | 日志格式为普通文本，机器解析不友好 |
+| **无日志分级配置** | 中 | 无法通过配置文件控制各模块日志级别 |
+| **LangGraph checkpoint 不持久化** | 中 | 仅 `MemorySaver`，无磁盘持久化 |
+| **Verbose 模式仅针对 "src" logger** | 低 | `logging.getLogger("src").setLevel(logging.DEBUG)` 可能漏掉第三方库日志 |
 
 ---
 

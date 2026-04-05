@@ -24,7 +24,7 @@ from src.core.state import EvaluationRecord, SurveyState
 from src.graph.builder import _get_result_store
 from src.graph.nodes.aggregator import aggregate_scores, generate_report
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.agents.reporter")
 
 
 class ReportAgent(BaseAgent):

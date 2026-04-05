@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from src.tools.literature_search import LiteratureSearch
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.foundational_coverage")
 
 
 def _convert_numpy_types(obj: Any) -> Any:

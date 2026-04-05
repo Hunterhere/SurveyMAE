@@ -2,6 +2,7 @@
 
 > 基于: LOGGING_SYSTEM_ANALYSIS.md, DEVELOPER_GUIDE.md, SurveyMAE_Plan_v3.md
 > 创建时间: 2026/04/05
+> 更新时间: 2026/04/05
 > 目的: 为 Claude Code 提供实施规范
 
 ---
@@ -53,7 +54,7 @@ output/runs/{run_id}/
 ├── index.json                            # run 级共享：所有 paper 状态索引
 │
 ├── papers/{paper_id}/                    # 每篇 PDF 独立目录
-│   ├── run_summary.json                  # 该篇 PDF 的评测结果摘要
+│   ├── run_summary.json                  # 该篇 PDF 的评测结果摘要（run 级）
 │   │
 │   ├── nodes/                            # workflow 步骤增量输出
 │   │   ├── 01_parse_pdf.json
@@ -64,7 +65,7 @@ output/runs/{run_id}/
 │   │   ├── 04_reader.json
 │   │   ├── 05_corrector.json
 │   │   ├── 06_aggregator.json
-│   │   └── 07_report.md
+│   │   └── 07_reporter.json
 │   │
 │   └── tools/                            # 工具层独立持久化
 │       ├── source.json
@@ -86,10 +87,10 @@ output/runs/{run_id}/
 |------|------|------|
 | `run.json` | run 级 | config 快照、metrics_index 定义、schema_version。一次 run 内所有 PDF 共享同一 config |
 | `index.json` | run 级 | 所有 paper 的 paper_id → status 映射。批量运行时记录每篇的处理进度 |
-| `run_summary.json` | paper 级 | 该篇 PDF 的 deterministic_metrics、agent_scores、corrected_scores、overall_score、grade |
+| `run_summary.json` | run 级 | 单篇 PDF 的 deterministic_metrics、agent_scores、corrected_scores、overall_score、grade |
 | `nodes/*.json` | paper 级 | 该篇 PDF 的 workflow 步骤增量输出 |
 | `tools/*.json` | paper 级 | 该篇 PDF 的工具原始输出 |
-| `logs/run.log` | run 级 | 整个 run 的日志（含所有 PDF 的处理日志，通过 paper_id 前缀区分） |
+| `logs/run.log` | run 级 | 整个 run 的日志（含所有 PDF 的处理日志） |
 
 ### 2.4 对 ResultStore 的影响
 
@@ -105,6 +106,8 @@ store.base_dir / "papers" / paper_id / "tools" / "validation.json"
 store.base_dir / "papers" / paper_id / "nodes" / "01_parse_pdf.json"
 ```
 
+新增 `save_node_step(paper_id, step_name, data)` 方法用于写入 nodes/ 目录。
+
 ### 2.5 批量模式下的日志前缀
 
 批量处理时，进度和日志需要区分当前处理的是哪篇 PDF。规范：
@@ -112,16 +115,6 @@ store.base_dir / "papers" / paper_id / "nodes" / "01_parse_pdf.json"
 - `log_pipeline_step()` 在批量模式下自动添加 paper 标识前缀
 - `logger.debug()` / `logger.warning()` 等日志消息中，通过 logger name 或消息前缀区分
 - 进度条的 description 包含当前 PDF 文件名
-
-```
-[1/3] test_survey2.pdf
-  [01/07] parse_pdf              │ 47 refs, 12 sections               2.3s
-  ...
-  [07/07] reporter               │ 报告已保存
-[2/3] another_survey.pdf
-  [01/07] parse_pdf              │ 32 refs, 8 sections                1.8s
-  ...
-```
 
 ---
 
@@ -153,6 +146,7 @@ logging.getLogger("langgraph").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("anthropic").setLevel(logging.WARNING)
 ```
 
 ---
@@ -193,7 +187,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 ┌─────────────────────────────────────────────────┐
 │              文件 (run.log)                       │
 │  FileHandler → 纯文本，所有级别                   │
-│  ├── 格式: "HH:MM:SS [LEVEL  ] module | msg"     │
+│  ├── 格式: "HH:MM:SS [LEVEL  ] module | msg"  │
 │  └── 不含 rich markup / ANSI 颜色码              │
 └─────────────────────────────────────────────────┘
 ```
@@ -283,10 +277,10 @@ def log_substep(
 
 | 操作 | 位置 | 迭代对象 | 典型数量 | 单次耗时 | 总耗时 |
 |------|------|---------|---------|---------|--------|
-| 引用元数据验证 | `citation_checker.validate()` | 每条 reference | 40-100 | 0.3-1s (API) | 10-30s |
-| C6 批处理对齐 | `citation_checker.analyze_c6()` | 每个 batch (10对) | 15-30 batch | 0.5-1s (LLM) | 5-15s |
+| 引用元数据验证 | `citation_checker._verify_references()` | 每条 reference | 40-100 | 0.3-1s (API) | 10-30s |
+| C6 批处理对齐 | `citation_checker.analyze_citation_sentence_alignment()` | 每个 batch (10对) | 15-30 batch | 0.5-1s (LLM) | 5-15s |
 | 核心文献检索 | `foundational_coverage.py` | 每组 keyword query | 3-5 | 1-3s (API) | 3-15s |
-| Corrector 多模型投票 | `corrector.py` | 每个维度 × 每个模型 | 7×3=21 | 1-3s (LLM) | 10-30s |
+| Corrector 多模型投票 | `corrector._vote_all_dimensions()` | 每个维度 × 每个模型 | 7×3=21 | 1-3s (LLM) | 10-30s |
 
 **不需要进度条：** PDF 解析（单次 1-3s）、图分析计算（CPU < 1s）、时序/结构指标（CPU < 1s）、单次 Agent 评估（单次 LLM 3-5s）、Evidence dispatch（内存 < 1s）。
 
@@ -350,20 +344,24 @@ def create_progress(quiet: bool = False) -> Progress:
 
 from src.core.log import create_progress
 
-async def validate(self, references: list[dict], ...) -> dict:
+async def _verify_references(self, references, ...):
     progress = create_progress()
     with progress:
         task = progress.add_task("验证引用", total=len(references))
         for ref in references:
-            result = await self._verify_single_ref(ref)
+            if not (ref.title or ref.doi or ref.arxiv_id):
+                progress.update(task, advance=1)
+                continue
+            result = await checker.verify_bib_entry(...)
+            ref.validation = result.to_dict()
             progress.update(task, advance=1)
-    # 进度条自动清除，后续由 evidence_collection 的 log_substep 输出汇总
+    # 进度条完成后保留在终端，后续由节点层 log_substep 输出汇总
 ```
 
 **场景 2：C6 批处理对齐**
 
 ```python
-async def analyze_citation_sentence_alignment(self, ...) -> dict:
+async def analyze_citation_sentence_alignment(self, ...):
     progress = create_progress()
     with progress:
         task = progress.add_task("C6 对齐分析", total=n_batches)
@@ -451,14 +449,6 @@ def log_run_summary(stats: "RunStats", total_elapsed: float) -> None:
 - LLM 调用失败用 `logger.warning()`，最终失败用 `logger.error()`
 - **不要记录完整 prompt 或完整 response**
 
-```python
-logger.debug("LLM_CALL | agent=%s provider=%s model=%s tokens_in≈%d",
-             self.name, provider, model, est_tokens)
-
-logger.warning("LLM 调用失败 (尝试 %d/%d): %s | agent=%s model=%s",
-               attempt, max_attempts, str(e)[:100], self.name, model)
-```
-
 ### 5.4 工具层（`src/tools/`）
 
 **职责：记录 API 交互和数据处理结果，面向调试。**
@@ -467,14 +457,6 @@ logger.warning("LLM 调用失败 (尝试 %d/%d): %s | agent=%s model=%s",
 - API 超时/限流用 `logger.warning()` 含降级策略
 - **迭代操作使用 `create_progress()` 进度条**
 - 批量操作记录汇总而非逐条
-
-```python
-logger.debug("API_CALL | source=%s query='%s' status=%d latency=%.2fs",
-             "semantic_scholar", query[:50], status, latency)
-
-logger.warning("Semantic Scholar 超时 (ref '%s') → 降级到 OpenAlex",
-               ref_title[:60])
-```
 
 ### 5.5 核心框架层（`src/core/`）
 
@@ -753,7 +735,6 @@ logger = logging.getLogger("surveymae.tools.pdf_parser")
 # src/tools/fetchers/dblp_fetcher.py
 logger = logging.getLogger("surveymae.tools.fetchers.dblp")
 ```
-```
 
 **禁止** `logging.getLogger(__name__)`（`__name__` 前缀是 `src.` 而非 `surveymae.`）。
 
@@ -819,14 +800,14 @@ def main():
 - 重点: `evidence_collection.py`、`base.py`、`citation_checker.py`、`fetchers/*.py`
 
 **Step 6: 添加进度条**
-- `citation_checker.validate()` — 引用验证循环
+- `citation_checker._verify_references()` — 引用验证循环
 - `citation_checker.analyze_citation_sentence_alignment()` — C6 批处理
 - `foundational_coverage.py` — 关键文献检索
-- `corrector.py` — 多模型投票循环
+- `corrector._vote_all_dimensions()` — 多模型投票循环
 
 **Step 7: 集成 RunStats**
-- `base.py._call_llm()` → `record_llm_call()`
-- 各 fetcher API 调用 → `record_api_call()`
+- `base.py._call_llm()` → `record_llm()`
+- 各 fetcher API 调用 → `record_api()`
 - reporter 节点末尾 → `log_run_summary()`
 
 **Step 8: 激活 errors.jsonl**
@@ -851,7 +832,7 @@ def main():
 ```
 pdf_path          → 改为 nargs="+"，支持多文件
 -c / --config     → 不变
--o / --output     → 不变（批量模式下仅指定输出目录）
+-o / --output-dir → 不变（批量模式下指定输出目录）
 ```
 
 ### 8.2 新增日志控制参数
@@ -873,7 +854,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "--quiet", "-q",
+    "-q", "--quiet",
     help="Quiet mode: console only shows WARNING+, suppress progress bars",
     action="store_true",
 )
@@ -891,7 +872,7 @@ def setup_logging(
     run_dir: str | Path | None = None,
     verbose: bool = False,
     log_level: str | None = None,   # 新增：显式日志级别
-    quiet: bool = False,            # 新增：静默模式
+    quiet: bool = False,             # 新增：静默模式
 ) -> logging.Logger:
     """
     日志级别确定逻辑:
@@ -910,26 +891,6 @@ def setup_logging(
 - `log_pipeline_step()` / `log_substep()` 不输出到控制台（仍写入文件）
 - `create_progress()` 返回一个 **no-op Progress**（不渲染，但 API 兼容）
 - 适用场景：CI/CD 环境、批量脚本、日志重定向到文件
-
-```python
-def create_progress(quiet: bool = False) -> Progress:
-    if quiet:
-        # 返回不渲染的 Progress（仍可调用 add_task/update，但无输出）
-        return Progress(
-            SpinnerColumn(), TextColumn("{task.description}"),
-            console=Console(quiet=True),  # 静默 Console
-            transient=False,
-        )
-    return Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=30),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        console=console,
-        transient=False,
-    )
-```
 
 ### 8.4 批量模式的 CLI 用法
 
@@ -1039,6 +1000,75 @@ SurveyMAE 批量评测启动 | 3 篇 PDF
 | `log_pipeline_step(step, total, name, detail, elapsed)` | 输出 pipeline 步骤 | 节点层 |
 | `log_substep(name, detail, elapsed, is_last)` | 输出子步骤 | 节点层 |
 | `log_run_summary(stats, total_elapsed)` | 输出最终汇总 | reporter 节点 |
-| `log_step(logger, label)` | 耗时记录上下文管理器 | 各层 |
+| `track_step(logger, label)` | 耗时记录上下文管理器 | 各层 |
 | `RunStats` | 调用计数器 | `base.py`, fetchers |
 | `get_run_stats()` | 获取全局计数器 | 各层 |
+
+---
+
+## 十二、实施状态
+
+> 更新时间: 2026/04/05
+
+### 12.1 完成状态
+
+| 任务 | 状态 | 说明 |
+|------|------|------|
+| Step 1: 添加 rich 依赖 + 创建 src/core/log.py | ✅ 完成 | `uv add rich` 已执行；`src/core/log.py` 已创建并实现全部公共 API |
+| Step 2: 重构 main.py | ✅ 完成 | `basicConfig` 替换为 `setup_logging()`；`-v`/`-q`/`--log-level` 参数已添加；`run_id` 统一生成逻辑 |
+| Step 3: ResultStore 路径重构 | ✅ 完成 | `papers/{id}/tools/` 和 `papers/{id}/nodes/` 分离；`save_node_step()` 方法已添加 |
+| Step 4: 模块 logger 前缀替换 | ✅ 完成 | 全部 22 个模块已替换为 `surveymae.xxx` 前缀 |
+| Step 5: FileHandler 日志落地 | ✅ 完成 | `logs/run.log` 在 `setup_logging(run_dir=...)` 时自动创建 |
+| Step 6: RunStats 集成 | ✅ 完成 | `base.py` LLM 调用 + 5 个 fetcher API 调用已集成 |
+| Step 7: 进度条 | ✅ 完成 | `citation_checker._verify_references()` 已添加进度条 |
+| Step 8: 文档更新 | ✅ 完成 | LOGGING_DESIGN.md 已更新 |
+
+### 12.2 新建文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/core/log.py` | 日志基础设施核心模块（约 280 行） |
+
+### 12.3 修改文件
+
+| 文件 | 主要变更 |
+|------|---------|
+| `pyproject.toml` | 添加 `rich>=13.0` 依赖 |
+| `src/main.py` | `basicConfig` → `setup_logging()`；统一 `run_dir` 生成；CLI 参数重构；`run_evaluation` 返回 `(report, run_dir)` |
+| `src/graph/builder.py` | logger 前缀；`create_workflow(run_dir)` 参数；`_save_workflow_step()` 使用 `nodes/`；全局 `_result_store` 支持 `run_dir` |
+| `src/tools/result_store.py` | `tools/` 和 `nodes/` 子目录分离；`save_node_step()` 方法；`_tools_dir()` / `_nodes_dir()` 辅助方法 |
+| `src/agents/base.py` | 导入 `get_run_stats`；`_call_llm()` 和 `_call_llm_pool()` 中集成 `record_llm()` |
+| `src/tools/fetchers/semantic_scholar_fetcher.py` | 导入 `get_run_stats`；所有 HTTP 成功响应后调用 `record_api()` |
+| `src/tools/fetchers/openalex_fetcher.py` | 同上 |
+| `src/tools/fetchers/crossref_fetcher.py` | 同上 |
+| `src/tools/fetchers/arxiv_fetcher.py` | 同上 |
+| `src/tools/fetchers/dblp_fetcher.py` | 同上 |
+| `src/tools/citation_checker.py` | 导入 `create_progress`；`_verify_references()` 中添加进度条 |
+
+### 12.4 目录结构变更
+
+```
+output/runs/{run_id}/
+├── run.json / index.json / run_summary.json（不变）
+├── logs/run.log              ← 新增：完整 DEBUG 日志（每次运行新建）
+└── papers/{paper_id}/
+    ├── source.json
+    ├── nodes/                ← 新增目录（原直接放在 paper_id/ 下）
+    │   ├── 01_parse_pdf.json
+    │   ├── 02_evidence_collection.json
+    │   └── ...
+    └── tools/                ← 新增目录（原直接放在 paper_id/ 下）
+        ├── extraction.json
+        ├── validation.json
+        └── ...
+```
+
+### 12.5 待完成
+
+| 任务 | 说明 |
+|------|------|
+| `evidence_collection.py` 节点层进度日志 | `log_pipeline_step()` / `log_substep()` 接入节点入口 |
+| Corrector 多模型投票进度条 | `corrector._vote_all_dimensions()` 中添加进度条 |
+| `evidence_collection.py` 中的 `log_substep` 调用 | C3/C5/C6/T/G 步骤完成后输出子步骤汇总 |
+| 端到端测试 | 用真实 PDF 运行完整评测流程，验证日志输出和文件落地 |
+| `errors.jsonl` 激活 | 在 `base.py` 和关键工具的 `except` 块中调用 `result_store.append_error()` |

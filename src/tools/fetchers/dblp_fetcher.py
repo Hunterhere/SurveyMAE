@@ -12,6 +12,8 @@ from typing import Optional
 
 import requests
 
+from src.core.log import get_run_stats
+
 
 @dataclass
 class DBLPResult:
@@ -33,7 +35,7 @@ class DBLPFetcher:
     def __init__(self) -> None:
         self.last_request_time = 0.0
         self.rate_limit_delay = 1.5
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger("surveymae.tools.fetchers.dblp")
 
     def _wait_for_rate_limit(self) -> None:
         elapsed = time.time() - self.last_request_time
@@ -59,6 +61,7 @@ class DBLPFetcher:
                 self.logger.warning("DBLP API error: %s", response.status_code)
                 return None
 
+            get_run_stats().record_api()
             data = response.json()
             return self._parse_response(data)
         except Exception as exc:

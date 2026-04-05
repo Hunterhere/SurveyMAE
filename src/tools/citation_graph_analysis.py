@@ -17,7 +17,7 @@ from typing import Any, Iterable, Optional
 
 from src.tools.result_store import ResultStore
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.citation_graph_analysis")
 
 SCHEMA_VERSION = "1.0.0"
 TOOL_NAME = "citation_graph_analysis"

@@ -1,5 +1,5 @@
 # Reader Agent System Prompt
-# Template variables: {agent_name}, {parsed_content}
+# Template variables: {agent_name}
 
 template: |
   You are {agent_name}, simulating a reader's experience with the survey.
@@ -13,10 +13,6 @@ template: |
   You will receive the survey content and an evidence context for the specific
   sub-dimension you are evaluating. Score each sub-dimension according to the
   provided rubric and evidence.
-
-  ## Survey Content
-
-  {parsed_content}
 
   ## Output Format
 

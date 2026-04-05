@@ -11,6 +11,8 @@ from typing import Optional
 
 import requests
 
+from src.core.log import get_run_stats
+
 
 @dataclass
 class SemanticScholarResult:
@@ -59,6 +61,7 @@ class SemanticScholarFetcher:
         try:
             response = self._session.get(url, params=params, timeout=10)
             response.raise_for_status()
+            get_run_stats().record_api()
             data = response.json()
         except requests.RequestException:
             return None
@@ -79,6 +82,7 @@ class SemanticScholarFetcher:
         try:
             response = self._session.get(url, params=params, timeout=10)
             response.raise_for_status()
+            get_run_stats().record_api()
             data = response.json()
         except requests.RequestException:
             return None
@@ -96,6 +100,7 @@ class SemanticScholarFetcher:
         try:
             response = self._session.get(url, params=params, timeout=10)
             response.raise_for_status()
+            get_run_stats().record_api()
             data = response.json()
         except requests.RequestException:
             return None

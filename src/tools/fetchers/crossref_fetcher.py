@@ -11,6 +11,8 @@ from typing import Optional
 
 import requests
 
+from src.core.log import get_run_stats
+
 
 @dataclass
 class CrossRefResult:
@@ -67,6 +69,7 @@ class CrossRefFetcher:
                 timeout=30,
             )
             response.raise_for_status()
+            get_run_stats().record_api()
             data = response.json()
         except requests.RequestException:
             return None
@@ -93,6 +96,7 @@ class CrossRefFetcher:
                 timeout=30,
             )
             response.raise_for_status()
+            get_run_stats().record_api()
             data = response.json()
         except requests.RequestException:
             return None

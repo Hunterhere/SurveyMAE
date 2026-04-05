@@ -18,7 +18,7 @@ import httpx
 
 from src.core.search_config import load_search_engine_config
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.citation_metadata")
 
 
 @dataclass
