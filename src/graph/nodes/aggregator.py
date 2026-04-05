@@ -14,7 +14,7 @@ from typing import Any
 
 from src.core.state import AgentOutput, EvaluationRecord, SurveyState
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.graph.nodes.aggregator")
 
 # Default weights for agent dimensions
 DEFAULT_DIMENSION_WEIGHTS = {

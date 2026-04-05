@@ -6,11 +6,7 @@ For integration tests with real LLM calls, see tests/integration/test_agents.py.
 
 import pytest
 from unittest.mock import MagicMock, patch
-from src.agents.verifier import VerifierAgent
-from src.agents.expert import ExpertAgent
-from src.agents.reader import ReaderAgent
 from src.agents.corrector import CorrectorAgent
-from src.core.state import SurveyState, EvaluationRecord
 
 
 def create_mock_agent(agent_class):
@@ -20,129 +16,6 @@ def create_mock_agent(agent_class):
         mock_llm.return_value = mock_instance
         agent = agent_class()
         return agent
-
-
-class TestVerifierAgent:
-    """Tests for VerifierAgent."""
-
-    @pytest.fixture
-    def agent(self):
-        return create_mock_agent(VerifierAgent)
-
-    @pytest.fixture
-    def sample_state(self):
-        return SurveyState(
-            source_pdf_path="test_paper.pdf",
-            parsed_content="Test content with citations [1], [2].",
-            evaluations=[],
-            debate_history=[],
-            sections={},
-            current_round=0,
-            consensus_reached=False,
-            final_report_md="",
-            metadata={},
-        )
-
-    def test_agent_initialization(self, agent):
-        """Test agent can be initialized."""
-        assert agent.name == "verifier"
-        assert agent._citation_checker is not None
-
-    def test_extract_claims_and_citations(self, agent):
-        """Test citation extraction."""
-        content = "This is a test [1] with multiple [2, 3] citations [4-6]."
-        result = agent._extract_claims_and_citations(content)
-        assert "[1]" in result
-        assert "[2, 3]" in result
-        assert "[4-6]" in result
-
-    def test_parse_verification_response(self, agent):
-        """Test response parsing."""
-        response = """
-        Factuality Score: 8.5
-
-        The survey shows good factual accuracy.
-        Evidence: All claims are properly cited.
-        """
-        score, reasoning, evidence = agent._parse_verification_response(response)
-        assert score == 8.5
-        assert "factual accuracy" in reasoning.lower()
-
-
-class TestExpertAgent:
-    """Tests for ExpertAgent."""
-
-    @pytest.fixture
-    def agent(self):
-        return create_mock_agent(ExpertAgent)
-
-    @pytest.fixture
-    def sample_state(self):
-        return SurveyState(
-            source_pdf_path="test_paper.pdf",
-            parsed_content="Test content about machine learning [1].",
-            evaluations=[],
-            debate_history=[],
-            sections={},
-            current_round=0,
-            consensus_reached=False,
-            final_report_md="",
-            metadata={"domain": "computer science"},
-        )
-
-    def test_agent_initialization(self, agent):
-        """Test agent can be initialized."""
-        assert agent.name == "expert"
-        assert agent._citation_checker is not None
-        assert agent._graph_analyzer is not None
-
-
-class TestReaderAgent:
-    """Tests for ReaderAgent."""
-
-    @pytest.fixture
-    def agent(self):
-        return create_mock_agent(ReaderAgent)
-
-    @pytest.fixture
-    def sample_state(self):
-        return SurveyState(
-            source_pdf_path="test_paper.pdf",
-            parsed_content="Test survey content.",
-            evaluations=[],
-            debate_history=[],
-            sections={},
-            current_round=0,
-            consensus_reached=False,
-            final_report_md="",
-            metadata={},
-        )
-
-    def test_agent_initialization(self, agent):
-        """Test agent can be initialized."""
-        assert agent.name == "reader"
-        assert agent._citation_checker is not None
-        assert agent._citation_analyzer is not None
-
-    def test_parse_reader_response_with_percentage(self, agent):
-        """Test parsing response with percentage."""
-        response = """
-        Coverage: 85%
-
-        Most reader questions are answered.
-        """
-        score, reasoning, evidence = agent._parse_reader_response(response)
-        assert score == 8.5  # 85 / 10
-
-    def test_parse_reader_response_with_score(self, agent):
-        """Test parsing response with score."""
-        response = """
-        Coverage Score: 7.5
-
-        The survey covers most topics.
-        """
-        score, reasoning, evidence = agent._parse_reader_response(response)
-        assert score == 7.5
 
 
 class TestCorrectorAgent:

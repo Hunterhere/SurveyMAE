@@ -50,7 +50,7 @@ from src.tools.keyword_extractor import KeywordExtractor
 from src.tools.literature_search import LiteratureSearch
 from src.tools.foundational_coverage import FoundationalCoverageAnalyzer
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.graph.nodes.evidence_collection")
 
 
 def _load_evidence_config() -> Dict[str, Any]:

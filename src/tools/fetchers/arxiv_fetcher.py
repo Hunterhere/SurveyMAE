@@ -13,6 +13,8 @@ from typing import Optional
 
 import requests
 
+from src.core.log import get_run_stats
+
 
 @dataclass
 class ArxivMetadata:
@@ -75,6 +77,7 @@ class ArxivFetcher:
                 headers={"User-Agent": "SurveyMAE/0.1 (mailto:surveymae@example.com)"},
             )
             response.raise_for_status()
+            get_run_stats().record_api()
         except requests.RequestException:
             return None
 
@@ -103,6 +106,7 @@ class ArxivFetcher:
                 headers={"User-Agent": "SurveyMAE/0.1 (mailto:surveymae@example.com)"},
             )
             response.raise_for_status()
+            get_run_stats().record_api()
         except requests.RequestException:
             return []
 

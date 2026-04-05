@@ -25,7 +25,7 @@ from src.core.state import (
 )
 from src.graph.nodes.evidence_dispatch import get_corrector_targets, AGENT_REGISTRY
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.agents.corrector")
 
 
 class CorrectorAgent(BaseAgent):

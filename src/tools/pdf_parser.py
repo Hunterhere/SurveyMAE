@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.pdf_parser")
 
 
 class PDFParser:

@@ -22,7 +22,7 @@ from src.core.search_config import (
     SourceConfig,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.parallel_dispatcher")
 
 T = TypeVar("T")
 

@@ -26,7 +26,7 @@ from src.tools.fetchers.semantic_scholar_fetcher import (
 )
 from src.tools.parallel_dispatcher import ParallelDispatcher
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.literature_search")
 
 
 # ---------------------------------------------------------------------------

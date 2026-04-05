@@ -21,7 +21,7 @@ from src.core.config import AgentConfig
 from src.core.mcp_client import MCPManager
 from src.core.state import SurveyState, EvaluationRecord
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.agents.reader")
 
 
 class ReaderAgent(BaseAgent):

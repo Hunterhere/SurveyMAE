@@ -8,7 +8,7 @@ from typing import Dict, Any
 
 from src.core.state import SurveyState, DebateMessage, EvaluationRecord
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.graph.nodes.debate")
 
 
 async def run_debate(state: SurveyState) -> Dict[str, Any]:

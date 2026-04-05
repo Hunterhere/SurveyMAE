@@ -17,7 +17,7 @@ from anthropic import AsyncAnthropic
 
 from src.core.config import LLMConfig, load_config, ModelConfig
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.keyword_extractor")
 
 
 @dataclass

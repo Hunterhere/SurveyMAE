@@ -15,7 +15,7 @@ from src.tools.citation_checker import CitationChecker
 from src.tools.result_store import ResultStore
 from src.tools.pdf_parser import PDFParser
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surveymae.tools.citation_analysis")
 
 
 @dataclass
