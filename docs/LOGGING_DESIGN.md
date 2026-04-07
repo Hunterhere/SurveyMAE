@@ -54,7 +54,7 @@ output/runs/{run_id}/
 ├── index.json                            # run 级共享：所有 paper 状态索引
 │
 ├── papers/{paper_id}/                    # 每篇 PDF 独立目录
-│   ├── run_summary.json                  # 该篇 PDF 的评测结果摘要（run 级）
+│   ├── run_summary.json                  # 该篇 PDF 的评测结果摘要（paper 级）
 │   │
 │   ├── nodes/                            # workflow 步骤增量输出
 │   │   ├── 01_parse_pdf.json
@@ -87,7 +87,7 @@ output/runs/{run_id}/
 |------|------|------|
 | `run.json` | run 级 | config 快照、metrics_index 定义、schema_version。一次 run 内所有 PDF 共享同一 config |
 | `index.json` | run 级 | 所有 paper 的 paper_id → status 映射。批量运行时记录每篇的处理进度 |
-| `run_summary.json` | run 级 | 单篇 PDF 的 deterministic_metrics、agent_scores、corrected_scores、overall_score、grade |
+| `run_summary.json` | paper 级 | 单篇 PDF 的 deterministic_metrics、agent_scores、corrected_scores、overall_score、grade |
 | `nodes/*.json` | paper 级 | 该篇 PDF 的 workflow 步骤增量输出 |
 | `tools/*.json` | paper 级 | 该篇 PDF 的工具原始输出 |
 | `logs/run.log` | run 级 | 整个 run 的日志（含所有 PDF 的处理日志） |
@@ -1020,7 +1020,7 @@ SurveyMAE 批量评测启动 | 3 篇 PDF
 | Step 4: 模块 logger 前缀替换 | ✅ 完成 | 全部 22 个模块已替换为 `surveymae.xxx` 前缀 |
 | Step 5: FileHandler 日志落地 | ✅ 完成 | `logs/run.log` 在 `setup_logging(run_dir=...)` 时自动创建 |
 | Step 6: RunStats 集成 | ✅ 完成 | `base.py` LLM 调用 + 5 个 fetcher API 调用已集成 |
-| Step 7: 进度条 | ✅ 完成 | `citation_checker._verify_references()` 已添加进度条 |
+| Step 7: 进度条 | ✅ 完成 | `citation_checker._verify_references()` 已添加进度条；`corrector.py` 多模型投票使用 `asyncio.as_completed` + Rich Progress |
 | Step 8: 文档更新 | ✅ 完成 | LOGGING_DESIGN.md 已更新 |
 
 ### 12.2 新建文件
@@ -1044,12 +1044,13 @@ SurveyMAE 批量评测启动 | 3 篇 PDF
 | `src/tools/fetchers/arxiv_fetcher.py` | 同上 |
 | `src/tools/fetchers/dblp_fetcher.py` | 同上 |
 | `src/tools/citation_checker.py` | 导入 `create_progress`；`_verify_references()` 中添加进度条 |
+| `src/agents/corrector.py` | 导入 `create_progress`；投票循环使用 `asyncio.as_completed` + Rich Progress 实时更新 |
 
 ### 12.4 目录结构变更
 
 ```
 output/runs/{run_id}/
-├── run.json / index.json / run_summary.json（不变）
+├── run.json / index.json / run_summary.json（TODO: 移动到{paper_id}目录下）
 ├── logs/run.log              ← 新增：完整 DEBUG 日志（每次运行新建）
 └── papers/{paper_id}/
     ├── source.json
@@ -1067,8 +1068,7 @@ output/runs/{run_id}/
 
 | 任务 | 说明 |
 |------|------|
-| `evidence_collection.py` 节点层进度日志 | `log_pipeline_step()` / `log_substep()` 接入节点入口 |
-| Corrector 多模型投票进度条 | `corrector._vote_all_dimensions()` 中添加进度条 |
-| `evidence_collection.py` 中的 `log_substep` 调用 | C3/C5/C6/T/G 步骤完成后输出子步骤汇总 |
+| `evidence_collection.py` 节点层进度日志 | ✅ `log_pipeline_step()` 已接入入口；`log_substep()` 已在关键子步骤调用 |
+| Corrector 多模型投票进度条 | ✅ 完成（`asyncio.as_completed` + Rich `Progress` 实时更新） |
 | 端到端测试 | 用真实 PDF 运行完整评测流程，验证日志输出和文件落地 |
-| `errors.jsonl` 激活 | 在 `base.py` 和关键工具的 `except` 块中调用 `result_store.append_error()` |
+| `errors.jsonl` 激活 | 已跳过（ERROR 日志已写入 `run.log`） |
