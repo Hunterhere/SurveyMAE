@@ -11,9 +11,11 @@ This node executes the complete tool chain to collect evidence for agent evaluat
 """
 
 import logging
+import time as time_module
 from typing import Any, Dict, List, Optional
 import re
 
+from src.core.log import log_pipeline_step, log_substep
 from src.core.state import SurveyState
 from src.core.config import load_config, SearchEnginesConfig
 from src.tools.citation_checker import CitationChecker
@@ -555,6 +557,9 @@ async def run_evidence_collection(
     source_pdf = state.get("source_pdf_path", "")
     section_headings = state.get("section_headings", [])
 
+    # Track overall elapsed time
+    step_start = time_module.monotonic()
+
     # Get paper_id for persistence
     paper_id = None
     if result_store and source_pdf:
@@ -574,6 +579,9 @@ async def run_evidence_collection(
         }
 
     try:
+        # Log pipeline step entry
+        log_pipeline_step("02", 7, "evidence_collection", detail="证据收集中...")
+
         # =========================================================================
         # Step 1: Citation Extraction and Validation
         # =========================================================================
@@ -628,6 +636,13 @@ async def run_evidence_collection(
         logger.info(f"  C3 (orphan_ref_rate): {orphan_ref_rate:.2%}")
         logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%}")
         logger.info(f"  Real citation edges from validation: {len(real_citation_edges)}")
+        step1_elapsed = time_module.monotonic() - step_start
+        log_substep(
+            "citation_validate",
+            f"C3={orphan_ref_rate:.2%} C5={metadata_verify_rate:.2%} ({verified_count}/{total_refs}) "
+            f"edges={len(real_citation_edges)}",
+            elapsed=step1_elapsed,
+        )
 
         # =========================================================================
         # Step 1.5: C6 Citation-Sentence Alignment Analysis
@@ -635,12 +650,20 @@ async def run_evidence_collection(
         c6_result = await _collect_c6_citation_alignment(extraction, references)
 
         # Save C6 alignment results (v3)
+        c6_elapsed = time_module.monotonic() - step_start
         if result_store and paper_id:
             try:
                 result_store.save_c6_alignment(paper_id, c6_result)
                 logger.info(f"  Saved C6 alignment to c6_alignment.json")
             except Exception as e:
                 logger.warning(f"  Failed to save C6 alignment: {e}")
+        log_substep(
+            "C6_alignment",
+            f"pairs={c6_result.get('total_pairs', 0)} "
+            f"contradiction={c6_result.get('contradiction_rate', 0):.2%} "
+            f"auto_fail={c6_result.get('auto_fail', False)}",
+            elapsed=c6_elapsed,
+        )
 
         # =========================================================================
         # Step 2: Keyword Extraction
@@ -660,7 +683,12 @@ async def run_evidence_collection(
             # Fallback: generate keywords from title
             topic_keywords = [title] if title else []
 
-        logger.info(f"  Extracted keywords: {topic_keywords[:3]}")
+        step2_elapsed = time_module.monotonic() - step_start
+        log_substep(
+            "keyword_extract",
+            f"{len(topic_keywords)} keywords: {topic_keywords[:3]}" if topic_keywords else "no keywords",
+            elapsed=step2_elapsed,
+        )
 
         # =========================================================================
         # Step 3: Field Trend Baseline Retrieval
@@ -683,7 +711,12 @@ async def run_evidence_collection(
                 logger.warning(f"  Failed to search field trend for '{kw}': {e}")
                 continue
 
-        logger.info(f"  Field trend baseline: {len(field_trend_baseline)} years")
+        step3_elapsed = time_module.monotonic() - step_start
+        log_substep(
+            "trend_baseline",
+            f"{len(field_trend_baseline)} years",
+            elapsed=step3_elapsed,
+        )
 
         # Save field_trend_baseline (v3)
         if result_store and paper_id:
@@ -717,7 +750,12 @@ async def run_evidence_collection(
                 unique_papers.append(paper)
 
         candidate_key_papers = unique_papers
-        logger.info(f"  Found {len(candidate_key_papers)} candidate papers")
+        step4_elapsed = time_module.monotonic() - step_start
+        log_substep(
+            "key_papers",
+            f"{len(candidate_key_papers)} candidates",
+            elapsed=step4_elapsed,
+        )
 
         # Prepare key_papers_data for persistence (v3)
         key_papers_data = {
@@ -763,8 +801,14 @@ async def run_evidence_collection(
             total_paragraphs=len(parsed_content) // 500,  # Rough estimate
         )
 
-        logger.info(f"  T1 (year_span): {temporal_metrics.get('T1_year_span')}")
-        logger.info(f"  T5 (trend_alignment): {temporal_metrics.get('T5_trend_alignment')}")
+        step5_elapsed = time_module.monotonic() - step_start
+        t1_val = temporal_metrics.get('T1_year_span', 'N/A')
+        t5_val = temporal_metrics.get('T5_trend_alignment', 'N/A')
+        log_substep(
+            "temporal_metrics",
+            f"T1={t1_val} T5={t5_val:.2f}" if isinstance(t5_val, float) else f"T1={t1_val} T5={t5_val}",
+            elapsed=step5_elapsed,
+        )
 
         # =========================================================================
         # Step 6: Citation Graph Analysis (G1-G6, S5)
@@ -816,6 +860,15 @@ async def run_evidence_collection(
             logger.warning(f"  S5 computation failed: {e}")
             s5_result = {}
 
+        step6_elapsed = time_module.monotonic() - step_start
+        n_clusters = summary.get("cocitation_clustering", {}).get("n_clusters", "N/A")
+        density = summary.get("density_connectivity", {}).get("density_global", "N/A")
+        log_substep(
+            "citation_graph",
+            f"G1={density} G5={n_clusters}" if isinstance(density, float) else "graph_metrics_computed",
+            elapsed=step6_elapsed,
+        )
+
         # =========================================================================
         # Step 7: Foundational Coverage Analysis (G4)
         # =========================================================================
@@ -837,7 +890,12 @@ async def run_evidence_collection(
             missing_papers = []
             suspicious_papers = []
 
-        logger.info(f"  G4 (foundational_coverage_rate): {g4_coverage}")
+        step7_elapsed = time_module.monotonic() - step_start
+        log_substep(
+            "foundational_coverage",
+            f"G4={g4_coverage:.2%}" if g4_coverage is not None else "G4=N/A",
+            elapsed=step7_elapsed,
+        )
 
         # Save key_papers with G4 data (v3)
         key_papers_data.update({
@@ -867,11 +925,22 @@ async def run_evidence_collection(
         # =========================================================================
         # Assemble Tool Evidence
         # =========================================================================
+        def _require_float(value, name: str, default: float = -1.0) -> float:
+            """Return value if not None, else log an error and return default."""
+            if value is None:
+                logger.error(
+                    "Metric %s is None (likely due to failed external API calls); "
+                    "falling back to default value %s",
+                    name, default,
+                )
+                return default
+            return value
+
         tool_evidence = {
             "extraction": extraction,
             "validation": {
-                "C3_orphan_ref_rate": orphan_ref_rate,
-                "C5_metadata_verify_rate": metadata_verify_rate,
+                "C3_orphan_ref_rate": _require_float(orphan_ref_rate, "C3_orphan_ref_rate"),
+                "C5_metadata_verify_rate": _require_float(metadata_verify_rate, "C5_metadata_verify_rate"),
                 "references": references,
                 "verified_count": verified_count,
                 "total_refs": total_refs,
@@ -882,10 +951,10 @@ async def run_evidence_collection(
                 "T2_foundational_retrieval_gap": temporal_metrics.get("T2_foundational_retrieval_gap"),
                 "T3_peak_year_ratio": temporal_metrics.get("T3_peak_year_ratio"),
                 "T4_temporal_continuity": temporal_metrics.get("T4_temporal_continuity"),
-                "T5_trend_alignment": temporal_metrics.get("T5_trend_alignment"),
+                "T5_trend_alignment": _require_float(temporal_metrics.get("T5_trend_alignment"), "T5_trend_alignment"),
                 "year_distribution": temporal_metrics.get("year_distribution"),
                 # Structural (S1-S4)
-                "S1_section_count": structural_metrics.get("S1_section_count"),
+                "S1_section_count": temporal_metrics.get("S1_section_count"),
                 "S2_citation_density": structural_metrics.get("S2_citation_density"),
                 "S3_citation_gini": structural_metrics.get("S3_citation_gini"),
                 "S4_zero_citation_section_rate": structural_metrics.get("S4_zero_citation_section_rate"),
@@ -895,11 +964,11 @@ async def run_evidence_collection(
                 "G1_density": summary.get("density_connectivity", {}).get("density_global"),
                 "G2_components": summary.get("density_connectivity", {}).get("n_weak_components"),
                 "G3_lcc_frac": summary.get("density_connectivity", {}).get("lcc_frac"),
-                "G4_coverage_rate": g4_coverage,
+                "G4_coverage_rate": _require_float(g4_coverage, "G4_coverage_rate"),
                 "G5_clusters": summary.get("cocitation_clustering", {}).get("n_clusters"),
                 "G6_isolates": summary.get("density_connectivity", {}).get("n_isolates"),
                 # Section-cluster alignment (S5)
-                "S5_nmi": s5_result.get("nmi"),
+                "S5_nmi": _require_float(s5_result.get("nmi"), "S5_nmi"),
                 "S5_ari": s5_result.get("ari"),
                 # Additional data for agents
                 "missing_key_papers": missing_papers,
@@ -909,7 +978,14 @@ async def run_evidence_collection(
             "c6_alignment": c6_result,
         }
 
-        logger.info(f"Evidence collection complete: {total_refs} references, {len(topic_keywords)} keywords")
+        total_elapsed = time_module.monotonic() - step_start
+        log_pipeline_step(
+            "02",
+            7,
+            "evidence_collection",
+            detail=f"{total_refs} refs, {len(topic_keywords)} keywords",
+            elapsed=total_elapsed,
+        )
 
         # Convert numpy types to Python native types for msgpack serialization
         tool_evidence = _convert_numpy_types(tool_evidence)

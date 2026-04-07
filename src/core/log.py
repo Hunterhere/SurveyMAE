@@ -55,6 +55,7 @@ _console = Console(stderr=True)
 _run_stats: "RunStatsType | None" = None
 _stats_lock = threading.Lock()
 _file_logger: logging.Logger | None = None
+_summary_logger: logging.Logger | None = None
 
 # ---------------------------------------------------------------------------
 # RunStats
@@ -195,11 +196,13 @@ def log_pipeline_step(
     _console.print(f"  {step_str}{bar}[dim]{detail}[/dim]{elapsed_str}")
 
     # --- File log ---
+    msg = f"[{step.zfill(2)}/{total:02d}] {name}" + (f" | {detail}" if detail else "")
+    if elapsed is not None:
+        msg += f" | elapsed={elapsed:.1f}s"
     if _file_logger:
-        msg = f"[{step.zfill(2)}/{total:02d}] {name}" + (f" | {detail}" if detail else "")
-        if elapsed is not None:
-            msg += f" | elapsed={elapsed:.1f}s"
         _file_logger.info(msg)
+    if _summary_logger:
+        _summary_logger.info(msg)
 
 
 def log_substep(
@@ -228,11 +231,13 @@ def log_substep(
 
     _console.print(f"  {branch} {name}  │ [dim]{detail}[/dim]{elapsed_str}")
 
+    msg = f"  {branch} {name} | {detail}"
+    if elapsed is not None:
+        msg += f" | elapsed={elapsed:.1f}s"
     if _file_logger:
-        msg = f"  {branch} {name} | {detail}"
-        if elapsed is not None:
-            msg += f" | elapsed={elapsed:.1f}s"
         _file_logger.info(msg)
+    if _summary_logger:
+        _summary_logger.info(msg)
 
 
 def log_run_summary(stats: RunStats, total_elapsed: float) -> None:
@@ -283,6 +288,7 @@ def setup_logging(
     verbose: bool = False,
     log_level: str | None = None,
     quiet: bool = False,
+    pdf_path: str | None = None,
 ) -> logging.Logger:
     """Initialize the SurveyMAE logging system.
 
@@ -290,8 +296,10 @@ def setup_logging(
         1. Create "surveymae" root logger at DEBUG level
         2. Add RichHandler for console (WARNING+ by default, DEBUG in verbose)
         3. If run_dir provided, add FileHandler -> {run_dir}/logs/run.log
-        4. Suppress third-party loggers to WARNING
-        5. Reset global RunStats
+        4. If run_dir provided, add FileHandler -> {run_dir}/logs/summary.log
+           (only pipeline steps and substeps)
+        5. Suppress third-party loggers to WARNING
+        6. Reset global RunStats
 
     Level resolution (console RichHandler):
         1. log_level explicitly set -> use that
@@ -304,11 +312,12 @@ def setup_logging(
         verbose:   Enable DEBUG on console
         log_level: Explicit console level (DEBUG/INFO/WARNING/ERROR)
         quiet:     Suppress progress output (WARNING+ only)
+        pdf_path:  PDF path to record in summary.log header
 
     Returns:
         The "surveymae" root logger
     """
-    global _file_logger
+    global _file_logger, _summary_logger
 
     # Resolve console handler level
     if log_level:
@@ -365,6 +374,27 @@ def setup_logging(
 
         # Also attach to root so all surveymae.* loggers write to file
         root_logger.addHandler(file_handler)
+
+        # --- summary.log: pipeline steps and substeps only ---
+        summary_path = log_dir / "summary.log"
+        _summary_logger = logging.getLogger(f"{_namespace}.summary")
+        _summary_logger.setLevel(logging.INFO)
+        _summary_logger.handlers.clear()
+        _summary_logger.propagate = False
+
+        summary_handler = logging.FileHandler(
+            summary_path,
+            mode="a",
+            encoding="utf-8",
+        )
+        summary_handler.setLevel(logging.INFO)
+        summary_handler.setFormatter(logging.Formatter("%(message)s"))
+        _summary_logger.addHandler(summary_handler)
+
+        # Write header
+        header = f"SurveyMAE 评测启动 | PDF: {pdf_path}" if pdf_path else "SurveyMAE 评测启动"
+        _summary_logger.info(header)
+        _summary_logger.info("")
 
     # --- Suppress third-party noise ---
     for lib in ("langchain", "langgraph", "httpx", "httpcore", "openai", "anthropic"):

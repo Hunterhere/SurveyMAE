@@ -12,6 +12,7 @@ import logging
 import statistics
 from typing import Any, Dict, List, Optional
 
+from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, MultiModelConfig
 from src.core.config import AgentConfig, load_config
 from src.core.mcp_client import MCPManager
@@ -23,6 +24,7 @@ from src.core.state import (
     CorrectionRecord,
     VarianceRecord,
 )
+from src.core.log import create_progress
 from src.graph.nodes.evidence_dispatch import get_corrector_targets, AGENT_REGISTRY
 
 logger = logging.getLogger("surveymae.agents.corrector")
@@ -142,32 +144,33 @@ class CorrectorAgent(BaseAgent):
 
         if dimensions_to_vote and self._corrector_models:
             # Create voting tasks for all dimensions x models
-            tasks = []
+            task_meta = []  # list of (dim_id, model_cfg)
+            coros = []
             for dim_id in dimensions_to_vote:
                 dim_info = self._get_dimension_info(dim_id, agent_outputs)
                 for model_cfg in self._corrector_models:
-                    task = self._vote_dimension(dim_id, dim_info, model_cfg)
-                    tasks.append((dim_id, model_cfg, task))
+                    task_meta.append((dim_id, model_cfg))
+                    coros.append(self._vote_dimension(dim_id, dim_info, model_cfg))
 
-            # Execute all voting tasks concurrently
-            if tasks:
-                results_list = await asyncio.gather(
-                    *[t[2] for t in tasks],
-                    return_exceptions=True
-                )
+            # Execute all voting tasks concurrently with gather
+            if coros:
+                progress = create_progress()
+                with progress:
+                    progress_task = progress.add_task("[cyan]多模型投票", total=len(coros))
 
-                # Group results by dimension
-                dim_results: Dict[str, List[tuple]] = {}
-                for i, (dim_id, model_cfg, _) in enumerate(tasks):
-                    if dim_id not in dim_results:
-                        dim_results[dim_id] = []
-                    result = results_list[i]
-                    if isinstance(result, Exception):
-                        logger.warning(f"Model {model_cfg.model} failed for {dim_id}: {result}")
-                        failed_calls += 1
-                    else:
-                        dim_results[dim_id].append((model_cfg.model, result))
-                        total_calls += 1
+                    # Collect results as they complete
+                    dim_results: Dict[str, List[tuple]] = {}
+                    results = await asyncio.gather(*coros, return_exceptions=True)
+                    for (dim_id, model_cfg), result in zip(task_meta, results):
+                        if isinstance(result, Exception):
+                            logger.warning(f"Model {model_cfg.model} failed for {dim_id}: {result}")
+                            failed_calls += 1
+                        else:
+                            if dim_id not in dim_results:
+                                dim_results[dim_id] = []
+                            dim_results[dim_id].append((model_cfg.model, result))
+                            total_calls += 1
+                        progress.update(progress_task, advance=1)
 
                 # Aggregate results for each dimension
                 for dim_id, model_results in dim_results.items():
@@ -271,7 +274,7 @@ class CorrectorAgent(BaseAgent):
         model_cfg: Any,
     ) -> float:
         """Vote on a single dimension using a specific model."""
-        import re
+        import re, json
         rubric = self._get_rubric(dim_id)
         tool_evidence = dim_info.get("tool_evidence", {})
         llm_reasoning = dim_info.get("llm_reasoning", "")
@@ -294,10 +297,20 @@ Reasoning: {llm_reasoning[:500] if llm_reasoning else 'No reasoning available.'}
 Based on the rubric, tool evidence, and your own judgment, provide your score (1-5).
 Output ONLY a JSON object: {{"score": <number>}}
 """
-        messages = [{"role": "user", "content": prompt}]
+        lc_messages = [HumanMessage(content=prompt)]
         try:
-            response = await self._call_llm(messages, model=model_cfg.model)
-            match = re.search(r'"score"\s*:\s*(\d+(?:\.\d+)?)', response)
+            # Find the matching LLM in the pool by model name
+            llm = None
+            for key, pool_llm in self._llm_pool.items():
+                if model_cfg.model in key:
+                    llm = pool_llm
+                    break
+            if llm is None:
+                llm = self.llm  # fallback to primary LLM
+
+            response = await llm.ainvoke(lc_messages)
+            content = response.content if hasattr(response, "content") else str(response)
+            match = re.search(r'"score"\s*:\s*(\d+(?:\.\d+)?)', content)
             if match:
                 return float(match.group(1))
             return 5.0

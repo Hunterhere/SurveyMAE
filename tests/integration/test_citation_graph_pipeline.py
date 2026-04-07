@@ -98,33 +98,6 @@ def _render_dot(
     return "\n".join(lines), len(seen), shown_nodes
 
 
-def _elbow_center_count(degrees_desc: list[int], k_min: int, k_max: int) -> int:
-    """Pick center count via elbow (max distance to first-last baseline)."""
-    if not degrees_desc:
-        return 0
-    m = min(len(degrees_desc), max(1, k_max))
-    if m <= 2:
-        return m
-
-    y = degrees_desc[:m]
-    x1, y1 = 0.0, float(y[0])
-    x2, y2 = float(m - 1), float(y[-1])
-    den = math.hypot(y2 - y1, x2 - x1)
-    if den == 0.0:
-        return min(m, max(1, k_min))
-
-    best_idx = 0
-    best_dist = -1.0
-    for i in range(1, m - 1):
-        xi = float(i)
-        yi = float(y[i])
-        dist = abs((y2 - y1) * xi - (x2 - x1) * yi + x2 * y1 - y2 * x1) / den
-        if dist > best_dist:
-            best_dist = dist
-            best_idx = i
-
-    k = best_idx + 1
-    return max(1, min(m, max(k_min, k)))
 
 
 def _render_pyvis_html(
@@ -182,81 +155,38 @@ def _render_pyvis_html(
     cluster_map: dict[str, int] = {}
     centers_summary: list[dict[str, object]] = []
     center_count = 0
-    min_in_degree = 5
-    k_min = 3
-    k_max = 18
-    max_hops = 3
-    pagerank_alpha = 0.80
     try:
-        import networkx as nx
+        from src.tools.citation_graph_analysis import CitationGraphAnalyzer
 
-        g = nx.DiGraph()
-        g.add_nodes_from(shown_nodes)
-        g.add_edges_from(dedup_edges)
-        non_isolates = [n for n in shown_nodes if in_degree[n] > 0 or out_degree[n] > 0]
-        non_isolates_set = set(non_isolates)
-        if non_isolates:
-            pagerank = nx.pagerank(g, alpha=pagerank_alpha)
-            candidates = [n for n in non_isolates if in_degree[n] >= min_in_degree] or non_isolates
-            candidates.sort(key=lambda n: (in_degree[n], pagerank.get(n, 0.0)), reverse=True)
-            candidate_degrees = [in_degree[n] for n in candidates]
-            center_count = _elbow_center_count(candidate_degrees, k_min=k_min, k_max=k_max)
-            centers = candidates[: max(1, center_count)]
-            center_rank = {c: i for i, c in enumerate(centers)}
+        _analyzer = CitationGraphAnalyzer()
 
-            rev = g.reverse(copy=False)
-            dist_to_center: dict[str, dict[str, int]] = {}
-            for c in centers:
-                lengths = nx.single_source_shortest_path_length(rev, c, cutoff=max_hops)
-                for node, dist in lengths.items():
-                    if node not in non_isolates_set:
-                        continue
-                    dist_to_center.setdefault(node, {})[c] = dist
+        # Build in_adj from dedup_edges for the analyzer method.
+        _out_adj: dict[str, set[str]] = {n: set() for n in shown_nodes}
+        _in_adj: dict[str, set[str]] = {n: set() for n in shown_nodes}
+        for src, dst in dedup_edges:
+            _out_adj[src].add(dst)
+            _in_adj[dst].add(src)
 
-            for c, cid in center_rank.items():
-                cluster_map[c] = cid
-            for node in non_isolates:
-                if node in cluster_map:
-                    continue
-                options = dist_to_center.get(node, {})
-                if not options:
-                    continue
-                best_center = min(
-                    options.items(), key=lambda item: (item[1], center_rank[item[0]])
-                )[0]
-                cluster_map[node] = center_rank[best_center]
+        # Reuse pagerank from CitationGraphAnalyzer for consistency.
+        _pagerank = _analyzer._pagerank(shown_nodes, _out_adj)
 
-            for _ in range(3):
-                changed = False
-                for node in non_isolates:
-                    if node in cluster_map:
-                        continue
-                    votes: dict[int, int] = {}
-                    for neigh in g.predecessors(node):
-                        cid = cluster_map.get(neigh)
-                        if cid is not None:
-                            votes[cid] = votes.get(cid, 0) + 1
-                    for neigh in g.successors(node):
-                        cid = cluster_map.get(neigh)
-                        if cid is not None:
-                            votes[cid] = votes.get(cid, 0) + 1
-                    if not votes:
-                        continue
-                    cluster_map[node] = max(votes.items(), key=lambda item: (item[1], -item[0]))[0]
-                    changed = True
-                if not changed:
-                    break
+        ac_result = _analyzer._authority_center_clustering(
+            nodes=shown_nodes,
+            out_adj=_out_adj,
+            in_adj=_in_adj,
+            pagerank=_pagerank,
+            topk_clusters=len(palette),
+            topk_papers=5,
+        )
+        ac_summary = ac_result["summary"]
+        center_count = ac_summary.get("center_count", 0)
+        centers_summary = ac_summary.get("centers", [])
 
-            centers_summary = [
-                {
-                    "node": c,
-                    "cluster_id": cluster_map.get(c),
-                    "in_degree": in_degree.get(c, 0),
-                    "out_degree": out_degree.get(c, 0),
-                    "pagerank": round(float(pagerank.get(c, 0.0)), 6),
-                }
-                for c in centers
-            ]
+        # Reconstruct cluster_map from evidence (cluster_id -> paper_id).
+        for cluster_info in ac_result["evidence"]:
+            cid = cluster_info["cluster_id"]
+            for paper in cluster_info["top_papers"]:
+                cluster_map[paper["paper_id"]] = cid
     except Exception:
         cluster_map = {}
         centers_summary = []
@@ -331,11 +261,7 @@ def _render_pyvis_html(
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     net.write_html(str(output_path), local=False, notebook=False, open_browser=False)
-    print(
-        "PyVis cluster mode: authority_center "
-        f"(directed, selection=elbow, center_count={center_count}, "
-        f"k_min={k_min}, k_max={k_max}, min_in_degree={min_in_degree}, max_hops={max_hops})"
-    )
+    print(f"PyVis cluster mode: authority_center (directed, selection=elbow, center_count={center_count})")
     if centers_summary:
         print("PyVis authority centers:")
         print(json.dumps(centers_summary, ensure_ascii=False, indent=2))

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     )
 
 from src.core.config import SurveyMAEConfig
+from src.core.log import log_pipeline_step
 from src.core.state import SurveyState
 from src.graph.edges import should_continue_debate, should_end
 from src.graph.nodes import run_debate
@@ -377,7 +378,8 @@ def _sanitize_output_for_logging(data: dict) -> dict:
 # Wrapper functions for workflow nodes to save intermediate results
 async def _wrap_parse_pdf(state: SurveyState) -> dict:
     """Wrapper for parse_pdf node with result saving."""
-    # Capture input state
+    import time
+    t0 = time.monotonic()
     input_state = dict(state)
     result = await _parse_pdf_node(state)
     _save_workflow_step(
@@ -386,6 +388,9 @@ async def _wrap_parse_pdf(state: SurveyState) -> dict:
         input_state=input_state,
         run_params={"node": "parse_pdf"}
     )
+    content = result.get("parsed_content", "")
+    chars = len(content) if isinstance(content, str) else 0
+    log_pipeline_step("01", 7, "parse_pdf", detail=f"{chars} chars", elapsed=time.monotonic() - t0)
     return result
 
 
@@ -423,6 +428,8 @@ async def _wrap_evidence_collection(state: SurveyState) -> dict:
 
 async def _wrap_evidence_dispatch(state: SurveyState) -> dict:
     """Wrapper for evidence_dispatch node with result saving."""
+    import time
+    t0 = time.monotonic()
     input_state = dict(state)
     result = await run_evidence_dispatch(state)
     _save_workflow_step(
@@ -430,11 +437,16 @@ async def _wrap_evidence_dispatch(state: SurveyState) -> dict:
         input_state=input_state,
         run_params={"node": "evidence_dispatch"}
     )
+    specs = result.get("dispatch_specs", {})
+    n_agents = len(specs)
+    log_pipeline_step("03", 7, "evidence_dispatch", detail=f"{n_agents} agents dispatched", elapsed=time.monotonic() - t0)
     return result
 
 
 async def _wrap_agent(agent_name: str, agent, state: SurveyState, step_prefix: str = "04") -> dict:
     """Wrapper for agent evaluation nodes with result saving."""
+    import time
+    t0 = time.monotonic()
     input_state = dict(state)
     result = await agent.process(state)
     _save_workflow_step(
@@ -442,6 +454,27 @@ async def _wrap_agent(agent_name: str, agent, state: SurveyState, step_prefix: s
         input_state=input_state,
         run_params={"node": agent_name, "agent_class": agent.__class__.__name__}
     )
+    elapsed = time.monotonic() - t0
+
+    if step_prefix == "04":
+        # Verifier / Expert / Reader: show sub-scores
+        sub_scores = result.get("agent_outputs", {}).get(agent_name, {}).get("sub_scores", {})
+        score_str = " ".join(
+            f"{k}={v.get('score', '?')}" for k, v in sub_scores.items()
+        ) if sub_scores else "no scores"
+        log_pipeline_step("04", 7, agent_name, detail=score_str, elapsed=elapsed)
+    elif step_prefix == "05":
+        # Corrector
+        corr_out = result.get("corrector_output", {})
+        n_corrected = len(corr_out.get("corrections", {}))
+        total_calls = corr_out.get("total_model_calls", 0)
+        failed = corr_out.get("failed_calls", 0)
+        log_pipeline_step("05", 7, "corrector", detail=f"{n_corrected} dims corrected, {total_calls} calls ({failed} failed)", elapsed=elapsed)
+    elif step_prefix == "07":
+        # Reporter
+        report_len = len(result.get("final_report_md", ""))
+        log_pipeline_step("07", 7, "reporter", detail=f"report {report_len} chars", elapsed=elapsed)
+
     return result
 
 
@@ -750,10 +783,15 @@ async def _run_aggregator(state: SurveyState) -> dict:
     """
     from src.graph.nodes.aggregator import aggregate_scores
 
+    import time
+    t0 = time.monotonic()
     aggregation_result = await aggregate_scores(state)
     _save_workflow_step(
         "06_aggregator", state, aggregation_result,
         input_state=dict(state),
         run_params={"node": "aggregator", "step": "06"}
     )
+    overall = aggregation_result.get("overall_score", 0.0)
+    grade = aggregation_result.get("grade", "?")
+    log_pipeline_step("06", 7, "aggregator", detail=f"overall={overall:.2f}/10 grade={grade}", elapsed=time.monotonic() - t0)
     return {"aggregation_result": aggregation_result}

@@ -34,7 +34,8 @@ evidence:
   trend_year_range: [2015, 2025]
 
   # S5 (Section-Cluster Alignment) related
-  clustering_algorithm: cocitation # cocitation, louvain, or spectral
+  clustering_algorithm: authority_center # cocitation, louvain, spectral, or authority_center
+  #TODO: split algorithm params to here
   clustering_seed: 42
 
   # C6 (Citation-Sentence Alignment) related

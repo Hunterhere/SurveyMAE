@@ -60,7 +60,7 @@ async def run_evaluation(
     run_dir = Path(output_dir) / "runs" / run_id
 
     # Initialize logging (creates run_dir/logs/run.log)
-    logger = setup_logging(run_dir=run_dir)
+    logger = setup_logging(run_dir=run_dir, pdf_path=pdf_path)
 
     logger.info("SurveyMAE 评测启动 | PDF: %s", pdf_path)
 

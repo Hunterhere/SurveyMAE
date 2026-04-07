@@ -179,6 +179,15 @@ class CitationGraphAnalyzer:
                 topk_papers=cfg.topk_papers,
                 seed=cfg.clustering_seed,
             )
+        elif clustering_alg == "authority_center":
+            cocitation = self._authority_center_clustering(
+                nodes=nodes,
+                out_adj=out_adj,
+                in_adj=in_adj,
+                pagerank=pagerank,
+                topk_clusters=cfg.topk_clusters,
+                topk_papers=cfg.topk_papers,
+            )
         else:
             # Default: cocitation clustering
             cocitation = self._cocitation_clustering(
@@ -834,6 +843,262 @@ class CitationGraphAnalyzer:
                 "n_clusters": len(clusters),
                 "clustering_method": "spectral",
                 "cluster_size_stats": cluster_stats,
+            },
+            "evidence": cluster_evidence,
+        }
+
+    def _elbow_center_count(
+        self,
+        degrees_desc: list[int],
+        k_min: int,
+        k_max: int,
+    ) -> int:
+        """Pick center count via elbow (max distance to first-last baseline).
+
+        Finds the index in the sorted-descending in-degree sequence where the
+        curve bends most sharply, using perpendicular distance from the line
+        connecting the first and last points.
+        """
+        if not degrees_desc:
+            return 0
+        m = min(len(degrees_desc), max(1, k_max))
+        if m <= 2:
+            return m
+
+        y = degrees_desc[:m]
+        x1, y1 = 0.0, float(y[0])
+        x2, y2 = float(m - 1), float(y[-1])
+        den = math.hypot(y2 - y1, x2 - x1)
+        if den == 0.0:
+            return min(m, max(1, k_min))
+
+        best_idx = 0
+        best_dist = -1.0
+        for i in range(1, m - 1):
+            xi = float(i)
+            yi = float(y[i])
+            dist = abs((y2 - y1) * xi - (x2 - x1) * yi + x2 * y1 - y2 * x1) / den
+            if dist > best_dist:
+                best_dist = dist
+                best_idx = i
+
+        k = best_idx + 1
+        return max(1, min(m, max(k_min, k)))
+
+    def _authority_center_clustering(
+        self,
+        *,
+        nodes: list[str],
+        out_adj: dict[str, set[str]],
+        in_adj: dict[str, set[str]],
+        pagerank: dict[str, float],
+        topk_clusters: int,
+        topk_papers: int,
+        min_in_degree: int = 5,
+        k_min: int = 3,
+        k_max: int = 18,
+        max_hops: int = 3,
+        pagerank_alpha: float = 0.80,
+    ) -> dict[str, Any]:
+        """Authority-center clustering on directed citation graph.
+
+        Selects high-in-degree papers as cluster centers via elbow detection,
+        then assigns other nodes by shortest-path distance on the reversed graph
+        (i.e. "node cites a path toward the center"), with a neighbor-vote
+        fallback for nodes unreachable within max_hops.
+
+        Args:
+            nodes: List of node IDs.
+            out_adj: Outgoing adjacency dict (citing -> cited).
+            in_adj: Incoming adjacency dict (cited -> citing).
+            pagerank: PageRank scores for candidate ranking and evidence.
+            topk_clusters: Maximum number of clusters to return in evidence.
+            topk_papers: Number of top papers per cluster in evidence.
+            min_in_degree: Minimum in-degree to be considered as a center candidate.
+            k_min: Minimum number of centers (clamp).
+            k_max: Maximum number of centers (clamp + elbow window).
+            max_hops: BFS cutoff on reversed graph for distance computation.
+            pagerank_alpha: Damping factor used for PageRank (stored in meta only).
+
+        Returns:
+            Dict with summary and evidence keys, same schema as other clustering methods.
+
+        TODO(authority-center-v2): Replace pure in-degree prefilter with hybrid
+        candidate construction: candidate = (in-degree >= P95 percentile) OR
+        (PageRank >= P90 percentile). Keep elbow for adaptive center count, then
+        compare cluster purity/conductance, center stability across reruns, and
+        interpretability. See scripts/render_citation_graph_pyvis.py for details.
+        """
+        try:
+            import networkx as nx
+        except ImportError:
+            logger.warning("networkx not available, falling back to cocitation for authority_center")
+            return self._cocitation_clustering(
+                nodes=nodes,
+                out_adj=out_adj,
+                pagerank=pagerank,
+                threshold=2,
+                topk_clusters=topk_clusters,
+                topk_papers=topk_papers,
+            )
+
+        in_degree = {node: len(in_adj[node]) for node in nodes}
+        out_degree_map = {node: len(out_adj[node]) for node in nodes}
+        non_isolates = [
+            node for node in nodes if in_degree[node] > 0 or out_degree_map[node] > 0
+        ]
+        non_isolates_set = set(non_isolates)
+
+        if not non_isolates:
+            return {
+                "summary": {
+                    "n_clusters": 0,
+                    "clustering_method": "authority_center",
+                    "cluster_size_stats": {"max": 0, "p90": 0, "p50": 0, "min": 0},
+                    "center_count": 0,
+                    "center_selection": "elbow",
+                    "k_min": k_min,
+                    "k_max": k_max,
+                    "min_in_degree": min_in_degree,
+                    "max_hops": max_hops,
+                    "pagerank_alpha": pagerank_alpha,
+                },
+                "evidence": [],
+            }
+
+        # Build networkx DiGraph for BFS on reversed graph.
+        g = nx.DiGraph()
+        g.add_nodes_from(nodes)
+        for src, targets in out_adj.items():
+            for dst in targets:
+                g.add_edge(src, dst)
+
+        # Step 1: candidate selection — high in-degree nodes, ranked by (in_degree, pagerank).
+        candidates = [n for n in non_isolates if in_degree[n] >= min_in_degree]
+        if not candidates:
+            candidates = list(non_isolates)
+        candidates.sort(key=lambda n: (in_degree[n], pagerank.get(n, 0.0)), reverse=True)
+
+        # Step 2: elbow to determine center count k.
+        candidate_degrees = [in_degree[n] for n in candidates]
+        center_count = self._elbow_center_count(candidate_degrees, k_min=k_min, k_max=k_max)
+        centers = candidates[: max(1, center_count)]
+        center_rank = {center: idx for idx, center in enumerate(centers)}
+
+        # Step 3: BFS on reversed graph — node -> ... -> center in original direction.
+        reverse_g = g.reverse(copy=False)
+        dist_to_center: dict[str, dict[str, int]] = {}
+        for center in centers:
+            lengths = nx.single_source_shortest_path_length(
+                reverse_g, center, cutoff=max_hops
+            )
+            for node, dist in lengths.items():
+                if node not in non_isolates_set:
+                    continue
+                prev = dist_to_center.setdefault(node, {})
+                prev[center] = min(prev.get(center, dist), dist)
+
+        # Step 4: assign each node to nearest center (ties broken by center rank).
+        cluster_map: dict[str, int] = {}
+        for center, cid in center_rank.items():
+            cluster_map[center] = cid
+
+        for node in non_isolates:
+            if node in cluster_map:
+                continue
+            options = dist_to_center.get(node, {})
+            if not options:
+                continue
+            best_center = min(
+                options.items(),
+                key=lambda item: (item[1], center_rank[item[0]]),
+            )[0]
+            cluster_map[node] = center_rank[best_center]
+
+        # Step 5: neighbor-vote expansion (3 rounds) for unreachable nodes.
+        for _ in range(3):
+            changed = False
+            for node in non_isolates:
+                if node in cluster_map:
+                    continue
+                votes: dict[int, int] = {}
+                for neigh in g.predecessors(node):
+                    cid = cluster_map.get(neigh)
+                    if cid is not None:
+                        votes[cid] = votes.get(cid, 0) + 1
+                for neigh in g.successors(node):
+                    cid = cluster_map.get(neigh)
+                    if cid is not None:
+                        votes[cid] = votes.get(cid, 0) + 1
+                if not votes:
+                    continue
+                best_cid = max(votes.items(), key=lambda item: (item[1], -item[0]))[0]
+                cluster_map[node] = best_cid
+                changed = True
+            if not changed:
+                break
+
+        # Group nodes by cluster id.
+        communities: dict[int, list[str]] = {}
+        for node, cid in cluster_map.items():
+            communities.setdefault(cid, []).append(node)
+        clusters = list(communities.values())
+
+        cluster_sizes = sorted((len(c) for c in clusters), reverse=True)
+        cluster_stats = {
+            "max": cluster_sizes[0] if cluster_sizes else 0,
+            "p90": self._percentile(cluster_sizes, 90) if cluster_sizes else 0,
+            "p50": self._percentile(cluster_sizes, 50) if cluster_sizes else 0,
+            "min": cluster_sizes[-1] if cluster_sizes else 0,
+        }
+
+        # Build evidence: top-k clusters by size, top-k papers by pagerank.
+        cluster_evidence = []
+        for cluster_id, cluster_nodes in enumerate(
+            sorted(clusters, key=len, reverse=True)
+        ):
+            if cluster_id >= topk_clusters:
+                break
+            top_nodes = sorted(
+                [(node, pagerank.get(node, 0.0)) for node in cluster_nodes],
+                key=lambda item: (-item[1], item[0]),
+            )[:topk_papers]
+            cluster_evidence.append(
+                {
+                    "cluster_id": cluster_id,
+                    "size": len(cluster_nodes),
+                    "top_papers": [
+                        {"paper_id": node, "score": float(score)}
+                        for node, score in top_nodes
+                    ],
+                }
+            )
+
+        # Center stats for transparency.
+        center_stats = [
+            {
+                "node": center,
+                "cluster_id": center_rank[center],
+                "in_degree": in_degree.get(center, 0),
+                "out_degree": out_degree_map.get(center, 0),
+                "pagerank": round(float(pagerank.get(center, 0.0)), 6),
+            }
+            for center in centers
+        ]
+
+        return {
+            "summary": {
+                "n_clusters": len(clusters),
+                "clustering_method": "authority_center",
+                "cluster_size_stats": cluster_stats,
+                "center_count": len(centers),
+                "center_selection": "elbow",
+                "k_min": k_min,
+                "k_max": k_max,
+                "min_in_degree": min_in_degree,
+                "max_hops": max_hops,
+                "pagerank_alpha": pagerank_alpha,
+                "centers": center_stats,
             },
             "evidence": cluster_evidence,
         }
