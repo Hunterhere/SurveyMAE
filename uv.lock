@@ -2142,7 +2142,6 @@ dependencies = [
     { name = "pyvis" },
     { name = "pyyaml" },
     { name = "requests" },
-    { name = "rich" },
     { name = "scikit-learn" },
     { name = "scipy" },
 ]
@@ -2184,7 +2183,6 @@ requires-dist = [
     { name = "pyvis", specifier = ">=0.3.2" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "requests", specifier = ">=2.28.0" },
-    { name = "rich", specifier = ">=14.3.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "scipy", specifier = ">=1.17.1" },
