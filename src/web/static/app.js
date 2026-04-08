@@ -112,12 +112,12 @@ const fmt1 = v => v == null ? 'N/A' : v.toFixed(1);
 const fmt3 = v => v == null ? 'N/A' : v.toFixed(3);
 
 function gradeColor(g) {
-  return { A:'#16a34a', B:'#2563eb', C:'#ca8a04', D:'#ea580c', F:'#dc2626' }[g] || '#6b7280';
+  return { A:'#1aae39', B:'#0075de', C:'#ca8a04', D:'#dd5b00', F:'#dc2626' }[g] || '#a39e98';
 }
 
 function scoreColor(s) {
-  if (s >= 4.5) return '#16a34a';
-  if (s >= 3.5) return '#2563eb';
+  if (s >= 4.5) return '#1aae39';
+  if (s >= 3.5) return '#0075de';
   if (s >= 2.5) return '#ca8a04';
   return '#dc2626';
 }
@@ -178,7 +178,12 @@ function initUpload() {
     btn.disabled = false;
   }
 
-  zone.addEventListener('click', () => input.click());
+  // Don't trigger file input if clicking on the button itself
+  zone.addEventListener('click', (e) => {
+    if (e.target !== input && !e.target.closest('label')) {
+      input.click();
+    }
+  });
   input.addEventListener('change', () => selectFile(input.files[0]));
   zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
@@ -219,11 +224,12 @@ async function loadHistory() {
     runs.slice(0, 10).forEach(run => {
       const item = el('div', 'history-item');
       const grade = run.grade || '?';
+      const gradeClass = grade === 'A' ? 'pill-green' : grade === 'B' ? 'pill-blue' : grade === 'C' ? 'pill-orange' : 'pill-red';
       item.innerHTML = `
-        <div class="history-grade" style="color:${gradeColor(grade)}">${grade}</div>
+        <div class="history-grade" style="color:${gradeColor(grade)};background:${gradeColor(grade)}1a">${grade}</div>
         <div class="history-info">
           <div class="history-source">${run.source || run.eval_id}</div>
-          <div class="history-meta">${run.timestamp ? run.timestamp.slice(0,16).replace('T',' ') : ''}</div>
+          <div class="history-meta">${formatDate(run.timestamp)}</div>
         </div>
         <div class="history-score">${run.overall_score != null ? run.overall_score.toFixed(1) : '—'}</div>
       `;
@@ -450,7 +456,7 @@ function renderRadar(sum) {
   const values = DIM_ORDER.map(d => dims[d]?.final_score ?? 0);
   const riskColors = DIM_ORDER.map(d => {
     const risk = dims[d]?.hallucination_risk;
-    return risk === 'high' ? '#ef4444' : risk === 'medium' ? '#f59e0b' : '#22c55e';
+    return risk === 'high' ? '#dc2626' : risk === 'medium' ? '#dd5b00' : '#1aae39';
   });
 
   const container = $('radar-chart');
@@ -470,8 +476,8 @@ function renderRadar(sum) {
         name: '评分',
         symbol: 'circle',
         symbolSize: 6,
-        lineStyle: { color: '#4f46e5', width: 2 },
-        areaStyle: { color: 'rgba(79,70,229,.12)' },
+        lineStyle: { color: '#0075de', width: 2 },
+        areaStyle: { color: 'rgba(0,117,222,.12)' },
         itemStyle: { color: (p) => riskColors[p.dataIndex] },
       }],
     }],
@@ -816,11 +822,11 @@ function renderTemporalChart(temporal, trendBaseline) {
     ],
     series: [
       { name: '综述引用分布', type: 'bar', data: surveyYears.map((y, i) => [y, surveyCounts[i]]),
-        itemStyle: { color: '#4f46e5' } },
+        itemStyle: { color: '#0075de' } },
       { name: '领域发表趋势', type: 'line', yAxisIndex: 1,
         data: trendYears.map(y => [y, (trendData[y]||0) * scale]),
-        lineStyle: { color: '#f59e0b', width: 2 }, symbol: 'circle', symbolSize: 5,
-        itemStyle: { color: '#f59e0b' } },
+        lineStyle: { color: '#dd5b00', width: 2 }, symbol: 'circle', symbolSize: 5,
+        itemStyle: { color: '#dd5b00' } },},{
     ],
   };
   S.temporalChart.setOption(option);
@@ -891,7 +897,7 @@ function renderCitationGraph() {
   const nodes = vr.map((r, i) => {
     const cid = clusterMap[r.key];
     const isolated = !(inDeg[r.key] || outDeg[r.key]);
-    const color = isolated ? '#a5b4fc' : cid != null ? CLUSTER_PALETTE[cid % 10] : '#60a5fa';
+    const color = isolated ? '#a39e98' : cid != null ? CLUSTER_PALETTE[cid % 10] : '#0075de';
     const meta = r.comparison || r.metadata || {};
     const title = `<b>${escHtml(meta.bib_title || r.key)}</b><br>` +
       `年份：${meta.bib_year||'?'}　验证：${r.is_valid?'✓':'✗'}`;
@@ -1020,6 +1026,19 @@ function openPanel(panelId) {
   if (panel) { panel.open = true; panel.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 }
 
+// ── UI Helpers ───────────────────────────────────────────────────────────────
+
+function formatDate(isoString) {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  return d.toLocaleString('zh-CN', { 
+    month: 'short', 
+    day: 'numeric', 
+    hour: '2-digit', 
+    minute: '2-digit' 
+  });
+}
+
 function renderPdfViewer() {
   const container = $('pdf-container');
   const filename = $('pdf-filename');
@@ -1049,7 +1068,7 @@ function renderPdfViewer() {
       <embed src="${pdfUrl}" type="application/pdf" width="100%" height="100%">
         <div class="pdf-placeholder">
           <p>无法直接显示 PDF</p>
-          <p class="pdf-hint">浏览器不支持 PDF 预览，请<a href="${pdfUrl}" target="_blank" style="color:#4f46e5">点击下载</a></p>
+          <p class="pdf-hint">浏览器不支持 PDF 预览，请<a href="${pdfUrl}" target="_blank">点击下载</a></p>
         </div>
       </embed>
     </object>`;

@@ -13,7 +13,9 @@
 </head>
 <body>
 
-<!-- ═══════════════════════════════ UPLOAD PHASE ═══════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     UPLOAD PHASE
+     ═══════════════════════════════════════════════════════════════════════════ -->
 <section id="phase-upload" class="phase active">
   <div class="upload-layout">
     <!-- Left: History sidebar -->
@@ -33,9 +35,9 @@
       <div class="upload-card">
         <h2 class="upload-title">上传文献</h2>
         <div class="upload-zone" id="upload-zone">
-          <div class="upload-icon">📄</div>
+          <div class="upload-zone-icon">📄</div>
           <p class="upload-hint">拖放 PDF 文件到此处</p>
-          <p class="upload-sub">或</p>
+          <p class="upload-sub">或者选择本地文件</p>
           <label class="btn-outline" for="pdf-input">选择文件</label>
           <input type="file" id="pdf-input" accept=".pdf" hidden>
           <p class="upload-filename" id="upload-filename"></p>
@@ -46,10 +48,12 @@
   </div>
 </section>
 
-<!-- ═══════════════════════════ PROCESSING PHASE ══════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     PROCESSING PHASE
+     ═══════════════════════════════════════════════════════════════════════════ -->
 <section id="phase-processing" class="phase">
   <div class="processing-layout">
-    <!-- Left: pipeline progress -->
+    <!-- Left: Pipeline progress -->
     <aside class="progress-panel">
       <div class="progress-header">
         <h2>评测进行中</h2>
@@ -58,20 +62,27 @@
       <ol class="steps-list" id="steps-list"></ol>
     </aside>
 
-    <!-- Right: partial results appear as steps complete -->
+    <!-- Right: Partial results -->
     <main class="partial-results" id="partial-results">
-      <p class="waiting-hint" id="waiting-hint">等待 PDF 解析完成…</p>
+      <div class="waiting-hint" id="waiting-hint">
+        <span style="display:inline-flex;align-items:center;gap:8px">
+          <span class="spinner" style="color:var(--notion-blue)"></span>
+          等待 PDF 解析完成…
+        </span>
+      </div>
     </main>
   </div>
 </section>
 
-<!-- ═══════════════════════════ RESULTS PHASE ════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     RESULTS PHASE
+     ═══════════════════════════════════════════════════════════════════════════ -->
 <section id="phase-results" class="phase">
   <div class="results-layout">
     <!-- Left: PDF viewer -->
     <aside class="pdf-sidebar">
       <div class="pdf-header">
-        <button class="nav-btn" onclick="newEval()">← 返回</button>
+        <button class="btn-ghost" onclick="newEval()">← 返回</button>
         <span class="pdf-filename" id="pdf-filename"></span>
       </div>
       <div class="pdf-container" id="pdf-container">
@@ -92,8 +103,9 @@
       </div>
 
       <div class="results-content">
-        <!-- ── Area A: Overview ──────────────────────────────────────────────── -->
+        <!-- ── Area A: Overview ─────────────────────────────────────────────── -->
         <section class="result-section" id="area-a">
+          <h2 class="section-title">诊断概览</h2>
           <div class="overview-grid">
             <div class="score-card">
               <div class="score-big" id="score-big">—</div>
@@ -112,7 +124,7 @@
           </div>
         </section>
 
-        <!-- ── Area B: Dimension cards ────────────────────────────────────────── -->
+        <!-- ── Area B: Dimension cards ──────────────────────────────────────── -->
         <section class="result-section" id="area-b">
           <h2 class="section-title">维度评分详情</h2>
 
@@ -141,7 +153,7 @@
           </div>
         </section>
 
-        <!-- ── Area C: Tool analysis panels ──────────────────────────────────── -->
+        <!-- ── Area C: Tool analysis panels ─────────────────────────────────── -->
         <section class="result-section" id="area-c">
           <h2 class="section-title">工具分析详情</h2>
 
@@ -177,7 +189,7 @@
                 <button class="graph-ctrl-btn" onclick="graphFit()" title="适应视图">适应</button>
                 <span id="graph-node-count" class="graph-info"></span>
               </div>
-              <div id="citation-graph" style="height:480px;border:1px solid var(--border);border-radius:6px;background:#f3f4f6"></div>
+              <div id="citation-graph" style="height:480px;border:1px solid var(--border);border-radius:6px;background:#f9fafb"></div>
               <div id="graph-metrics"></div>
             </div>
           </details>
@@ -188,7 +200,7 @@
           </details>
         </section>
 
-        <!-- ── Area D: System info ────────────────────────────────────────────── -->
+        <!-- ── Area D: System info ──────────────────────────────────────────── -->
         <section class="result-section" id="area-d">
           <details class="tool-panel">
             <summary>系统信息与原始数据</summary>
