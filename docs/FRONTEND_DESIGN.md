@@ -825,3 +825,227 @@ const options = {
 | G4 覆盖率 | `tools/key_papers.json` | `foundational_coverage_rate` 或类似字段名 |
 | 聚类完整映射 | `tools/graph_analysis.json` | `cocitation_clustering.clusters[].top_papers` 是否包含该 cluster 的**全部**论文，还是只有 top-N。如果不完整，是否有单独的 `node_to_cluster` 映射字段 |
 | 图分析指标 | `tools/graph_analysis.json` | G1-G6 各指标（graph_density, connected_component_count 等）在 JSON 中的确切路径 |
+
+---
+
+## 十二、实现记录（Phase 3 初版，2026-04-07）
+
+> 本章记录第一轮前端实现的完成情况，供代码审查和后续迭代使用。
+
+### 12.1 已确认的字段映射（实现阶段补充）
+
+实现阶段通过阅读实际 JSON 文件，解决了 §10.2 中列出的所有待确认字段：
+
+| 问题 | 实际结构 |
+|------|---------|
+| Agent `sub_scores` key 格式 | **缩写形式**（`V1`、`E1`、`R1` 等），非全称 |
+| Agent 输出路径 | `output.agent_outputs.{verifier\|expert\|reader}.sub_scores.{dim_id}.{score, llm_reasoning, tool_evidence, flagged_items, variance, hallucination_risk}` |
+| Corrector 校正路径 | `output.corrector_output.corrections.{dim_id}.{original_score, corrected_score, variance.{models_used, scores, median, std, high_disagreement}}` |
+| 时序数据 | `analysis.json` → `temporal.{T1_year_span, T2_foundational_retrieval_gap, T3_peak_year_ratio, T4_temporal_continuity, T5_trend_alignment, year_distribution}` |
+| 结构数据 | `analysis.json` → `structural.{S1_section_count, S2_citation_density, S3_citation_gini, S4_zero_citation_section_rate}` ；**无章节级分布数据**（S5 来自 graph_analysis） |
+| 趋势基线 | `trend_baseline.json` → `yearly_counts.{年份: 发表量}` |
+| 缺失核心论文 | `key_papers.json` → `missing_key_papers[].{title, year, citation_count, venue, doi, authors}`；覆盖率 → `coverage_rate` |
+| G1-G6 原始路径 | 深层嵌套：`citation_graph_analysis.summary.density_connectivity.{density_global→G1, n_weak_components→G2, lcc_frac→G3, n_isolates→G6}`；`cocitation_clustering.n_clusters→G5`；G4 来自 `key_papers.json` |
+| G1-G6 扁平化 | `run_summary.json` → `deterministic_metrics.{G1..G6, S5}` 已由 reporter 计算好，前端优先使用此处 |
+| 聚类映射完整性 | `top_papers` 包含该 cluster **全部**论文（本次测试数据 n_edges=0，每个 cluster size=1）；有边时需实际验证 |
+
+### 12.2 新增/修改的文件
+
+#### 后端修改
+
+| 文件 | 类型 | 变更说明 |
+|------|------|---------|
+| `src/agents/reporter.py` | 修改 | `process()` 中将 `run_summary.json` 改为保存至 `papers/{paper_id}/run_summary.json`；通过 `store._paper_cache` 获取 paper_id，失败时回退到 run 根目录 |
+| `pyproject.toml` | 修改 | 新增依赖：`fastapi[standard]>=0.111.0`（含 uvicorn、python-multipart） |
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/web/__init__.py` | 空文件，使 `src.web` 成为 Python 包 |
+| `src/web/app.py` | FastAPI 应用主体，见 §12.3 |
+| `src/web/static/index.html` | 单页面 HTML，三阶段结构（上传/处理/结果） |
+| `src/web/static/style.css` | 完整 CSS 样式，Design tokens + 各组件样式 |
+| `src/web/static/app.js` | 完整前端逻辑，见 §12.4 |
+
+### 12.3 `src/web/app.py` 函数说明
+
+```
+FastAPI 应用，提供薄层 API 服务。
+项目根路径自动探测：兼容主仓库（src/web/）和 git worktree（worktrees/frontend/src/web/）两种布局。
+```
+
+**路径常量：**
+
+- `_PROJECT_ROOT` — 自动探测的项目根目录（通过 `_detect_project_root()` 计算）
+- `_RUNS_DIR` = `_PROJECT_ROOT / "output" / "runs"`
+- `_UPLOADS_DIR` = `_PROJECT_ROOT / "uploads"`
+
+**步骤信号文件（`_STEP_FILES`）：**
+
+每个 `(step_number, relative_path)` 元组，`relative_path` 相对于 `paper_dir`。status 端点通过文件存在性推断当前步骤。
+
+**内部函数：**
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `_detect_project_root()` | `() → Path` | 探测项目根：若路径含 `worktrees`，截取其父路径；否则取 `_HERE.parent.parent` |
+| `_find_inner_run_dir(outer_dir)` | `(Path) → Optional[Path]` | 在 bundle 目录下找内层 run 目录（排除 `logs/`、`reports/`） |
+| `_get_paper_id(inner_dir)` | `(Path) → Optional[str]` | 读取 `index.json`，返回第一个 paper_id |
+| `_check_completed(paper_dir, inner_dir)` | `(Path, Optional[Path]) → list[str]` | 返回已存在的输出文件相对路径列表；`run_summary.json` 兼容 paper_dir 和 inner_dir（旧版） |
+| `_infer_step(completed)` | `(list[str]) → int` | 从已完成文件列表推断当前 pipeline 步骤号（1-7） |
+| `_run_eval(eval_id, pdf_path)` | `async (str, str) → None` | 后台任务：重置全局 `_result_store`，调用 `run_evaluation()`，更新 `_evals` 状态字典 |
+
+**API 端点：**
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/` | GET | 返回 `index.html` |
+| `/run/{eval_id:path}` | GET | 返回 `index.html`（SPA 历史 run 入口） |
+| `/api/upload` | POST | 接收 PDF，保存到 `uploads/`，计算 `eval_id`（同 `main.py` 的 `_generate_run_id` 公式），启动后台任务，返回 `{eval_id, filename}` |
+| `/api/run/{eval_id}/status` | GET | 返回 `{eval_id, inner_run_id, paper_id, completed_files, current_step, total_steps, finished, status, error, step_labels}` |
+| `/api/run/{eval_id}/files/{path:path}` | GET | 服务 `inner_run_dir/{path}` 的 JSON 文件；`run_summary.json` 兼容两个位置 |
+| `/api/runs` | GET | 列出所有历史 run，返回 `{runs: [{eval_id, inner_run_id, paper_id, overall_score, grade, timestamp, source, finished}]}` |
+
+### 12.4 `src/web/static/app.js` 函数说明
+
+单文件 vanilla JS，约 650 行，无构建步骤。
+
+**常量：**
+
+| 常量 | 说明 |
+|------|------|
+| `DIMENSIONS` | 11 个维度的元数据：`label`（中文名）、`group`（factual/depth/readability）、`agent`、`evidenceKey`（关键工具指标）、`special`（特殊渲染标记） |
+| `RUBRICS` | 各维度 1-5 分对应的 rubric 文本（从 `src/agents/output_schema.py` 翻译） |
+| `DIM_ORDER` | 维度排列顺序：`['V1','V2','V4','E1','E2','E3','E4','R1','R2','R3','R4']` |
+| `STEP_SIGNALS` | 步骤信号文件列表，与后端 `_STEP_FILES` 对应 |
+
+**状态对象 `S`：**
+
+单例全局状态，包含当前阶段、eval_id、paper_id、已加载数据（summary/verifier/expert/reader/corrector/analysis 等）、图表实例（radarChart/temporalChart/citationNetwork）。
+
+**API 函数：**
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `apiUpload(file)` | `(File) → Promise<{eval_id}>` | POST /api/upload |
+| `apiStatus(evalId)` | `(str) → Promise<StatusObj>` | GET /api/run/{id}/status |
+| `apiFile(evalId, paperId, path)` | `(str, str, str) → Promise<any>` | GET /api/run/{id}/files/papers/{pid}/{path} |
+| `apiRunJson(evalId)` | `(str) → Promise<any>` | GET /api/run/{id}/files/run.json |
+| `apiRuns()` | `() → Promise<{runs}>` | GET /api/runs |
+
+**阶段管理：**
+
+| 函数 | 说明 |
+|------|------|
+| `setPhase(phase)` | 切换 `phase-upload` / `phase-processing` / `phase-results` 的显示 |
+| `initUpload()` | 初始化上传区（拖拽、文件选择、按钮），调用 `loadHistory()` |
+| `loadHistory()` | 从 `/api/runs` 加载历史记录，渲染到上传页底部 |
+| `startEval(evalId, skipProcessing?)` | 开始跟踪一次评测：更新 URL、切换到处理阶段、启动轮询 |
+| `startPolling(evalId)` | 每 2 秒调用 `poll()`，直到 finished=true 或 error |
+| `poll(evalId)` | 调用 status API，更新步骤显示，触发渐进数据加载 |
+| `switchToResults()` | 并行加载所有 JSON 数据，切换到结果阶段并调用 `renderResults()` |
+| `newEval()` | 重置全局状态，返回上传页面 |
+
+**渲染函数：**
+
+| 函数 | 说明 |
+|------|------|
+| `renderSteps(currentStep, completed)` | 渲染进度步骤列表（done/active/pending 三态） |
+| `renderResults()` | 总入口：依次调用 A/B/C/D 四个区域的渲染函数 |
+| `renderOverview()` | 渲染区域 A：总分、等级（带颜色）、雷达图、摘要、关键警告 |
+| `renderRadar(sum)` | 使用 ECharts 渲染 11 维度雷达图；节点颜色按 `hallucination_risk` 着色 |
+| `renderDimensionCards()` | 渲染区域 B：按 group 将 11 个维度卡片填入三个分组容器 |
+| `buildDimCard(dimId, meta, dimScore, subScore, corrections)` | 构建单个维度卡片 DOM（三层：头部/推理/原始数据） |
+| `evidenceSummaryHtml(dimId, subScore, dimScore)` | 返回卡片头部的工具证据摘要 HTML（按维度特殊格式化） |
+| `toggleCard(dimId)` | 切换维度卡片第二层（推理详情）的展开/折叠 |
+| `toggleRaw(dimId)` | 切换维度卡片第三层（原始 JSON）的展开/折叠 |
+| `renderToolPanels()` | 渲染区域 C 所有工具面板（调用以下 6 个函数） |
+| `renderExtractionPanel()` | C1：章节列表、参考文献表（前 20 条） |
+| `renderValidationPanel()` | C2：验证汇总统计、引用验证表（前 30 条） |
+| `renderC6Panel()` | C3：C6 矛盾统计、矛盾案例列表 |
+| `renderTemporalPanel()` | C4：T/S 系列指标表 + 时序双线图 |
+| `renderTemporalChart(temporal, trendBaseline)` | ECharts 柱状图（综述引用）+ 折线图（领域趋势，归一化） |
+| `renderGraphPanel()` | C6：G 系列指标表，触发引用网络图渲染 |
+| `renderCitationGraph()` | vis.js 引用网络图：节点着色（按聚类/孤立/未知）、节点大小（log 度数） |
+| `renderKeyPapersPanel()` | C7：G4 覆盖率统计、缺失核心文献列表 |
+| `renderSysInfo()` | 区域 D：run 元信息、metrics_index 原始 JSON、run_summary 原始 JSON |
+
+**工具函数：**
+
+| 函数 | 说明 |
+|------|------|
+| `gradeColor(g)` | 等级 → 颜色（A绿/B蓝/C黄/D橙/F红） |
+| `scoreColor(s)` | 1-5 分值 → 颜色 |
+| `pct(v)` | 小数 → 百分比字符串 |
+| `escHtml(s)` | HTML 转义 |
+| `jumpTo(id)` | 平滑滚动到区域，更新导航栏激活状态 |
+| `openPanel(panelId)` | 打开指定工具面板并滚动到 |
+| `showPartialValidation()` / `showPartialTemporal()` | 处理阶段的渐进提示文本 |
+
+### 12.5 启动方式
+
+```bash
+# 安装依赖（如尚未执行）
+cd worktrees/frontend
+uv sync
+
+# 启动 Web 服务
+uv run uvicorn src.web.app:app --host 0.0.0.0 --port 8000
+
+# 访问页面
+# 上传新 PDF：http://localhost:8000/
+# 查看历史 run：http://localhost:8000/run/{eval_id}
+# 示例（已有测试数据）：http://localhost:8000/run/20260406T161703Z_53317b7e
+
+# 原 CLI 模式不受影响
+uv run python -m src.main path/to/survey.pdf
+```
+
+**注意：** 服务必须从 `worktrees/frontend/` 目录启动（`_detect_project_root()` 依赖路径中含 `worktrees` 来定位主项目根）。`output/` 目录不被 git 追踪，评测结果存放在主项目目录 `output/runs/` 下。
+
+### 12.6 已实现功能（P0）
+
+| 功能 | 状态 |
+|------|------|
+| PDF 上传 + 后台启动评测 | ✅ |
+| 2 秒轮询进度，步骤列表 done/active/pending 三态 | ✅ |
+| 渐进式中间结果提示（处理阶段） | ✅ 基础版（文字提示验证率/时序结果） |
+| 区域 A：总分 + 等级 + 雷达图（11 维度，hallucination_risk 着色） | ✅ |
+| 区域 A：关键警告（C6 auto_fail、C5 低、Corrector 大幅校正、high_disagreement） | ✅ |
+| 区域 B：11 个维度卡片（三层展开：头部/推理/原始） | ✅ |
+| 区域 B：卡片头部工具证据摘要 | ✅ |
+| 区域 B：Rubric 等级描述 | ✅ |
+| 区域 B：Corrector 校正信息展示 | ✅ |
+| 区域 B：V2 矛盾率 inline 预览 + 跳转链接 | ✅ |
+| 区域 B：E1 缺失论文 inline 预览 + 跳转链接 | ✅ |
+| 区域 C1：PDF 解析（章节列表、参考文献表） | ✅ |
+| 区域 C2：引用验证汇总 + 详情表 | ✅ |
+| 区域 C3：C6 矛盾分析 + 矛盾案例列表 | ✅ |
+| 区域 C4：时序分布双线图（ECharts）+ T/S 指标表 | ✅ |
+| 区域 C6：引用网络图（vis.js，聚类着色，度数缩放） | ✅ |
+| 区域 C7：核心文献覆盖，缺失论文列表 | ✅ |
+| 区域 D：run 元信息 + metrics_index + 原始 JSON | ✅ |
+| 历史 run 列表（上传页）+ URL 直达 `/run/{eval_id}` | ✅ |
+
+### 12.7 未实现功能（P1/P2）
+
+| 功能 | 优先级 | 说明 |
+|------|--------|------|
+| 章节引用密度条形图（区域 C5） | P1 | `analysis.json` 目前只有聚合 S1-S4，无章节级分布。需后端在 `CitationAnalyzer` 中输出 `section_citation_counts` 字段 |
+| 引用验证状态饼图（区域 C2） | P1 | 当前只有数字，ECharts 饼图未实现 |
+| 雷达图节点点击 → 跳转维度卡片 | P1 | ECharts radar 的 click 事件映射到维度卡片滚动，框架已预留但未接线 |
+| 引用网络图与维度卡片联动高亮（missing_key_papers） | P1 | vis.js 已渲染，但点击节点跳转验证详情的交互未实现 |
+| 处理阶段渐进式结果（已完成步骤可展开查看中间结果） | P1 | 当前只有文字提示，缺 inline 结果展示卡片 |
+| 数据流图（指标→Agent 映射可视化） | P2 | 区域 D 显示原始 JSON，可视化图未实现 |
+
+### 12.8 已知 Bug / 待修复问题
+
+| 问题 | 严重程度 | 说明 |
+|------|---------|------|
+| 全局 `_result_store` 并发冲突 | 中 | `src/graph/builder.py` 使用全局单例，并发上传两个 PDF 会冲突。当前设计为单用户 demo，暂不处理 |
+| `analysis.json` 无章节级数据，S4/S5 显示不完整 | 低 | S4（零引用章节率）有值但无法展示具体是哪些章节；S5 显示为 0（来自图分析） |
+| 时序图归一化：领域趋势基线全为 0 时曲线消失 | 低 | `trend_baseline.json` 在 API 调用失败时返回全 0，趋势线不渲染（但不崩溃） |
+| `cocitation_clustering.top_papers` 完整性 | 低 | 本次测试数据 n_edges=0，每 cluster size=1，`top_papers` 恰好完整。有实际引用边时需验证所有节点是否均被覆盖 |
+| vis.js CDN 依赖 | 低 | 离线环境无法渲染引用网络图，需改为本地资源 |
+| `eval_id` 预计算与实际 run_id 的时间戳偏差 | 低 | 上传端点计算 `eval_id` 后启动后台任务，`main.py` 内重新计算 run_id，若跨秒边界则目录名可能不一致（概率极低） |

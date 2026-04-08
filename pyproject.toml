@@ -34,7 +34,9 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "scipy>=1.17.1",
     "anthropic>=0.86.0",
-    "rich>=14.3.3",
+    # Web server
+    "fastapi[standard]>=0.111.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]

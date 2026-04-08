@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SurveyMAE — 学术综述质量评测</title>
+<link rel="stylesheet" href="/static/style.css">
+<!-- ECharts for radar / line / bar charts -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<!-- vis-network for citation graph -->
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/dist/vis-network.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/dist/dist/vis-network.min.css">
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     UPLOAD PHASE
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="phase-upload" class="phase active">
+  <div class="upload-layout">
+    <!-- Left: History sidebar -->
+    <aside class="history-sidebar" id="history-section">
+      <div class="history-header">
+        <h2 class="logo">SurveyMAE</h2>
+        <p class="tagline">多智能体学术综述质量评测系统</p>
+      </div>
+      <div class="history-content">
+        <h3 class="history-title">历史评测记录</h3>
+        <div id="history-list"></div>
+      </div>
+    </aside>
+
+    <!-- Center: Upload area -->
+    <main class="upload-main">
+      <div class="upload-card">
+        <h2 class="upload-title">上传文献</h2>
+        <div class="upload-zone" id="upload-zone">
+          <div class="upload-zone-icon">📄</div>
+          <p class="upload-hint">拖放 PDF 文件到此处</p>
+          <p class="upload-sub">或者选择本地文件</p>
+          <label class="btn-outline" for="pdf-input">选择文件</label>
+          <input type="file" id="pdf-input" accept=".pdf" hidden>
+          <p class="upload-filename" id="upload-filename"></p>
+        </div>
+        <button class="btn-primary" id="start-btn" disabled>开始评测</button>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     PROCESSING PHASE
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="phase-processing" class="phase">
+  <div class="processing-layout">
+    <!-- Left: Pipeline progress -->
+    <aside class="progress-panel">
+      <div class="progress-header">
+        <h2>评测进行中</h2>
+        <p class="progress-filename" id="progress-filename"></p>
+      </div>
+      <ol class="steps-list" id="steps-list"></ol>
+    </aside>
+
+    <!-- Right: Partial results -->
+    <main class="partial-results" id="partial-results">
+      <div class="waiting-hint" id="waiting-hint">
+        <span style="display:inline-flex;align-items:center;gap:8px">
+          <span class="spinner" style="color:var(--notion-blue)"></span>
+          等待 PDF 解析完成…
+        </span>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     RESULTS PHASE
+     ═══════════════════════════════════════════════════════════════════════════ -->
+<section id="phase-results" class="phase">
+  <div class="results-layout">
+    <!-- Left: PDF viewer -->
+    <aside class="pdf-sidebar">
+      <div class="pdf-header">
+        <button class="btn-ghost" onclick="newEval()">← 返回</button>
+        <span class="pdf-filename" id="pdf-filename"></span>
+      </div>
+      <div class="pdf-container" id="pdf-container">
+        <div class="pdf-placeholder">
+          <p>PDF 预览加载中…</p>
+          <p class="pdf-hint">如果无法显示，请检查文件路径</p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Right: Results content -->
+    <main class="results-main">
+      <div class="results-nav">
+        <button class="nav-btn active" onclick="jumpTo('area-a')">概览</button>
+        <button class="nav-btn" onclick="jumpTo('area-b')">维度评分</button>
+        <button class="nav-btn" onclick="jumpTo('area-c')">工具详情</button>
+        <button class="nav-btn" onclick="jumpTo('area-d')">系统信息</button>
+      </div>
+
+      <div class="results-content">
+        <!-- ── Area A: Overview ─────────────────────────────────────────────── -->
+        <section class="result-section" id="area-a">
+          <h2 class="section-title">诊断概览</h2>
+          <div class="overview-grid">
+            <div class="score-card">
+              <div class="score-big" id="score-big">—</div>
+              <div class="grade-badge" id="grade-badge">—</div>
+              <div class="score-sub">总分（满分10）</div>
+              <div id="warnings-box"></div>
+            </div>
+            <div class="radar-wrap">
+              <div id="radar-chart" style="height:320px"></div>
+            </div>
+            <div class="summary-card">
+              <h3>评测摘要</h3>
+              <div id="summary-text"></div>
+              <div id="key-alerts"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── Area B: Dimension cards ──────────────────────────────────────── -->
+        <section class="result-section" id="area-b">
+          <h2 class="section-title">维度评分详情</h2>
+
+          <div class="dim-group" id="group-factual">
+            <h3 class="group-title">
+              <span class="group-icon">🔍</span> 事实性验证
+              <span class="group-agent">VerifierAgent</span>
+            </h3>
+            <div class="dim-cards" id="cards-factual"></div>
+          </div>
+
+          <div class="dim-group" id="group-depth">
+            <h3 class="group-title">
+              <span class="group-icon">📚</span> 学术深度
+              <span class="group-agent">ExpertAgent</span>
+            </h3>
+            <div class="dim-cards" id="cards-depth"></div>
+          </div>
+
+          <div class="dim-group" id="group-readability">
+            <h3 class="group-title">
+              <span class="group-icon">📖</span> 可读性与信息量
+              <span class="group-agent">ReaderAgent</span>
+            </h3>
+            <div class="dim-cards" id="cards-readability"></div>
+          </div>
+        </section>
+
+        <!-- ── Area C: Tool analysis panels ─────────────────────────────────── -->
+        <section class="result-section" id="area-c">
+          <h2 class="section-title">工具分析详情</h2>
+
+          <details class="tool-panel" id="panel-extraction">
+            <summary>C1 · PDF 解析结果</summary>
+            <div class="panel-body" id="body-extraction"></div>
+          </details>
+
+          <details class="tool-panel" id="panel-validation">
+            <summary>C2 · 引用验证</summary>
+            <div class="panel-body" id="body-validation"></div>
+          </details>
+
+          <details class="tool-panel" id="panel-c6">
+            <summary>C3 · 引用-断言对齐（C6）</summary>
+            <div class="panel-body" id="body-c6"></div>
+          </details>
+
+          <details class="tool-panel" id="panel-temporal">
+            <summary>C4 · 时序分布分析</summary>
+            <div class="panel-body" id="body-temporal">
+              <div id="temporal-chart" style="height:280px"></div>
+              <div id="temporal-metrics"></div>
+            </div>
+          </details>
+
+          <details class="tool-panel" id="panel-graph">
+            <summary>C6 · 引用网络图</summary>
+            <div class="panel-body" id="body-graph">
+              <div class="graph-toolbar">
+                <button class="graph-ctrl-btn" onclick="graphZoom(1.3)" title="放大">放大</button>
+                <button class="graph-ctrl-btn" onclick="graphZoom(0.77)" title="缩小">缩小</button>
+                <button class="graph-ctrl-btn" onclick="graphFit()" title="适应视图">适应</button>
+                <span id="graph-node-count" class="graph-info"></span>
+              </div>
+              <div id="citation-graph" style="height:480px;border:1px solid var(--border);border-radius:6px;background:#f9fafb"></div>
+              <div id="graph-metrics"></div>
+            </div>
+          </details>
+
+          <details class="tool-panel" id="panel-keypapers">
+            <summary>C7 · 核心文献覆盖（G4）</summary>
+            <div class="panel-body" id="body-keypapers"></div>
+          </details>
+        </section>
+
+        <!-- ── Area D: System info ──────────────────────────────────────────── -->
+        <section class="result-section" id="area-d">
+          <details class="tool-panel">
+            <summary>系统信息与原始数据</summary>
+            <div class="panel-body" id="body-sysinfo"></div>
+          </details>
+        </section>
+      </div>
+    </main>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -86,12 +86,21 @@ class ReportAgent(BaseAgent):
         # Step 3: Generate run_summary.json (v3)
         run_summary = self._generate_run_summary(state, aggregation_result)
 
-        # Save run_summary.json to run directory (not papers/)
+        # Save run_summary.json to papers/{paper_id}/ (primary) or run_dir (fallback)
         try:
+            from pathlib import Path as _Path
             store = _get_result_store(state.get("source_pdf_path", ""))
-            # Save to run directory (output/runs/{run_id}/run_summary.json)
-            store._write_json(store.run_dir / "run_summary.json", run_summary)
-            logger.info("Saved run_summary.json to run directory")
+            source_pdf = state.get("source_pdf_path", "")
+            paper_id = None
+            if source_pdf:
+                resolved = str(_Path(source_pdf).resolve())
+                paper_id = store._paper_cache.get(resolved)
+            if paper_id:
+                store._write_json(store.papers_dir / paper_id / "run_summary.json", run_summary)
+                logger.info("Saved run_summary.json to papers/%s/", paper_id)
+            else:
+                store._write_json(store.run_dir / "run_summary.json", run_summary)
+                logger.info("Saved run_summary.json to run directory (paper_id unknown)")
         except Exception as e:
             logger.warning(f"Failed to save run_summary.json: {e}")
 
