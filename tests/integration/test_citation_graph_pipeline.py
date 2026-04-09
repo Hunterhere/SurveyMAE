@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.core.config import SurveyMAEConfig
+from src.core.config import SurveyMAEConfig, load_config
 from src.tools.citation_analysis import CitationAnalyzer
 from src.tools.citation_checker import CitationChecker
 from src.tools.citation_graph_analysis import CitationGraphAnalyzer
@@ -13,7 +13,8 @@ from src.tools.result_store import ResultStore
 
 
 def _build_config(backend: str, grobid_url: str) -> SurveyMAEConfig:
-    cfg = SurveyMAEConfig()
+    # Keep test config aligned with required fields in config/main.yaml.
+    cfg = load_config()
     cfg.citation.backend = backend
     cfg.citation.grobid_url = grobid_url
     cfg.citation.grobid_timeout_s = int(os.getenv("GROBID_TIMEOUT_S", "30"))
@@ -451,7 +452,11 @@ async def test_citation_graph_full_pipeline_with_test_paper(tmp_path: Path):
         or edges == []
     )
 
-    validation_files = list((run_dir / "papers").glob("*/validation.json"))
+    # v3 schema persists tool artifacts under papers/<paper_id>/tools/
+    validation_files = list((run_dir / "papers").glob("*/tools/validation.json"))
+    if not validation_files:
+        # Backward compatibility for legacy layout
+        validation_files = list((run_dir / "papers").glob("*/validation.json"))
     assert validation_files, "Expected validation.json persisted in ResultStore"
     validation_payload = json.loads(validation_files[0].read_text(encoding="utf-8"))
     assert "reference_validations" in validation_payload

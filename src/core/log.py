@@ -252,7 +252,7 @@ def log_run_summary(stats: RunStats, total_elapsed: float) -> None:
         f"总耗时 {total_elapsed:.1f}s │ "
         f"LLM 调用 {stats.llm_calls} 次 │ "
         f"API 调用 {stats.api_calls} 次"
-    )
+    ) #TODO: llm_calls and api_calls count not accuracy
 
     if _file_logger:
         _file_logger.info(

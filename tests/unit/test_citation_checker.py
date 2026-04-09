@@ -180,3 +180,34 @@ Brown, T. et al. (2020). Language Models are Few-Shot Learners.
         assert ("ref_a", "ref_c") in edges
         assert payload["stats"]["n_edges"] == 2
         assert payload["stats"]["resolved_target_candidates"] == 2
+
+    def test_maybe_upgrade_fallback_references_prefers_pymupdf_when_better(self, checker, monkeypatch):
+        """When fallback parse yields too few refs, use forced PyMuPDF result if richer."""
+        poor = [
+            ReferenceEntry(key="ref_1", title="A"),
+            ReferenceEntry(key="ref_2", title="B"),
+        ]
+        better = [
+            ReferenceEntry(key="ref_1", title="A"),
+            ReferenceEntry(key="ref_2", title="B"),
+            ReferenceEntry(key="ref_3", title="C"),
+        ]
+
+        monkeypatch.setattr(checker, "_extract_references_via_pymupdf", lambda _pdf: better)
+
+        refs, backend = checker._maybe_upgrade_fallback_references("dummy.pdf", poor)
+        assert backend == "mupdf_repaired"
+        assert len(refs) == 3
+
+    def test_maybe_upgrade_fallback_references_keeps_existing_when_already_enough(self, checker, monkeypatch):
+        """Do not re-run expensive fallback once enough references were extracted."""
+        good = [ReferenceEntry(key=f"ref_{i}", title=f"T{i}") for i in range(1, 7)]
+
+        def _should_not_run(_pdf: str):
+            raise AssertionError("_extract_references_via_pymupdf should not be called")
+
+        monkeypatch.setattr(checker, "_extract_references_via_pymupdf", _should_not_run)
+
+        refs, backend = checker._maybe_upgrade_fallback_references("dummy.pdf", good)
+        assert backend == "mupdf"
+        assert len(refs) == 6

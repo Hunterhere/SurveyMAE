@@ -146,6 +146,55 @@ class GrobidReferenceExtractor:
         tei = self._process_fulltext(pdf_path)
         return self._parse_references(tei)
 
+    def extract_header_metadata(self, pdf_path: str) -> dict[str, Any]:
+        """Extract title, abstract, and keywords from PDF via GROBID header endpoint.
+
+        Uses the lighter /api/processHeaderDocument endpoint (faster than fulltext).
+
+        Args:
+            pdf_path: Path to the PDF file.
+
+        Returns:
+            Dict with keys 'title' (str), 'abstract' (str), 'keywords' (list[str]).
+            Returns {'title': '', 'abstract': '', 'keywords': []} on failure.
+        """
+        pdf_file = Path(pdf_path)
+        if not pdf_file.exists():
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+        with pdf_file.open("rb") as handle:
+            files = {"input": (pdf_file.name, handle, "application/pdf")}
+            response = httpx.post(
+                f"{self.url}/api/processHeaderDocument",
+                files=files,
+                timeout=self.timeout_s,
+            )
+            response.raise_for_status()
+
+        return self._parse_header(response.text)
+
+    def _parse_header(self, tei_xml: str) -> dict[str, Any]:
+        """Parse GROBID TEI header XML into structured metadata dict."""
+        root = ET.fromstring(tei_xml)
+
+        title = (
+            self._get_text(
+                root.find(".//tei:titleStmt/tei:title[@type='main']", self.TEI_NS)
+            )
+            or self._get_text(
+                root.find(".//tei:titleStmt/tei:title", self.TEI_NS)
+            )
+        )
+
+        abstract = self._get_text(
+            root.find(".//tei:profileDesc/tei:abstract", self.TEI_NS)
+        )
+
+        keyword_elems = root.findall(".//tei:keywords/tei:term", self.TEI_NS)
+        keywords = [self._get_text(k) for k in keyword_elems if self._get_text(k)]
+
+        return {"title": title, "abstract": abstract, "keywords": keywords}
+
     def _process_fulltext(self, pdf_path: str) -> str:
         pdf_file = Path(pdf_path)
         if not pdf_file.exists():
@@ -459,14 +508,18 @@ class CitationChecker:
     def parse_pdf(self, pdf_path: str) -> str:
         """Parse a PDF file into text suitable for citation extraction.
 
+        Uses create_pdf_parser() factory to select MarkerApiParser or PDFParser
+        based on DATALAB_API_KEY availability and config. Passes self.config so
+        the parser uses the same cache_dir as the rest of the pipeline.
+
         Args:
             pdf_path: Path to the PDF file.
 
         Returns:
             Extracted PDF content as a string.
         """
-        parser = PDFParser()
-        return parser.parse_cached(pdf_path)
+        from src.tools.pdf_parser import create_pdf_parser
+        return create_pdf_parser(self.config).parse_cached(pdf_path)
 
     def extract_citations_from_pdf(self, pdf_path: str) -> List[str]:
         """Extract citation markers from a PDF file.
@@ -587,11 +640,60 @@ class CitationChecker:
                     return refs, "grobid", errors
             except Exception as exc:
                 msg = f"grobid_failed: {exc}"
-                logger.warning(msg)
                 errors.append(msg)
+                logger.warning(
+                    "[DEGRADED] GROBID call failed: %s. "
+                    "Falling back to regex reference parsing. "
+                    "[Impact] Reference metadata (title/author/year) accuracy will be lower, "
+                    "C5 and citation graph quality affected. "
+                    "[Fix] Start GROBID: docker run --rm -d -p 8070:8070 grobid/grobid:0.8.2",
+                    exc,
+                )
 
         fallback_refs = self.extract_references_from_pdf(pdf_path)
-        return self._reference_entries_from_dicts(fallback_refs, source="mupdf"), "mupdf", errors
+        fallback_entries = self._reference_entries_from_dicts(fallback_refs, source="mupdf")
+        fallback_entries, fallback_backend = self._maybe_upgrade_fallback_references(
+            pdf_path,
+            fallback_entries,
+        )
+        return fallback_entries, fallback_backend, errors
+
+    def _maybe_upgrade_fallback_references(
+        self,
+        pdf_path: str,
+        fallback_entries: list[ReferenceEntry],
+    ) -> tuple[list[ReferenceEntry], str]:
+        """Improve regex fallback recall by trying a forced PyMuPDF text pass.
+
+        When Marker-derived text quality is low, regex reference parsing may only
+        recover a few entries. In that case, retry extraction from a guaranteed
+        PyMuPDF text parse and keep whichever side yields more references.
+        """
+        if len(fallback_entries) >= 5:
+            return fallback_entries, "mupdf"
+
+        alt_entries = self._extract_references_via_pymupdf(pdf_path)
+        if len(alt_entries) > len(fallback_entries):
+            logger.warning(
+                "[DEGRADED] Reference fallback upgraded via forced PyMuPDF parse: %d -> %d entries",
+                len(fallback_entries),
+                len(alt_entries),
+            )
+            return alt_entries, "mupdf_repaired"
+
+        return fallback_entries, "mupdf"
+
+    def _extract_references_via_pymupdf(self, pdf_path: str) -> list[ReferenceEntry]:
+        """Extract references by forcing the PyMuPDF4LLM parser backend."""
+        try:
+            from src.tools.pdf_parser import PDFParser
+
+            content = PDFParser().parse_cached(pdf_path)
+            refs = self.extract_references_from_text(content)
+            return self._reference_entries_from_dicts(refs, source="mupdf")
+        except Exception as exc:
+            logger.warning("Forced PyMuPDF fallback for references failed: %s", exc)
+            return []
 
     def _grobid_is_available(self, url: str) -> bool:
         try:
@@ -866,7 +968,7 @@ class CitationChecker:
             pairs_with_abstract[i:i + batch_size]
             for i in range(0, len(pairs_with_abstract), batch_size)
         ]
-
+        #TODO: add more log info to track the batch process
         logger.info(f"Processing {len(batches)} batches with max concurrency {max_concurrency}")
 
         async def process_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1401,8 +1503,8 @@ Output:"""
     def _extract_markdown_headings(self, pdf_path: str) -> set[str]:
         """Extract heading candidates from markdown output (when available)."""
         try:
-            parser = PDFParser()
-            content = parser.parse_cached(pdf_path)
+            from src.tools.pdf_parser import create_pdf_parser
+            content = create_pdf_parser(self.config).parse_cached(pdf_path)
         except Exception:
             return set()
 

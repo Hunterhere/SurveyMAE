@@ -63,11 +63,10 @@ class TestWorkflowBuilder:
         assert result["parsed_content"] == ""
 
     @pytest.mark.asyncio
-    @patch("pymupdf4llm.to_markdown")
-    async def test_parse_pdf_node_success(self, mock_to_markdown):
-        """Test successful PDF parsing."""
-        mock_to_markdown.return_value = "# Parsed PDF Content"
-
+    async def test_parse_pdf_node_success(self):
+        """Test successful PDF parsing with PDFParser."""
+        from src.tools.pdf_parser import PDFParser
+        
         state = SurveyState(
             source_pdf_path="test_paper.pdf",
             parsed_content="",
@@ -80,13 +79,21 @@ class TestWorkflowBuilder:
             metadata={},
         )
 
-        # Create a mock Path.exists
+        # Create a real PDFParser instance with mocked method
+        parser = PDFParser()
+        
+        # Mock Path.exists and _get_pdf_parser to return real PDFParser instance
         with patch("pathlib.Path.exists", return_value=True):
-            result = await _parse_pdf_node(state)
+            with patch("src.graph.builder._get_pdf_parser", return_value=parser):
+                with patch.object(parser, "parse_with_structure", return_value=(
+                    "# Parsed PDF Content",
+                    {"headings": ["Introduction", "Methods", "Results"], "parser": "PDFParser", "use_layout": True}
+                )) as mock_parse:
+                    result = await _parse_pdf_node(state)
 
         assert result["parsed_content"] == "# Parsed PDF Content"
         assert result["metadata"]["parsed"] == "true"
-        assert result["metadata"]["parser"] == "PDFParser"
+        assert result["section_headings"] == ["Introduction", "Methods", "Results"]
 
 
 class TestWorkflowEdges:

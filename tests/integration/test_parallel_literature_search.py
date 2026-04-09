@@ -320,7 +320,11 @@ async def test_full_pdf_pipeline(tmp_path: Path):
     assert (run_dir / "run.json").exists()
     assert (run_dir / "index.json").exists()
 
-    validation_files = list((run_dir / "papers").glob("*/validation.json"))
+    # v3 schema persists tool artifacts under papers/<paper_id>/tools/
+    validation_files = list((run_dir / "papers").glob("*/tools/validation.json"))
+    if not validation_files:
+        # Backward compatibility for legacy layout
+        validation_files = list((run_dir / "papers").glob("*/validation.json"))
     assert validation_files, "Expected validation.json in ResultStore"
 
     # Print summary

@@ -398,7 +398,17 @@ async function switchToResults() {
 
 function renderResults() {
   [renderOverview, renderDimensionCards, renderToolPanels, renderSysInfo].forEach(fn => {
-    try { fn(); } catch(e) { console.error(fn.name, e); }
+    try {
+      fn();
+    } catch (e) {
+      console.error('[renderResults] render failed', {
+        fn: fn?.name || 'unknown',
+        evalId: S.evalId,
+        paperId: S.paperId,
+        message: e?.message,
+        stack: e?.stack,
+      });
+    }
   });
 }
 
@@ -682,7 +692,28 @@ function toggleRaw(dimId) {
 function renderToolPanels() {
   const fns = [renderExtractionPanel, renderValidationPanel, renderC6Panel,
                renderTemporalPanel, renderGraphPanel, renderKeyPapersPanel];
-  fns.forEach(fn => { try { fn(); } catch(e) { console.error(fn.name, e); } });
+  fns.forEach(fn => {
+    try {
+      fn();
+    } catch (e) {
+      const vr = S.validation?.reference_validations || [];
+      const edges = S.validation?.real_citation_edges || [];
+      const uniqueKeys = new Set(vr.map(r => r?.key).filter(Boolean)).size;
+      console.error('[renderToolPanels] panel render failed', {
+        fn: fn?.name || 'unknown',
+        evalId: S.evalId,
+        paperId: S.paperId,
+        validationCount: vr.length,
+        validationUniqueKeys: uniqueKeys,
+        validationDuplicateKeys: Math.max(0, vr.length - uniqueKeys),
+        realEdgeCount: edges.length,
+        graphNodes: S.graphAnalysis?.citation_graph_analysis?.meta?.n_nodes,
+        graphEdges: S.graphAnalysis?.citation_graph_analysis?.meta?.n_edges,
+        message: e?.message,
+        stack: e?.stack,
+      });
+    }
+  });
 }
 
 function renderExtractionPanel() {
@@ -826,7 +857,7 @@ function renderTemporalChart(temporal, trendBaseline) {
       { name: '领域发表趋势', type: 'line', yAxisIndex: 1,
         data: trendYears.map(y => [y, (trendData[y]||0) * scale]),
         lineStyle: { color: '#dd5b00', width: 2 }, symbol: 'circle', symbolSize: 5,
-        itemStyle: { color: '#dd5b00' } },},{
+        itemStyle: { color: '#dd5b00' } },
     ],
   };
   S.temporalChart.setOption(option);
@@ -952,17 +983,6 @@ function renderCitationGraph() {
   } else {
     setTimeout(() => S.citationNetwork.fit(), 150);
   }
-}
-
-function graphZoom(factor) {
-  if (!S.citationNetwork) return;
-  const scale = S.citationNetwork.getScale() * factor;
-  S.citationNetwork.moveTo({ scale });
-}
-
-function graphFit() {
-  if (!S.citationNetwork) return;
-  S.citationNetwork.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
 }
 
 function renderKeyPapersPanel() {

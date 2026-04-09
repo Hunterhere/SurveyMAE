@@ -1227,34 +1227,42 @@ a:hover {
   flex-wrap: wrap;
 }
 
-.graph-ctrl-btn {
-  height: 32px;
-  padding: 0 16px;
-  border: var(--border-whisper);
-  border-radius: var(--radius-sm);
-  background: var(--card-bg);
-  cursor: pointer;
-  font-size: 0.8rem;
-  font-weight: 500;
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  transition: all 0.15s ease;
-  color: var(--text-secondary);
-}
-
-.graph-ctrl-btn:hover {
-  background: var(--warm-white);
-  border-color: var(--notion-blue);
-  color: var(--notion-blue);
-}
-
 .graph-info {
   font-size: 0.8rem;
   color: var(--warm-gray-500);
   margin-left: auto;
   font-weight: 500;
 }
+
+/* vis-network built-in navigation buttons: align with app style */
+#citation-graph .vis-navigation .vis-button {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 999px !important;
+  border: 1px solid #d6d3d1 !important;
+  background: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+  background-image: none !important;
+  color: #52525b !important;
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  line-height: 32px !important;
+  text-align: center !important;
+}
+
+#citation-graph .vis-navigation .vis-button:hover {
+  background: #f9fafb !important;
+  border-color: #3b82f6 !important;
+  color: #2563eb !important;
+}
+
+#citation-graph .vis-navigation .vis-up::before { content: "↑"; }
+#citation-graph .vis-navigation .vis-down::before { content: "↓"; }
+#citation-graph .vis-navigation .vis-left::before { content: "←"; }
+#citation-graph .vis-navigation .vis-right::before { content: "→"; }
+#citation-graph .vis-navigation .vis-zoomIn::before { content: "+"; }
+#citation-graph .vis-navigation .vis-zoomOut::before { content: "−"; }
+#citation-graph .vis-navigation .vis-zoomExtends::before { content: "⤢"; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    Tables & Data Display

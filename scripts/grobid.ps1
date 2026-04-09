@@ -1,10 +1,10 @@
 param(
     [ValidateSet("start", "stop", "restart", "status", "logs", "rm")]
     [string]$Action = "start",
-    [string]$Image = "grobid/grobid:0.8.2-full",
+    [string]$Image = grobid/grobid:0.9.0-crf, #"grobid/grobid:0.9.0-full" on linux gpu
     [string]$ContainerName = "grobid",
     [int]$Port = 8070,
-    [string]$Memory = "4g",
+    [string]$Memory = "2g",
     [string]$LogMaxSize = "10m",
     [int]$LogMaxFile = 5,
     [int]$LogsTail = 200

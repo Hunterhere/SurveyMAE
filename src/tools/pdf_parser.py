@@ -1,14 +1,21 @@
 """PDF Parser Tool.
 
-Provides PDF to Markdown conversion using pymupdf4llm.
+Provides PDF to Markdown conversion using pymupdf4llm with PyMuPDF Layout support.
 Can be exposed as an MCP server for distributed tool access.
+
+Note: Import pymupdf.layout before pymupdf4llm to activate Layout support:
+    import pymupdf.layout  # Activates GNN-based layout analysis
+    import pymupdf4llm
 """
 
+import asyncio
 import hashlib
+import json
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("surveymae.tools.pdf_parser")
 
@@ -18,10 +25,19 @@ class PDFParser:
 
     This class wraps pymupdf4llm for PDF extraction and provides
     a clean interface for the SurveyMAE framework.
+    
+    Supports PyMuPDF Layout (v0.2.0+) for improved:
+    - Multi-column layout handling
+    - Header/footer detection and filtering
+    - Table structure preservation
+    - Section heading extraction
 
     Attributes:
         extract_images: Whether to extract embedded images.
         page_range: Optional range of pages to extract (e.g., "1-10").
+        use_layout: Whether to use PyMuPDF Layout engine.
+        show_header: Whether to include page headers in output.
+        show_footer: Whether to include page footers in output.
     """
 
     _CACHE: dict[tuple, str] = {}
@@ -32,15 +48,24 @@ class PDFParser:
         self,
         extract_images: bool = False,
         page_range: Optional[str] = None,
+        use_layout: bool = True,
+        show_header: bool = False,
+        show_footer: bool = False,
     ):
         """Initialize the PDF parser.
 
         Args:
             extract_images: Whether to extract images from PDF.
             page_range: Optional page range (e.g., "1-10" or "1,3,5").
+            use_layout: Whether to use PyMuPDF Layout engine (default: True).
+            show_header: Whether to include page headers (default: False).
+            show_footer: Whether to include page footers (default: False).
         """
         self.extract_images = extract_images
         self.page_range = page_range
+        self.use_layout = use_layout
+        self.show_header = show_header
+        self.show_footer = show_footer
 
     def parse(self, pdf_path: str) -> str:
         """Parse a PDF file and return its content as markdown.
@@ -75,21 +100,20 @@ class PDFParser:
             logger.error(f"Failed to parse PDF: {e}")
             raise
 
-    def _to_markdown_with_pymupdf4llm(self, pymupdf4llm, path: Path) -> str:
+    def _to_markdown_with_pymupdf4llm(self, pymupdf4llm, path: Path, **extra_kwargs) -> str:
         """Handle pymupdf4llm API differences across versions."""
-        try:
+        kwargs = {
+            "extract_images": self.extract_images,
+            **extra_kwargs,
+        }
+        
+        # PyMuPDF4LLM v0.2.0+: to_markdown expects doc as first positional argument
+        import fitz
+        with fitz.open(str(path)) as doc:
             return pymupdf4llm.to_markdown(
-                input_path=str(path),
-                extract_images=self.extract_images,
+                doc,
+                **kwargs,
             )
-        except TypeError:
-            import fitz
-
-            with fitz.open(str(path)) as doc:
-                return pymupdf4llm.to_markdown(
-                    doc,
-                    extract_images=self.extract_images,
-                )
 
     def parse_cached(self, pdf_path: str) -> str:
         """Parse a PDF file with in-process caching.
@@ -232,6 +256,148 @@ class PDFParser:
 
         return False
 
+    def parse_with_structure(self, pdf_path: str) -> Tuple[str, Dict]:
+        """Parse PDF and return (markdown, structure_dict).
+        
+        接口与 MarkerApiParser.parse_with_structure() 对齐。
+        返回的结构字典包含页面信息和提取的章节标题。
+        
+        Args:
+            pdf_path: Path to the PDF file.
+            
+        Returns:
+            Tuple of (markdown_content, structure_dict)
+        """
+        path = self._validate_path(pdf_path)
+        
+        try:
+            # Import pymupdf.layout first to activate Layout support (v0.2.0+)
+            if self.use_layout:
+                try:
+                    import pymupdf.layout
+                    logger.debug("PyMuPDF Layout engine activated")
+                except ImportError:
+                    logger.warning("pymupdf-layout not installed, falling back to basic extraction")
+            
+            import pymupdf4llm
+            
+            # Try to get JSON structure for section extraction
+            json_structure = None
+            if hasattr(pymupdf4llm, 'to_json'):
+                try:
+                    json_str = pymupdf4llm.to_json(
+                        input_path=str(path),
+                        extract_images=self.extract_images,
+                        header=self.show_header,
+                        footer=self.show_footer,
+                    )
+                    json_structure = json.loads(json_str) if isinstance(json_str, str) else json_str
+                except Exception as e:
+                    logger.debug(f"JSON extraction not available: {e}")
+            
+            # Get markdown content
+            md_text = self._to_markdown_with_pymupdf4llm(
+                pymupdf4llm, path,
+                header=self.show_header,
+                footer=self.show_footer,
+            )
+            
+            # Build structure dict compatible with MarkerApiParser output
+            structure = {
+                "parser": "PDFParser",
+                "use_layout": self.use_layout,
+                "pages": [],
+                "headings": [],
+            }
+            
+            if json_structure:
+                structure["pages"] = json_structure.get("pages", [])
+                structure["headings"] = self._extract_headings_from_json(json_structure)
+            else:
+                # Fallback: extract headings from markdown
+                structure["headings"] = self._extract_headings_from_markdown(md_text)
+            
+            logger.info(
+                "PDFParser success: layout=%s headings=%d chars=%d",
+                self.use_layout,
+                len(structure["headings"]),
+                len(md_text),
+            )
+            
+            return md_text, structure
+            
+        except ImportError:
+            logger.warning("pymupdf4llm not available, using fallback parser")
+            text = self._fallback_parse(pdf_path)
+            structure = {
+                "parser": "PDFParser(fallback)",
+                "pages": [],
+                "headings": self._extract_headings_from_markdown(text),
+            }
+            return text, structure
+        except Exception as e:
+            logger.error(f"Failed to parse PDF: {e}")
+            raise
+
+    def _extract_headings_from_json(self, json_structure: Dict) -> List[str]:
+        """Extract section headings from PyMuPDF4LLM JSON structure.
+        
+        Args:
+            json_structure: JSON structure from pymupdf4llm.to_json()
+            
+        Returns:
+            List of heading strings.
+        """
+        headings = []
+        seen = set()
+        
+        pages = json_structure.get("pages", [])
+        for page in pages:
+            for block in page.get("blocks", []):
+                # Check for heading blocks based on type or style
+                block_type = block.get("type", "")
+                if block_type in ("heading", "header", "h1", "h2", "h3", "h4", "h5", "h6"):
+                    text = block.get("text", "").strip()
+                    if text and text not in seen:
+                        headings.append(text)
+                        seen.add(text)
+                # Also check lines within blocks for styled text
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        if span.get("flags", 0) & 2 ** 4:  # Bold flag
+                            text = span.get("text", "").strip()
+                            # Only include if looks like a heading (short, title case)
+                            if text and 3 < len(text) < 100 and text not in seen:
+                                if text[0].isupper() or text.startswith("#"):
+                                    headings.append(text)
+                                    seen.add(text)
+        
+        return headings
+
+    def _extract_headings_from_markdown(self, markdown: str) -> List[str]:
+        """Extract section headings from Markdown text.
+        
+        Args:
+            markdown: Markdown text content.
+            
+        Returns:
+            List of heading strings.
+        """
+        headings = []
+        seen = set()
+        
+        # Match Markdown headings (# Heading ## Heading)
+        heading_pattern = re.compile(r'^#{1,6}\s+(.+)$', re.MULTILINE)
+        for match in heading_pattern.finditer(markdown):
+            text = match.group(1).strip()
+            # Remove any trailing markers
+            text = re.sub(r'\s*#+$', '', text).strip()
+            if text and text not in seen:
+                headings.append(text)
+                seen.add(text)
+        
+        return headings
+
     async def aparse(self, pdf_path: str) -> str:
         """Async wrapper for parse method.
 
@@ -241,8 +407,103 @@ class PDFParser:
         Returns:
             The extracted content as a markdown string.
         """
-        # pymupdf4llm is synchronous, so we just call the sync version
-        return self.parse(pdf_path)
+        # pymupdf4llm is synchronous, run in thread pool to avoid blocking
+        return await asyncio.to_thread(self.parse, pdf_path)
+
+    async def aparse_with_structure(self, pdf_path: str) -> Tuple[str, Dict]:
+        """Async wrapper for parse_with_structure method.
+
+        Args:
+            pdf_path: Path to the PDF file.
+
+        Returns:
+            Tuple of (markdown_content, structure_dict)
+        """
+        return await asyncio.to_thread(self.parse_with_structure, pdf_path)
+
+
+def create_pdf_parser(config=None) -> "PDFParser":
+    """根据配置和环境变量创建 PDF 解析器实例（工厂函数）。
+
+    优先使用 Marker API（需要 DATALAB_API_KEY），降级时使用 pymupdf4llm。
+    降级时在日志中明确输出原因、影响和修复步骤。
+
+    Args:
+        config: Optional SurveyMAEConfig instance. If None, loads from default path.
+
+    Returns:
+        MarkerApiParser if Marker API is available and configured.
+        PDFParser (pymupdf4llm) otherwise.
+    """
+    backend = "auto"
+    cache_dir = "./output/pdf_cache"
+    marker_base_url = "https://www.datalab.to"
+    marker_mode = "accurate"
+    
+    # PyMuPDF4LLM default settings
+    pymupdf_use_layout = True
+    pymupdf_show_header = False
+    pymupdf_show_footer = False
+
+    if config is not None:
+        pdf_parser_cfg = getattr(config, "pdf_parser", None)
+        if pdf_parser_cfg is not None:
+            backend = getattr(pdf_parser_cfg, "backend", "auto")
+            cache_dir = getattr(pdf_parser_cfg, "cache_dir", cache_dir)
+            marker_cfg = getattr(pdf_parser_cfg, "marker_api", None)
+            if marker_cfg is not None:
+                marker_base_url = getattr(marker_cfg, "base_url", marker_base_url)
+                marker_mode = getattr(marker_cfg, "mode", marker_mode)
+            # Load PyMuPDF4LLM settings
+            pymupdf_cfg = getattr(pdf_parser_cfg, "pymupdf4llm", None)
+            if pymupdf_cfg is not None:
+                pymupdf_use_layout = getattr(pymupdf_cfg, "use_layout", True)
+                pymupdf_show_header = getattr(pymupdf_cfg, "show_header", False)
+                pymupdf_show_footer = getattr(pymupdf_cfg, "show_footer", False)
+
+    if backend == "pymupdf4llm":
+        return PDFParser(
+            use_layout=pymupdf_use_layout,
+            show_header=pymupdf_show_header,
+            show_footer=pymupdf_show_footer,
+        )
+
+    # "marker_api" or "auto": attempt Marker API
+    api_key = os.getenv("DATALAB_API_KEY")
+    if not api_key:
+        logger.warning(
+            "⚠️ [DEGRADED] DATALAB_API_KEY 环境变量未设置，Marker API 不可用。"
+            "降级使用 PyMuPDF4LLM 解析正文。"
+            "【影响】页眉/页脚过滤依赖 Layout 引擎，章节标题提取基于启发式规则。"
+            "【成本】本次处理不产生 API 费用。"
+            "【修复】1) 注册 Datalab 账号: https://www.datalab.to/plans "
+            "2) 设置环境变量: DATALAB_API_KEY=<your_key>"
+        )
+        return PDFParser(
+            use_layout=pymupdf_use_layout,
+            show_header=pymupdf_show_header,
+            show_footer=pymupdf_show_footer,
+        )
+
+    try:
+        from src.tools.marker_api_parser import MarkerApiParser
+        return MarkerApiParser(
+            api_key=api_key,
+            base_url=marker_base_url,
+            mode=marker_mode,
+            cache_dir=cache_dir,
+        )
+    except Exception as e:
+        logger.warning(
+            "⚠️ [DEGRADED] Marker API 初始化失败: %s。降级使用 PyMuPDF4LLM。"
+            "【影响】章节结构可能不如 Marker API 精确。",
+            e,
+        )
+        return PDFParser(
+            use_layout=pymupdf_use_layout,
+            show_header=pymupdf_show_header,
+            show_footer=pymupdf_show_footer,
+        )
 
 
 # MCP Server implementation for PDF Parser

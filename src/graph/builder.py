@@ -37,7 +37,7 @@ from src.graph.edges import should_continue_debate, should_end
 from src.graph.nodes import run_debate
 from src.graph.nodes.evidence_collection import run_evidence_collection
 from src.graph.nodes.evidence_dispatch import run_evidence_dispatch
-from src.tools.pdf_parser import PDFParser
+from src.tools.pdf_parser import PDFParser, create_pdf_parser
 from src.tools.result_store import ResultStore
 
 logger = logging.getLogger("surveymae.graph")
@@ -479,10 +479,15 @@ async def _wrap_agent(agent_name: str, agent, state: SurveyState, step_prefix: s
 
 
 def _get_pdf_parser() -> PDFParser:
-    """Get or create the shared PDF parser instance."""
+    """Get or create the shared PDF parser instance (MarkerApiParser or PDFParser)."""
     global _pdf_parser
     if _pdf_parser is None:
-        _pdf_parser = PDFParser()
+        try:
+            from src.core.config import load_config
+            cfg = load_config()
+        except Exception:
+            cfg = None
+        _pdf_parser = create_pdf_parser(cfg)
     return _pdf_parser
 
 
@@ -706,39 +711,66 @@ def _create_agents(config, agent_classes):
 
 
 async def _parse_pdf_node(state: SurveyState) -> dict:
-    """Parse the input PDF file using PDFParser.
+    """Parse the input PDF using the configured parser (MarkerApiParser or PDFParser).
 
-    Uses the shared PDFParser instance which supports pymupdf4llm
-    with fallback to pypdf.
+    When using MarkerApiParser, also extracts section_headings from JSON structure.
 
     Args:
         state: The current workflow state.
 
     Returns:
-        Updated state with parsed content.
+        Updated state with parsed_content and section_headings.
     """
     source_path = state.get("source_pdf_path", "")
 
     if not source_path:
         logger.warning("No source PDF path provided")
-        return {"parsed_content": "", "metadata": {"error": "no_pdf_path"}}
+        return {"parsed_content": "", "section_headings": [], "metadata": {"error": "no_pdf_path"}}
 
     if not Path(source_path).exists():
         logger.error(f"PDF file not found: {source_path}")
-        return {"parsed_content": "", "metadata": {"error": "file_not_found", "path": source_path}}
+        return {
+            "parsed_content": "",
+            "section_headings": [],
+            "metadata": {"error": "file_not_found", "path": source_path},
+        }
 
     try:
-        logger.info(f"Parsing PDF: {source_path}")
-        # Use PDFParser (which uses pymupdf4llm with fallback)
         parser = _get_pdf_parser()
-        parsed_content = parser.parse(source_path)
+        parser_name = type(parser).__name__
+
+        import asyncio
+        from src.tools.marker_api_parser import MarkerApiParser, extract_section_headings_from_json
+        from src.tools.pdf_parser import PDFParser
+        
+        if isinstance(parser, MarkerApiParser):
+            logger.info("PDF 解析后端: MarkerAPI(mode=%s)", parser.mode)
+            # 在线程池中运行同步解析，避免 DatalabClient 内部的 asyncio.run() 与 langgraph 的 event loop 冲突
+            parsed_content, json_structure = await asyncio.to_thread(
+                parser.parse_with_structure, source_path
+            )
+            section_headings = extract_section_headings_from_json(json_structure)
+            logger.info("章节标题 %d 个: %s", len(section_headings), section_headings[:5])
+        elif isinstance(parser, PDFParser):
+            logger.info("PDF 解析后端: PyMuPDF4LLM(layout=%s)", parser.use_layout)
+            # 使用 parse_with_structure 获取结构和章节标题
+            parsed_content, structure = await asyncio.to_thread(
+                parser.parse_with_structure, source_path
+            )
+            section_headings = structure.get("headings", [])
+            logger.info("章节标题 %d 个: %s", len(section_headings), section_headings[:5])
+        else:
+            logger.info("PDF 解析后端: %s", parser_name)
+            parsed_content = parser.parse(source_path)
+            section_headings = []
 
         return {
             "parsed_content": parsed_content,
+            "section_headings": section_headings,
             "metadata": {
                 "source": source_path,
                 "parsed": "true",
-                "parser": "PDFParser",
+                "parser": parser_name,
             },
         }
 
@@ -746,6 +778,7 @@ async def _parse_pdf_node(state: SurveyState) -> dict:
         logger.error(f"Failed to parse PDF: {e}")
         return {
             "parsed_content": "",
+            "section_headings": [],
             "metadata": {"error": str(e)},
         }
 

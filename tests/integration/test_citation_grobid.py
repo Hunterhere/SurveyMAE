@@ -5,8 +5,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from src.core.config import SurveyMAEConfig
-from src.tools.citation_checker import CitationChecker
+from src.core.config import SurveyMAEConfig, load_config
+from src.tools.citation_checker import CitationChecker, GrobidReferenceExtractor
 from src.tools.citation_analysis import CitationAnalyzer
 from src.tools.result_store import ResultStore
 
@@ -20,7 +20,8 @@ def _grobid_is_available(url: str) -> bool:
 
 
 def _build_config(backend: str, grobid_url: str) -> SurveyMAEConfig:
-    cfg = SurveyMAEConfig()
+    # Keep test config aligned with required fields in config/main.yaml.
+    cfg = load_config()
     cfg.citation.backend = backend
     cfg.citation.grobid_url = grobid_url
     cfg.citation.grobid_timeout_s = int(os.getenv("GROBID_TIMEOUT_S", "30"))
@@ -104,6 +105,31 @@ def test_grobid_reference_extraction_and_context(tmp_path: Path):
     run_dir = tmp_path / "runs" / "test_run"
     assert (run_dir / "run.json").exists()
     assert (run_dir / "index.json").exists()
+
+
+@pytest.mark.integration
+def test_grobid_header_metadata():
+    grobid_url = os.getenv("GROBID_URL", "http://localhost:8070")
+    if not _grobid_is_available(grobid_url):
+        pytest.skip("GROBID not available")
+
+    pdf_path = Path(__file__).resolve().parents[2] / "test_survey2.pdf"
+    assert pdf_path.exists(), f"Missing test PDF: {pdf_path}"
+
+    extractor = GrobidReferenceExtractor(url=grobid_url, timeout_s=30)
+    meta = extractor.extract_header_metadata(str(pdf_path))
+
+    title = meta.get("title", "")
+    abstract = meta.get("abstract", "")
+    keywords = meta.get("keywords", [])
+
+    assert title, "Expected non-empty title from GROBID header"
+    assert abstract, "Expected non-empty abstract from GROBID header"
+    assert isinstance(keywords, list)
+
+    print("title:", title)
+    print("abstract:", abstract[:300])
+    print("keywords:", keywords)
 
 
 @pytest.mark.integration

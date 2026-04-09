@@ -14,14 +14,34 @@ llm:
   max_tokens: 4096
   # api_key is loaded from OPENAI_API_KEY env var
 
+# PDF Parsing Backend Configuration
+pdf_parser:
+  backend: "marker_api"          # "marker_api" | "pymupdf4llm" | "auto"
+  marker_api:
+    base_url: "https://www.datalab.to"
+    mode: "balanced"             # "fast" | "balanced" | "accurate"
+    include_markdown_in_chunks: true
+    additional_config:
+      keep_pageheader_in_output: false   # 去除页眉，解决问题 A
+      keep_pagefooter_in_output: false   # 去除页脚
+    max_poll_attempts: 60
+    poll_interval_seconds: 2
+    request_timeout_seconds: 300
+  # PyMuPDF4LLM 兜底配置（v0.2.0+ 支持 Layout 引擎）
+  pymupdf4llm:
+    use_layout: true             # 启用 PyMuPDF Layout 引擎（推荐）
+    show_header: false           # 过滤页眉
+    show_footer: false           # 过滤页脚
+  cache_dir: "./output/pdf_cache"
+
 # Citation Extraction Configuration
 citation:
-  # backend: auto | grobid | mupdf
-  backend: auto
+  # backend: grobid | auto | mupdf
+  backend: grobid
   # GROBID service URL (if backend is grobid/auto)
   grobid_url: http://localhost:8070
-  grobid_timeout_s: 30
-  grobid_consolidate: false
+  grobid_timeout_s: 60        # increased for consolidation
+  grobid_consolidate: true    # enable CrossRef DOI completion
 
 # Evidence Collection Configuration
 evidence:

@@ -18,7 +18,7 @@ import re
 from src.core.log import log_pipeline_step, log_substep
 from src.core.state import SurveyState
 from src.core.config import load_config, SearchEnginesConfig
-from src.tools.citation_checker import CitationChecker
+from src.tools.citation_checker import CitationChecker, GrobidReferenceExtractor
 from src.tools.citation_analysis import CitationAnalyzer
 
 
@@ -93,6 +93,29 @@ DEFAULT_C6_BATCH_SIZE = _EVIDENCE_CONFIG.get("c6_batch_size", 10)
 DEFAULT_C6_MODEL = _EVIDENCE_CONFIG.get("c6_model", "qwen3.5-flash")
 DEFAULT_C6_MAX_CONCURRENCY = _EVIDENCE_CONFIG.get("c6_max_concurrency", 5)
 DEFAULT_CONTRADICTION_THRESHOLD = _EVIDENCE_CONFIG.get("contradiction_threshold", 0.05)
+
+
+def _extract_title_and_abstract_with_grobid(
+    pdf_path: str, grobid_url: str, timeout_s: int
+) -> tuple[str, str]:
+    """Try to extract title and abstract via GROBID header endpoint.
+
+    Returns:
+        Tuple of (title, abstract). Both empty strings on failure.
+    """
+    try:
+        extractor = GrobidReferenceExtractor(url=grobid_url, timeout_s=timeout_s)
+        meta = extractor.extract_header_metadata(pdf_path)
+        return meta.get("title", "") or "", meta.get("abstract", "") or ""
+    except Exception as exc:
+        logger.warning(
+            "[DEGRADED] GROBID header extraction failed: %s. "
+            "Falling back to regex title/abstract extraction. "
+            "[Impact] Keyword quality may be lower if regex misses title or abstract. "
+            "[Fix] Start GROBID: docker run --rm -d -p 8070:8070 grobid/grobid:0.8.2",
+            exc,
+        )
+        return "", ""
 
 
 def _extract_title_and_abstract(parsed_content: str) -> tuple[str, str]:
@@ -618,24 +641,63 @@ async def run_evidence_collection(
 
         # Calculate C5 (metadata_verify_rate) - verified references ratio
         verified_count = 0
-        real_citation_edges = []  # Collect real citation edges from validation
         for r in references:
             validation = r.get("validation")
             if validation and isinstance(validation, dict):
                 # Check is_valid field (not "verified")
                 if validation.get("is_valid", False):
                     verified_count += 1
-                # Extract real_citation_edges from validation.metadata
+        metadata_verify_rate = verified_count / total_refs if total_refs > 0 else 0.0
+
+        # Primary source for graph edges is extraction-level real_citation_edges,
+        # which is produced by CitationChecker.build_real_citation_edges().
+        real_citation_edges_raw = extraction.get("real_citation_edges", [])
+        real_citation_edges = []
+        seen_edge_pairs = set()
+        for edge in real_citation_edges_raw:
+            if not isinstance(edge, dict):
+                continue
+            src = str(edge.get("source", "")).strip()
+            dst = str(edge.get("target", "")).strip()
+            if not src or not dst:
+                continue
+            key = (src, dst)
+            if key in seen_edge_pairs:
+                continue
+            seen_edge_pairs.add(key)
+            real_citation_edges.append({"source": src, "target": dst})
+
+        # Legacy fallback for backward compatibility with old payload shapes.
+        if not real_citation_edges:
+            fallback_edges = []
+            for r in references:
+                validation = r.get("validation")
+                if not isinstance(validation, dict):
+                    continue
                 val_meta = validation.get("metadata", {})
                 if isinstance(val_meta, dict):
                     edges = val_meta.get("real_citation_edges", [])
-                    if edges:
-                        real_citation_edges.extend(edges)
-        metadata_verify_rate = verified_count / total_refs if total_refs > 0 else 0.0
+                    if isinstance(edges, list) and edges:
+                        fallback_edges.extend(edges)
+            if fallback_edges:
+                logger.warning(
+                    "Using legacy validation.metadata.real_citation_edges fallback (count=%d).",
+                    len(fallback_edges),
+                )
+                real_citation_edges = fallback_edges
 
         logger.info(f"  C3 (orphan_ref_rate): {orphan_ref_rate:.2%}")
         logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%}")
-        logger.info(f"  Real citation edges from validation: {len(real_citation_edges)}")
+        logger.info(
+            "  Real citation edges from extraction: %d (raw=%d, dedup=%d)",
+            len(real_citation_edges),
+            len(real_citation_edges_raw) if isinstance(real_citation_edges_raw, list) else 0,
+            max(
+                0,
+                (len(real_citation_edges_raw) if isinstance(real_citation_edges_raw, list) else 0)
+                - len(real_citation_edges),
+            ),
+        )
         step1_elapsed = time_module.monotonic() - step_start
         log_substep(
             "citation_validate",
@@ -669,7 +731,16 @@ async def run_evidence_collection(
         # Step 2: Keyword Extraction
         # =========================================================================
         logger.info("Step 2: Extracting keywords...")
-        title, abstract = _extract_title_and_abstract(parsed_content)
+        cfg = load_config()
+        grobid_url = getattr(cfg.citation, "grobid_url", "http://localhost:8070")
+        grobid_timeout = int(getattr(cfg.citation, "grobid_timeout_s", 30))
+        title, abstract = "", ""
+        if source_pdf:
+            title, abstract = _extract_title_and_abstract_with_grobid(
+                source_pdf, grobid_url, grobid_timeout
+            )
+        if not title:
+            title, abstract = _extract_title_and_abstract(parsed_content)
 
         extractor = KeywordExtractor()
         kw_result = await extractor.extract_keywords(
@@ -840,6 +911,19 @@ async def run_evidence_collection(
                 edges=edges,
                 config=graph_config,
             )
+            graph_meta = graph_result.get("meta", {}) if isinstance(graph_result, dict) else {}
+            logger.info(
+                "  Graph analysis output: n_nodes=%s n_edges=%s unresolved_edge_ratio=%s",
+                graph_meta.get("n_nodes"),
+                graph_meta.get("n_edges"),
+                graph_meta.get("unresolved_edge_ratio"),
+            )
+            if len(edges) > 0 and (graph_meta.get("n_edges") or 0) == 0:
+                logger.warning(
+                    "  Graph analysis received %d edges but produced 0 resolved edges. "
+                    "Check edge key space and reference keys alignment.",
+                    len(edges),
+                )
         except Exception as e:
             logger.warning(f"  Graph analysis failed: {e}")
             graph_result = {}

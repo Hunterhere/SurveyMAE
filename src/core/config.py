@@ -377,6 +377,60 @@ class CitationConfig(BaseModel):
     grobid_consolidate: bool = False
 
 
+class MarkerApiConfig(BaseModel):
+    """Configuration for Datalab Marker API.
+
+    Attributes:
+        base_url: Marker API base URL.
+        mode: Processing mode ("fast", "balanced", "accurate").
+        include_markdown_in_chunks: Include markdown in JSON output (cost-optimal single call).
+        additional_config: Extra config passed to API (e.g., page header/footer control).
+        max_poll_attempts: Max polling attempts (~2 min at 2s interval).
+        poll_interval_seconds: Seconds between poll attempts.
+        request_timeout_seconds: Total request timeout.
+    """
+
+    base_url: str = "https://www.datalab.to"
+    mode: str = "accurate"
+    include_markdown_in_chunks: bool = True
+    additional_config: Dict[str, Any] = Field(default_factory=lambda: {
+        "keep_pageheader_in_output": False,
+        "keep_pagefooter_in_output": False,
+    })
+    max_poll_attempts: int = 60
+    poll_interval_seconds: int = 2
+    request_timeout_seconds: int = 300
+
+
+class Pymupdf4llmConfig(BaseModel):
+    """Configuration for PyMuPDF4LLM backend.
+    
+    Attributes:
+        use_layout: Whether to use PyMuPDF Layout engine (v0.2.0+).
+        show_header: Whether to include page headers in output.
+        show_footer: Whether to include page footers in output.
+    """
+    use_layout: bool = True
+    show_header: bool = False
+    show_footer: bool = False
+
+
+class PdfParserConfig(BaseModel):
+    """Configuration for PDF parsing backend selection.
+
+    Attributes:
+        backend: Backend selector ("marker_api" | "pymupdf4llm" | "auto").
+        marker_api: Marker API-specific configuration.
+        pymupdf4llm: PyMuPDF4LLM-specific configuration.
+        cache_dir: Directory for disk-cached parse results.
+    """
+
+    backend: str = "auto"
+    marker_api: MarkerApiConfig = Field(default_factory=MarkerApiConfig)
+    pymupdf4llm: Pymupdf4llmConfig = Field(default_factory=Pymupdf4llmConfig)
+    cache_dir: str = "./output/pdf_cache"
+
+
 class EvidenceConfig(BaseModel):
     """Configuration for evidence collection.
 
@@ -481,6 +535,7 @@ class SurveyMAEConfig(BaseModel):
     report: ReportConfig = Field(default_factory=ReportConfig)
     citation: CitationConfig = Field(default_factory=CitationConfig)
     evidence: EvidenceConfig = Field(default_factory=EvidenceConfig)
+    pdf_parser: PdfParserConfig = Field(default_factory=PdfParserConfig)
 
     def get_env(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """Get environment variable value with fallback to default.
@@ -542,6 +597,13 @@ class SurveyMAEConfig(BaseModel):
 
         if "evidence" in data and isinstance(data["evidence"], dict):
             data["evidence"] = EvidenceConfig(**data["evidence"])
+
+        if "pdf_parser" in data and isinstance(data["pdf_parser"], dict):
+            pdf_parser_data = data["pdf_parser"].copy()
+            marker_api_data = pdf_parser_data.get("marker_api", {})
+            if isinstance(marker_api_data, dict):
+                pdf_parser_data["marker_api"] = MarkerApiConfig(**marker_api_data)
+            data["pdf_parser"] = PdfParserConfig(**pdf_parser_data)
 
         return cls(**data)
 
