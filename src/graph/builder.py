@@ -735,6 +735,30 @@ async def _parse_pdf_node(state: SurveyState) -> dict:
             "metadata": {"error": "file_not_found", "path": source_path},
         }
 
+    source_suffix = Path(source_path).suffix.lower()
+    if source_suffix == ".md":
+        parsed_content = Path(source_path).read_text(encoding="utf-8")
+        section_headings: list[str] = []
+        seen_headings: set[str] = set()
+        for line in parsed_content.splitlines():
+            stripped = line.lstrip()
+            if not stripped.startswith("#"):
+                continue
+            heading = stripped.lstrip("#").strip()
+            if not heading or heading in seen_headings:
+                continue
+            seen_headings.add(heading)
+            section_headings.append(heading)
+        return {
+            "parsed_content": parsed_content,
+            "section_headings": section_headings,
+            "metadata": {
+                "source": source_path,
+                "parsed": "true",
+                "parser": "MarkdownFile",
+            },
+        }
+
     try:
         parser = _get_pdf_parser()
         parser_name = type(parser).__name__
@@ -826,5 +850,5 @@ async def _run_aggregator(state: SurveyState) -> dict:
     )
     overall = aggregation_result.get("overall_score", 0.0)
     grade = aggregation_result.get("grade", "?")
-    log_pipeline_step("06", 7, "aggregator", detail=f"overall={overall:.2f}/10 grade={grade}", elapsed=time.monotonic() - t0)
+    log_pipeline_step("06", 7, "aggregator", detail=f"overall={overall:.2f}/5 grade={grade}", elapsed=time.monotonic() - t0)
     return {"aggregation_result": aggregation_result}

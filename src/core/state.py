@@ -236,7 +236,7 @@ class AggregatedScores(TypedDict):
     Attributes:
         dimension_scores: Dict mapping dimension ID to final score info.
         deterministic_metrics: Raw values of first-layer metrics (C3, C5, T1-T5, S1-S5, G1-G6).
-        overall_score: Weighted overall score (0-10 scale).
+        overall_score: Weighted overall score (0-5 scale).
         grade: Letter grade (A/B/C/D/F).
         total_weight: Total weight used in aggregation.
     """
@@ -255,7 +255,7 @@ class EvaluationRecord(TypedDict):
         agent_name: The identifier of the agent that produced this evaluation.
         dimension: The evaluation dimension (e.g., "factuality", "coverage",
                    "depth", "bias").
-        score: Numerical score in range [0.0, 10.0].
+        score: Numerical score in range [0.0, 5.0].
         reasoning: Detailed explanation for the score.
         evidence: Supporting evidence such as quotes or search results.
         confidence: Confidence level of the evaluation [0.0, 1.0].
@@ -278,7 +278,7 @@ class EvaluationRecordModel(BaseModel):
     Attributes:
         agent_name: The identifier of the agent (required).
         dimension: The evaluation dimension (required).
-        score: Numerical score in range [0.0, 10.0] (required).
+        score: Numerical score in range [0.0, 5.0] (required).
         reasoning: Detailed explanation for the score (required).
         evidence: Supporting evidence such as quotes or search results (optional).
         confidence: Confidence level of the evaluation [0.0, 1.0] (required).
@@ -286,7 +286,7 @@ class EvaluationRecordModel(BaseModel):
 
     agent_name: str = Field(..., description="The identifier of the agent")
     dimension: str = Field(..., description="The evaluation dimension")
-    score: float = Field(..., ge=0.0, le=10.0, description="Score in range [0.0, 10.0]")
+    score: float = Field(..., ge=0.0, le=5.0, description="Score in range [0.0, 5.0]")
     reasoning: str = Field(..., description="Detailed explanation for the score")
     evidence: str | None = Field(default=None, description="Supporting evidence")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level [0.0, 1.0]")

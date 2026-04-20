@@ -33,10 +33,21 @@ from src.graph.builder import compile_workflow, create_workflow
 from src.tools.pdf_parser import PDFParser
 
 
+_SUPPORTED_SOURCE_EXTENSIONS = {".pdf", ".md"}
+
+
 def _generate_run_id(pdf_path: str) -> str:
     """Generate run_id from PDF path and current time."""
     pdf_hash = hashlib.md5(pdf_path.encode()).hexdigest()[:8]
     return f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{pdf_hash}"
+
+
+def _load_source_content(source_path: str) -> str:
+    """Load input survey content from a supported source file."""
+    suffix = Path(source_path).suffix.lower()
+    if suffix == ".md":
+        return Path(source_path).read_text(encoding="utf-8")
+    return PDFParser().parse(source_path)
 
 
 async def run_evaluation(
@@ -62,11 +73,10 @@ async def run_evaluation(
     # Initialize logging (creates run_dir/logs/run.log)
     logger = setup_logging(run_dir=run_dir, pdf_path=pdf_path)
 
-    logger.info("SurveyMAE 评测启动 | PDF: %s", pdf_path)
+    logger.info("SurveyMAE 评测启动 | SOURCE: %s", pdf_path)
 
-    # Parse the PDF
-    parser = PDFParser()
-    parsed_content = parser.parse(pdf_path)
+    # Parse source (.pdf/.md)
+    parsed_content = _load_source_content(pdf_path)
 
     # Initialize state with all required fields
     initial_state: SurveyState = {
@@ -127,7 +137,7 @@ def main():
 
     parser.add_argument(
         "pdf_path",
-        help="Path to the survey PDF file to evaluate",
+        help="Path to the survey source file to evaluate (.pdf or .md)",
     )
 
     parser.add_argument(
@@ -168,12 +178,19 @@ def main():
 
     args = parser.parse_args()
 
-    # Check if PDF file exists (use a minimal logger for this early check)
+    # Check input file (use a minimal logger for this early check)
     import logging
     early_logger = logging.getLogger("surveymae.main")
     early_logger.setLevel(logging.INFO)
-    if not Path(args.pdf_path).exists():
-        early_logger.error("PDF file not found: %s", args.pdf_path)
+    source_path = Path(args.pdf_path)
+    if not source_path.exists():
+        early_logger.error("Source file not found: %s", args.pdf_path)
+        sys.exit(1)
+    if source_path.suffix.lower() not in _SUPPORTED_SOURCE_EXTENSIONS:
+        early_logger.error(
+            "Unsupported file extension: %s (supported: .pdf, .md)",
+            source_path.suffix or "<none>",
+        )
         sys.exit(1)
 
     # Load configuration

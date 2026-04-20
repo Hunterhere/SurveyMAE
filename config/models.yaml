@@ -29,29 +29,29 @@ agents:
   # Verifier Agent - used for fact-checking and citation verification
   verifier:
     provider: qwen
-    model: qwen3.5-flash
-    temperature: 0.1
+    model: qwen3.5-plus
+    temperature: 0.2
     max_tokens: 4096
 
   # Expert Agent - used for domain expert evaluation
   expert:
     provider: qwen
-    model: qwen3.5-flash
-    temperature: 0.0
+    model: qwen3.5-plus
+    temperature: 0.2
     max_tokens: 4096
 
   # Reader Agent - used for readability and coverage evaluation
   reader:
     provider: qwen
-    model: qwen3.5-flash
+    model: qwen3.5-plus
     temperature: 0.2
-    max_tokens: 2048
+    max_tokens: 4096
 
   # Corrector Agent - uses multiple models for bias correction voting
   corrector:
     provider: qwen
-    model: qwen3.5-flash
-    temperature: 0.1
+    model: qwen3.5-plus
+    temperature: 0.2
     max_tokens: 4096
     # Multi-model voting configuration
     multi_model:
@@ -59,20 +59,20 @@ agents:
       models:
         - provider: qwen
           model: qwen3.5-flash
-          temperature: 0.1
-        - provider: deepseek
-          model: deepseek-chat
-          temperature: 0.1
+          temperature: 0.2
         - provider: qwen
-          model: qwen3.5-flash
-          temperature: 0.5
+          model: glm-5
+          temperature: 0.2
+        - provider: kimi
+          model: kimi-k2.5
+          temperature: 0.2
 
   # Reporter Agent - used for report generation
   reporter:
     provider: qwen
-    model: qwen3.5-flash
+    model: qwen3.5-plus
     temperature: 0.0
-    max_tokens: 8192
+    max_tokens: 16384
 
 # Alternative provider configurations (for multi-vendor support)
 # Each provider uses OpenAI-compatible API format

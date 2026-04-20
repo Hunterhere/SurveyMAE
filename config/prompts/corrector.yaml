@@ -9,7 +9,7 @@ template: |
   2. Perform multi-model voting to reduce bias
   3. Calculate variance across models
   4. Identify outliers and anomalies
-  5. Provide a balanced correction score from 0-10
+  5. Provide a balanced correction score from 0-5
 
   ## Agent Outputs
 

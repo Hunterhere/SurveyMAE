@@ -1048,6 +1048,7 @@ a:hover {
   color: var(--warm-gray-300);
   font-size: 0.85rem;
   padding: 6px 10px;
+  justify-self: end;
   transition: transform 0.2s ease;
 }
 
@@ -1085,6 +1086,29 @@ a:hover {
   color: var(--text-primary);
   white-space: pre-wrap;
   line-height: 1.7;
+}
+
+.tool-evidence-lines {
+  display: grid;
+  gap: 6px;
+}
+
+.tool-evidence-line {
+  display: block;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.tool-evidence-key {
+  color: var(--warm-gray-500);
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.tool-evidence-value {
+  color: var(--text-primary);
+  word-break: break-word;
 }
 
 .flagged-list {

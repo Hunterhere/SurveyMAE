@@ -145,6 +145,35 @@ Brown, T. et al. (2020). Language Models are Few-Shot Learners.
         assert len(references) > 0
         assert references[0]["title"]
 
+    def test_parse_pdf_supports_markdown(self, checker, tmp_path):
+        """Markdown files should be accepted as source input."""
+        md_path = tmp_path / "paper.md"
+        md_path.write_text("# Title\n\nText with citation [1].", encoding="utf-8")
+
+        content = checker.parse_pdf(str(md_path))
+        assert "citation [1]" in content
+
+    @pytest.mark.asyncio
+    async def test_extract_citations_with_context_supports_markdown(self, checker, tmp_path, monkeypatch):
+        """Markdown inputs should bypass PyMuPDF extraction path."""
+        md_path = tmp_path / "paper.md"
+        md_path.write_text(
+            "# Title\n\nThis is a sentence with [1].\n\nReferences\n[1] Foo, A. (2020). Bar.",
+            encoding="utf-8",
+        )
+
+        def _should_not_run(_pdf_path: str):
+            raise AssertionError("_extract_citations_with_context_mupdf should not be called for markdown")
+
+        monkeypatch.setattr(checker, "_extract_citations_with_context_mupdf", _should_not_run)
+
+        result = await checker.extract_citations_with_context_from_pdf(
+            str(md_path),
+            verify_references=False,
+        )
+        assert result["backend"].startswith("citations:text;references:text")
+        assert isinstance(result["citations"], list)
+
     def test_build_real_citation_edges_from_validation_metadata(self, checker):
         """Build real edges from validated metadata reference targets."""
         ref_a = ReferenceEntry(

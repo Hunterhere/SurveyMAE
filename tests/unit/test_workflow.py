@@ -95,6 +95,30 @@ class TestWorkflowBuilder:
         assert result["metadata"]["parsed"] == "true"
         assert result["section_headings"] == ["Introduction", "Methods", "Results"]
 
+    @pytest.mark.asyncio
+    async def test_parse_pdf_node_markdown_success(self, tmp_path):
+        """Test successful markdown source loading."""
+        md_path = tmp_path / "paper.md"
+        md_path.write_text("# Title\n\n## Introduction\nSome content [1].", encoding="utf-8")
+
+        state = SurveyState(
+            source_pdf_path=str(md_path),
+            parsed_content="",
+            evaluations=[],
+            debate_history=[],
+            sections={},
+            current_round=0,
+            consensus_reached=False,
+            final_report_md="",
+            metadata={},
+        )
+
+        result = await _parse_pdf_node(state)
+        assert result["metadata"]["parsed"] == "true"
+        assert result["metadata"]["parser"] == "MarkdownFile"
+        assert "Some content" in result["parsed_content"]
+        assert result["section_headings"] == ["Title", "Introduction"]
+
 
 class TestWorkflowEdges:
     """Tests for workflow edge logic."""

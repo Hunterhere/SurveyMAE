@@ -19,6 +19,7 @@ from typing import Any
 
 from src.agents.base import BaseAgent
 from src.core.config import AgentConfig
+from src.core.log import get_run_stats
 from src.core.mcp_client import MCPManager
 from src.core.state import EvaluationRecord, SurveyState
 from src.graph.builder import _get_result_store
@@ -59,7 +60,7 @@ class ReportAgent(BaseAgent):
         return EvaluationRecord(
             agent_name=self.name,
             dimension="report_generation",
-            score=10.0,
+            score=5.0,
             reasoning="Final report is generated in reporter.process.",
             evidence=None,
             confidence=1.0,
@@ -148,12 +149,17 @@ class ReportAgent(BaseAgent):
 
         # Extract deterministic metrics from tool_evidence
         deterministic_metrics = self._extract_deterministic_metrics(state)
+        run_stats = get_run_stats().summary()
+        llm_calls = int(run_stats.get("llm_calls", 0))
+        api_calls = int(run_stats.get("api_calls", 0))
 
         return {
             "run_id": run_id,
             "source": source_pdf,
             "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
             "schema_version": "v3",
+            "llm_calls": llm_calls,
+            "api_calls": api_calls,
             "deterministic_metrics": deterministic_metrics,
             "dimension_scores": dimension_scores,
             "agent_scores": agent_scores,

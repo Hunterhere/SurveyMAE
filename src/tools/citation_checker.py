@@ -506,18 +506,24 @@ class CitationChecker:
         return contexts
 
     def parse_pdf(self, pdf_path: str) -> str:
-        """Parse a PDF file into text suitable for citation extraction.
+        """Parse source file into text suitable for citation extraction.
 
         Uses create_pdf_parser() factory to select MarkerApiParser or PDFParser
         based on DATALAB_API_KEY availability and config. Passes self.config so
         the parser uses the same cache_dir as the rest of the pipeline.
 
         Args:
-            pdf_path: Path to the PDF file.
+            pdf_path: Path to the source file (.pdf or .md).
 
         Returns:
-            Extracted PDF content as a string.
+            Extracted content as a string.
         """
+        source_path = Path(pdf_path)
+        if source_path.suffix.lower() == ".md":
+            if not source_path.exists():
+                raise FileNotFoundError(f"Source file not found: {pdf_path}")
+            return source_path.read_text(encoding="utf-8")
+
         from src.tools.pdf_parser import create_pdf_parser
         return create_pdf_parser(self.config).parse_cached(pdf_path)
 
@@ -554,7 +560,10 @@ class CitationChecker:
         Returns:
             Structured dict with citations, references, backend, and errors.
         """
-        base = self._extract_citations_with_context_mupdf(pdf_path)
+        if Path(pdf_path).suffix.lower() == ".md":
+            base = self._extract_citations_with_context_text(pdf_path)
+        else:
+            base = self._extract_citations_with_context_mupdf(pdf_path)
         references, backend, errors = self._extract_references_with_backend(pdf_path)
         citation_backend = base.backend or "mupdf"
         base.references = references
@@ -618,8 +627,9 @@ class CitationChecker:
         citation_cfg = getattr(self.config, "citation", None)
         backend = str(getattr(citation_cfg, "backend", "auto")).lower()
         errors: list[str] = []
+        is_pdf_source = Path(pdf_path).suffix.lower() == ".pdf"
 
-        if backend in {"grobid", "auto"}:
+        if is_pdf_source and backend in {"grobid", "auto"}:
             if backend == "auto" and not self._grobid_is_available(
                 getattr(citation_cfg, "grobid_url", "http://localhost:8070")
             ):
@@ -651,7 +661,10 @@ class CitationChecker:
                 )
 
         fallback_refs = self.extract_references_from_pdf(pdf_path)
-        fallback_entries = self._reference_entries_from_dicts(fallback_refs, source="mupdf")
+        fallback_source = "mupdf" if is_pdf_source else "text"
+        fallback_entries = self._reference_entries_from_dicts(fallback_refs, source=fallback_source)
+        if not is_pdf_source:
+            return fallback_entries, "text", errors
         fallback_entries, fallback_backend = self._maybe_upgrade_fallback_references(
             pdf_path,
             fallback_entries,

@@ -247,17 +247,23 @@ def log_run_summary(stats: RunStats, total_elapsed: float) -> None:
         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         总耗时 51.2s │ LLM 调用 28 次 │ API 调用 94 次
     """
+    snapshot = stats.summary()
+    llm_calls = int(snapshot.get("llm_calls", 0))
+    api_calls = int(snapshot.get("api_calls", 0))
+    warnings = int(snapshot.get("warnings", 0))
+    errors = int(snapshot.get("errors", 0))
+
     _console.print(Rule())
     _console.print(
         f"总耗时 {total_elapsed:.1f}s │ "
-        f"LLM 调用 {stats.llm_calls} 次 │ "
-        f"API 调用 {stats.api_calls} 次"
-    ) #TODO: llm_calls and api_calls count not accuracy
+        f"LLM 调用 {llm_calls} 次 │ "
+        f"API 调用 {api_calls} 次"
+    )
 
     if _file_logger:
         _file_logger.info(
             "RUN_SUMMARY | elapsed=%.1fs llm_calls=%d api_calls=%d warnings=%d errors=%d",
-            total_elapsed, stats.llm_calls, stats.api_calls, stats.warnings, stats.errors,
+            total_elapsed, llm_calls, api_calls, warnings, errors,
         )
 
 

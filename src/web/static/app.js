@@ -547,29 +547,17 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
     <div class="score-bar"><div class="score-fill" style="width:${pct5}%;background:${scoreColor(score)}"></div></div>
   `;
 
-  const evDiv = el('div', 'dim-evidence');
-  evDiv.innerHTML = evidenceSummaryHtml(dimId, subScore, dimScore);
-
   const expandBtn = el('button', 'expand-btn');
   expandBtn.textContent = '▼';
   expandBtn.type = 'button';
 
   header.appendChild(titleDiv);
   header.appendChild(scoreDiv);
-  header.appendChild(evDiv);
   header.appendChild(expandBtn);
 
   // ── Detail (level 2) ─────────────────────────────────
   const detail = el('div', 'dim-detail');
   detail.id = `detail-${dimId}`;
-
-  // Rubric
-  const rubric = RUBRICS[dimId]?.[Math.round(score)];
-  if (rubric) {
-    const rs = el('div', 'detail-section');
-    rs.innerHTML = `<h4>Rubric 等级</h4><p>${rubric}</p>`;
-    detail.appendChild(rs);
-  }
 
   // Agent reasoning
   const reasoning = subScore?.llm_reasoning;
@@ -577,6 +565,26 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
     const rs = el('div', 'detail-section');
     rs.innerHTML = `<h4>Agent 推理</h4><p>${escHtml(reasoning)}</p>`;
     detail.appendChild(rs);
+  }
+
+  // Tool evidence used by this dimension
+  const te = subScore?.tool_evidence;
+  if (te && typeof te === 'object' && Object.keys(te).length) {
+    const evidenceLines = buildToolEvidenceLines(dimId, te);
+    if (evidenceLines.length) {
+    const ts = el('div', 'detail-section');
+    const lines = evidenceLines.map(item => `
+      <div class="tool-evidence-line">
+        <span class="tool-evidence-key">${escHtml(item.label)}</span>
+        <span class="tool-evidence-value">${escHtml(item.value)}</span>
+      </div>
+    `).join('');
+    ts.innerHTML = `
+      <h4>证据摘要</h4>
+      <div class="tool-evidence-lines">${lines}</div>
+    `;
+    detail.appendChild(ts);
+    }
   }
 
   // Flagged items
@@ -646,33 +654,68 @@ function riskLabel(r) {
   return { low: '确定性', medium: 'LLM判断', high: 'LLM判断(高风险)', null: '—' }[r] || r || '—';
 }
 
-function evidenceSummaryHtml(dimId, subScore, dimScore) {
-  const ev = subScore?.tool_evidence || {};
-  const metrics = S.summary?.deterministic_metrics || {};
+function buildToolEvidenceLines(dimId, te) {
+  const numFmt = (v) => (typeof v === 'number' && Number.isFinite(v) ? (Number.isInteger(v) ? `${v}` : v.toFixed(3)) : String(v));
+  const trunc = (v, n = 140) => {
+    const s = String(v);
+    return s.length > n ? `${s.slice(0, n)}...` : s;
+  };
+  const lines = [];
+
+  const pushIf = (label, value) => {
+    if (value == null || value === '') return;
+    lines.push({ label, value: trunc(value) });
+  };
 
   switch (dimId) {
-    case 'V1': {
-      const c5 = ev.C5 ?? metrics.C5;
-      return c5 != null ? `C5 = ${pct(c5)}（验证率）` : '';
+    case 'V1':
+      pushIf('C5 验证率', te.C5 != null ? pct(te.C5) : null);
+      break;
+    case 'V2':
+      pushIf('C6 矛盾率', te.C6_contradiction_rate != null ? pct(te.C6_contradiction_rate) : null);
+      break;
+    case 'V4': {
+      const cons = Array.isArray(te.c6_contradictions) ? te.c6_contradictions : [];
+      pushIf('C6 矛盾样本', `${cons.length} 条`);
+      if (cons.length) {
+        const sample = cons[0];
+        const preview = sample?.sentence || sample?.note || JSON.stringify(sample);
+        pushIf('示例', preview);
+      }
+      break;
     }
-    case 'V2': {
-      const rate = S.c6?.contradiction_rate;
-      const af = S.c6?.auto_fail;
-      if (af) return '<span style="color:var(--danger)">C6 自动失败</span>';
-      return rate != null ? `C6 矛盾率 = ${pct(rate)}` : '';
-    }
-    case 'V4': return ev.c6_contradictions != null ? `${ev.c6_contradictions} 条矛盾证据` : '';
-    case 'E1': {
-      const g4 = ev.G4 ?? metrics.G4;
-      const miss = S.keyPapers?.missing_key_papers?.length;
-      return [g4 != null ? `G4 = ${pct(g4)}` : '', miss ? `${miss} 篇核心文献缺失` : ''].filter(Boolean).join('，') || '';
-    }
-    case 'E2': { const s5 = ev.S5 ?? metrics.S5; return s5 != null ? `S5 (NMI) = ${fmt3(s5)}` : ''; }
-    case 'R1': { const t5 = ev.T5 ?? metrics.T5; return t5 != null ? `T5 趋势对齐 = ${fmt3(t5)}` : ''; }
-    case 'R2': { const s3 = ev.S3 ?? S.analysis?.structural?.S3_citation_gini; return s3 != null ? `S3 (Gini) = ${fmt3(s3)}` : ''; }
-    case 'R3': { const s5 = ev.S5 ?? metrics.S5; return s5 != null ? `S5 = ${fmt3(s5)}` : ''; }
-    default: return '';
+    case 'E1':
+      pushIf('G4 核心覆盖率', te.G4 != null ? pct(te.G4) : null);
+      break;
+    case 'E2':
+    case 'R3':
+      pushIf('S5 (NMI)', te.S5 != null ? numFmt(te.S5) : null);
+      break;
+    case 'R1':
+      pushIf('T5 趋势对齐', te.T5 != null ? numFmt(te.T5) : null);
+      break;
+    case 'R2':
+      pushIf('S3 (Gini)', te.S3 != null ? numFmt(te.S3) : null);
+      break;
+    default:
+      break;
   }
+
+  // Fallback for dimensions with sparse/unknown schema: show compact scalar fields.
+  if (!lines.length) {
+    Object.entries(te).forEach(([k, v]) => {
+      if (v == null) return;
+      if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') {
+        lines.push({ label: k, value: typeof v === 'number' ? numFmt(v) : String(v) });
+      } else if (Array.isArray(v)) {
+        lines.push({ label: k, value: `${v.length} 项` });
+      } else if (typeof v === 'object') {
+        lines.push({ label: k, value: '对象' });
+      }
+    });
+  }
+
+  return lines.slice(0, 6);
 }
 
 function toggleCard(dimId) {

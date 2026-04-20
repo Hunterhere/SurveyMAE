@@ -91,7 +91,7 @@ class CorrectorAgent(BaseAgent):
         return EvaluationRecord(
             agent_name=self.name,
             dimension="correction",
-            score=10.0,
+            score=5.0,
             reasoning="Corrector no longer produces independent scores. Use process() for voting correction.",
             evidence=None,
             confidence=1.0,
@@ -512,7 +512,7 @@ Output ONLY a JSON object: {{"score": <number>}}
         std = statistics.stdev(scores) if len(scores) > 1 else 0
 
         # Lower std = higher confidence
-        # Max std for range of 10 is about 2.5
+        # Max std for range of 5 is about 1.25
         confidence = max(0.5, 1.0 - (std / 3.0))
 
         return confidence
@@ -538,7 +538,7 @@ Output ONLY a JSON object: {{"score": <number>}}
                 if ":" in line:
                     try:
                         score = float(line.split(":")[-1].strip())
-                        score = max(0.0, min(10.0, score))
+                        score = max(0.0, min(5.0, score))
                     except ValueError:
                         pass
 

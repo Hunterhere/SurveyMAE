@@ -12,6 +12,7 @@ This node executes the complete tool chain to collect evidence for agent evaluat
 
 import logging
 import time as time_module
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import re
 
@@ -735,7 +736,7 @@ async def run_evidence_collection(
         grobid_url = getattr(cfg.citation, "grobid_url", "http://localhost:8070")
         grobid_timeout = int(getattr(cfg.citation, "grobid_timeout_s", 30))
         title, abstract = "", ""
-        if source_pdf:
+        if source_pdf and Path(source_pdf).suffix.lower() == ".pdf":
             title, abstract = _extract_title_and_abstract_with_grobid(
                 source_pdf, grobid_url, grobid_timeout
             )

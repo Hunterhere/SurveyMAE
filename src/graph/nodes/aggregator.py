@@ -21,7 +21,7 @@ DEFAULT_DIMENSION_WEIGHTS = {
     "factuality": 1.0,  # Verifier
     "depth": 1.0,  # Expert
     "coverage": 1.0,  # Reader
-    "bias": 0.8,  # Corrector
+    "bias": 1.0,  # Corrector
 }
 
 
@@ -69,13 +69,13 @@ async def aggregate_scores(state: SurveyState) -> dict[str, Any]:
 
 def _get_grade(score: float) -> str:
     """Convert numerical score to letter grade."""
-    if score >= 8.5:
+    if score >= 4.25:
         return "A"
-    elif score >= 7.5:
+    elif score >= 3.75:
         return "B"
-    elif score >= 6.5:
+    elif score >= 3.25:
         return "C"
-    elif score >= 5.5:
+    elif score >= 2.75:
         return "D"
     else:
         return "F"
@@ -91,7 +91,7 @@ def _aggregate_from_agent_outputs(
     1. Reads corrector_output to get corrected scores
     2. Uses corrected scores if available, otherwise uses original scores
     3. Applies weighted aggregation based on config weights
-    4. Computes overall score on 0-10 scale
+    4. Computes overall score on 0-5 scale
 
     Args:
         agent_outputs: Dict of agent_name -> AgentOutput
@@ -114,17 +114,17 @@ def _aggregate_from_agent_outputs(
 
     # Default weights (fallback)
     default_weights = {
-        "V1_citation_existence": 1.2,
-        "V2_citation_claim_alignment": 1.5,
+        "V1_citation_existence": 1.0,
+        "V2_citation_claim_alignment": 1.0,
         "V4_internal_consistency": 1.0,
-        "E1_foundational_coverage": 1.3,
+        "E1_foundational_coverage": 1.0,
         "E2_classification_reasonableness": 1.0,
-        "E3_technical_accuracy": 1.2,
-        "E4_critical_analysis_depth": 1.3,
+        "E3_technical_accuracy": 1.0,
+        "E4_critical_analysis_depth": 1.0,
         "R1_timeliness": 1.0,
-        "R2_information_balance": 0.8,
-        "R3_structural_clarity": 0.8,
-        "R4_writing_quality": 0.7,
+        "R2_information_balance": 1.0,
+        "R3_structural_clarity": 1.0,
+        "R4_writing_quality": 1.0,
     }
 
     # Merge configs
@@ -176,10 +176,10 @@ def _aggregate_from_agent_outputs(
             "total_weight": 0.0,
         }
 
-    # Weighted average -> 0-10 scale
+    # Weighted average stays on 0-5 scale
     weighted_sum = sum(score * weight for score, weight in all_scores_with_weights)
     total_weight = sum(weight for _, weight in all_scores_with_weights)
-    overall_score = (weighted_sum / total_weight) * 2 if total_weight > 0 else 0.0  # 1-5 -> 0-10
+    overall_score = weighted_sum / total_weight if total_weight > 0 else 0.0
 
     # Determine grade
     grade = _get_grade(overall_score)
@@ -332,7 +332,7 @@ def _render_header(source_pdf: str, aggregation_result: dict[str, Any]) -> str:
     return f"""# SurveyMAE Evaluation Report
 
 **Source**: {source_pdf or "N/A"} | **Generated**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-**Overall Score**: {overall:.2f}/10 (Grade: {grade})
+**Overall Score**: {overall:.2f}/5 (Grade: {grade})
 
 ---"""
 
