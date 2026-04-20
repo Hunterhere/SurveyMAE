@@ -7,7 +7,10 @@ param(
     [string]$Memory = "2g",
     [string]$LogMaxSize = "10m",
     [int]$LogMaxFile = 5,
-    [int]$LogsTail = 200
+    [int]$LogsTail = 200,
+    [int]$HealthRetries = 15,
+    [int]$HealthIntervalSec = 2,
+    [int]$HealthTimeoutSec = 2
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,28 +102,42 @@ function Remove-Container {
 
 function Health-Check {
     $url = "http://localhost:$Port/api/isalive"
-    try {
-        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 2
-        if ($resp.StatusCode -eq 200) {
-            Write-Host "GROBID is alive at $url"
-            return
+    for ($i = 1; $i -le $HealthRetries; $i++) {
+        try {
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $HealthTimeoutSec
+            if ($resp.StatusCode -eq 200) {
+                Write-Host "GROBID is alive at $url"
+                return $true
+            }
+        } catch {
+            # Retry until max attempts reached.
         }
-    } catch {
-        Write-Host "GROBID health check failed at $url"
+        if ($i -lt $HealthRetries) {
+            Start-Sleep -Seconds $HealthIntervalSec
+        }
     }
+
+    Write-Host "GROBID health check failed at $url after $HealthRetries attempts."
+    Write-Host "Container status:"
+    Status-Container
+    Write-Host "Recent container logs:"
+    docker logs --tail $LogsTail $ContainerName
+    return $false
 }
 
 switch ($Action) {
     "start" {
         Start-Container
-        Start-Sleep -Seconds 2
-        Health-Check
+        if (-not (Health-Check)) {
+            throw "GROBID did not become healthy."
+        }
     }
     "stop" { Stop-Container }
     "restart" {
         Restart-Container
-        Start-Sleep -Seconds 2
-        Health-Check
+        if (-not (Health-Check)) {
+            throw "GROBID did not become healthy after restart."
+        }
     }
     "status" { Status-Container }
     "logs" { Logs-Container }

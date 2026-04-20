@@ -168,6 +168,7 @@ class GrobidReferenceExtractor:
                 f"{self.url}/api/processHeaderDocument",
                 files=files,
                 timeout=self.timeout_s,
+                trust_env=False,
             )
             response.raise_for_status()
 
@@ -205,17 +206,32 @@ class GrobidReferenceExtractor:
             "includeRawCitations": "1",
         }
 
-        with pdf_file.open("rb") as handle:
-            files = {"input": (pdf_file.name, handle, "application/pdf")}
-            response = httpx.post(
-                f"{self.url}/api/processFulltextDocument",
-                data=params,
-                files=files,
-                timeout=self.timeout_s,
-            )
-            response.raise_for_status()
+        def _call(timeout_s: int) -> str:
+            with pdf_file.open("rb") as handle:
+                files = {"input": (pdf_file.name, handle, "application/pdf")}
+                response = httpx.post(
+                    f"{self.url}/api/processFulltextDocument",
+                    data=params,
+                    files=files,
+                    timeout=timeout_s,
+                    trust_env=False,
+                )
+                response.raise_for_status()
+            return response.text
 
-        return response.text
+        try:
+            return _call(self.timeout_s)
+        except httpx.TimeoutException:
+            retry_timeout = max(self.timeout_s * 3, 180)
+            if retry_timeout <= self.timeout_s:
+                raise
+            logger.warning(
+                "GROBID fulltext timed out after %ss for %s. Retrying once with %ss.",
+                self.timeout_s,
+                pdf_file.name,
+                retry_timeout,
+            )
+            return _call(retry_timeout)
 
     def _parse_references(self, tei_xml: str) -> list[ReferenceEntry]:
         root = ET.fromstring(tei_xml)
@@ -715,7 +731,11 @@ class CitationChecker:
 
     def _grobid_is_available(self, url: str) -> bool:
         try:
-            response = httpx.get(f"{url.rstrip('/')}/api/isalive", timeout=2)
+            response = httpx.get(
+                f"{url.rstrip('/')}/api/isalive",
+                timeout=2,
+                trust_env=False,
+            )
             return response.status_code == 200
         except Exception:
             return False
