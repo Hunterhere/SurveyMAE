@@ -113,8 +113,11 @@ def _extract_title_and_abstract_with_grobid(
             "[DEGRADED] GROBID header extraction failed: %s. "
             "Falling back to regex title/abstract extraction. "
             "[Impact] Keyword quality may be lower if regex misses title or abstract. "
-            "[Fix] Start GROBID: docker run --rm -d -p 8070:8070 grobid/grobid:0.8.2",
+            "[Fix] Ensure GROBID is reachable at %s and increase citation.grobid_timeout_s "
+            "(current=%ss, suggested=180s for large PDFs).",
             exc,
+            grobid_url,
+            timeout_s,
         )
         return "", ""
 

@@ -1,7 +1,7 @@
 param(
     [ValidateSet("start", "stop", "restart", "status", "logs", "rm")]
     [string]$Action = "start",
-    [string]$Image = grobid/grobid:0.9.0-crf, #"grobid/grobid:0.9.0-full" on linux gpu
+    [string]$Image = "grobid/grobid:0.9.0-crf", #"grobid/grobid:0.9.0-full" on linux gpu
     [string]$ContainerName = "grobid",
     [int]$Port = 8070,
     [string]$Memory = "2g",
@@ -35,12 +35,18 @@ function Start-Container {
     $containerId = Get-ContainerId
     if ($containerId) {
         docker update --memory $Memory --memory-swap $Memory $ContainerName | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to update container '$ContainerName' memory limits."
+        }
         if (Is-Running) {
             Write-Host "Container '$ContainerName' is already running."
             return
         }
         Write-Host "Starting existing container '$ContainerName' ..."
         docker start $ContainerName | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to start existing container '$ContainerName'."
+        }
         return
     }
 
@@ -50,6 +56,9 @@ function Start-Container {
         --memory $Memory --memory-swap $Memory `
         --log-opt "max-size=$LogMaxSize" --log-opt "max-file=$LogMaxFile" `
         $Image | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create container '$ContainerName'. Check whether port $Port is already occupied."
+    }
 }
 
 function Stop-Container {

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ACTION="${1:-start}"
 
-IMAGE="grobid/grobid:0.8.2-full"
+IMAGE="grobid/grobid:0.9.0-crf"
 CONTAINER_NAME="grobid"
 PORT="8070"
 MEMORY="${GROBID_MEMORY:-4g}"

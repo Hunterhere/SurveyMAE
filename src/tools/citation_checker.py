@@ -651,13 +651,18 @@ class CitationChecker:
             except Exception as exc:
                 msg = f"grobid_failed: {exc}"
                 errors.append(msg)
+                grobid_url = str(getattr(citation_cfg, "grobid_url", "http://localhost:8070"))
+                grobid_timeout = int(getattr(citation_cfg, "grobid_timeout_s", 30))
                 logger.warning(
                     "[DEGRADED] GROBID call failed: %s. "
                     "Falling back to regex reference parsing. "
                     "[Impact] Reference metadata (title/author/year) accuracy will be lower, "
                     "C5 and citation graph quality affected. "
-                    "[Fix] Start GROBID: docker run --rm -d -p 8070:8070 grobid/grobid:0.8.2",
+                    "[Fix] Ensure GROBID is reachable at %s and increase citation.grobid_timeout_s "
+                    "(current=%ss, suggested=180s for large PDFs).",
                     exc,
+                    grobid_url,
+                    grobid_timeout,
                 )
 
         fallback_refs = self.extract_references_from_pdf(pdf_path)
