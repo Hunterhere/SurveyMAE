@@ -8,9 +8,9 @@ param(
     [string]$LogMaxSize = "10m",
     [int]$LogMaxFile = 5,
     [int]$LogsTail = 200,
-    [int]$HealthRetries = 15,
+    [int]$HealthRetries = 60,
     [int]$HealthIntervalSec = 2,
-    [int]$HealthTimeoutSec = 2
+    [int]$HealthTimeoutSec = 5
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +22,20 @@ function Get-ContainerId {
 function Is-Running {
     $state = docker inspect -f "{{.State.Running}}" $ContainerName 2>$null
     return $state -eq "true"
+}
+
+function Get-MappedHostPort {
+    if (-not (Get-ContainerId)) {
+        return $null
+    }
+    $portLine = docker port $ContainerName 8070/tcp 2>$null | Select-Object -First 1
+    if ($LASTEXITCODE -ne 0 -or -not $portLine) {
+        return $null
+    }
+    if ($portLine -match ":(\d+)$") {
+        return [int]$Matches[1]
+    }
+    return $null
 }
 
 function Ensure-Image {
@@ -81,7 +95,13 @@ function Restart-Container {
 }
 
 function Status-Container {
-    docker ps -a --filter "name=^/$ContainerName$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Image}}"
+    $rows = docker ps -a --filter "name=^/$ContainerName$" --format "{{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Image}}"
+    if (-not $rows) {
+        Write-Host "Container '$ContainerName' not found."
+        return
+    }
+    Write-Host "NAMES`tSTATUS`tPORTS`tIMAGE"
+    $rows
 }
 
 function Logs-Container {
@@ -101,12 +121,22 @@ function Remove-Container {
 }
 
 function Health-Check {
-    $url = "http://localhost:$Port/api/isalive"
+    $startTs = Get-Date
+    $mappedPort = Get-MappedHostPort
+    $healthPort = if ($mappedPort) { $mappedPort } else { $Port }
+    if ($mappedPort -and $mappedPort -ne $Port) {
+        Write-Host "Container maps 8070/tcp to host port $mappedPort (requested -Port=$Port). Health check will use $mappedPort."
+    }
+    if (-not $mappedPort) {
+        Write-Host "No host port mapping found for container 8070/tcp. Health check will try -Port=$Port."
+    }
+    $url = "http://localhost:$healthPort/api/isalive"
     for ($i = 1; $i -le $HealthRetries; $i++) {
         try {
             $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec $HealthTimeoutSec
             if ($resp.StatusCode -eq 200) {
-                Write-Host "GROBID is alive at $url"
+                $elapsed = [int]((Get-Date) - $startTs).TotalSeconds
+                Write-Host "GROBID is alive at $url (ready in ${elapsed}s)"
                 return $true
             }
         } catch {
