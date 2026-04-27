@@ -35,6 +35,24 @@ uv run python -m src.main path/to/survey.pdf -o ./output
 uv run python -m src.main path/to/survey.pdf -c config/main.yaml -v
 ```
 
+### Start the Local Web UI
+
+Start the frontend-backed FastAPI server on Windows PowerShell:
+
+```powershell
+.\scripts\start_server.ps1
+.\scripts\start_server.ps1 -Port 8080
+```
+
+Start it on Linux/macOS:
+
+```bash
+scripts/start_server.sh
+scripts/start_server.sh --port 8080
+```
+
+The server defaults to `http://localhost:8000` with auto-reload enabled. Press `Ctrl+C` in the terminal to stop it.
+
 ## Environment
 
 Use `.env.example` as the template for local configuration:
@@ -86,7 +104,7 @@ Both scripts default to `grobid/grobid:0.9.0-crf`, container name `grobid`, host
 SurveyMAE/
 ├── config/                  # LLM, search, agent, and prompt configuration
 ├── docs/                    # Developer guide, design notes, and Chinese README
-├── scripts/                 # Utility scripts, including GROBID container helpers
+├── scripts/                 # Utility scripts, including web server and GROBID helpers
 ├── src/
 │   ├── agents/              # Agent implementations
 │   ├── core/                # State, config, logging, and MCP client code

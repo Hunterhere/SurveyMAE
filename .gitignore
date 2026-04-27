@@ -25,6 +25,11 @@ wheels/
 # Configuration (optional - keep if you want local overrides)
 config/local.yaml
 
+# TestSet Papers
+/papers/**
+!/papers/
+!/papers/test_paper_SurveyX.pdf
+
 # Output
 output/
 lib/
@@ -51,3 +56,4 @@ BibGuard/**
 # Claude Code
 
 .claude/
+plans/
