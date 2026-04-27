@@ -4,7 +4,7 @@ param(
     [string]$Image = "grobid/grobid:0.9.0-crf", #"grobid/grobid:0.9.0-full" on linux gpu
     [string]$ContainerName = "grobid",
     [int]$Port = 8070,
-    [string]$Memory = "2g",
+    [string]$Memory = "8g",
     [string]$LogMaxSize = "10m",
     [int]$LogMaxFile = 5,
     [int]$LogsTail = 200,
@@ -28,7 +28,12 @@ function Get-MappedHostPort {
     if (-not (Get-ContainerId)) {
         return $null
     }
-    $portLine = docker port $ContainerName 8070/tcp 2>$null | Select-Object -First 1
+    $portLine = ""
+    try {
+        $portLine = docker port $ContainerName 8070/tcp 2>$null | Select-Object -First 1
+    } catch {
+        return $null
+    }
     if ($LASTEXITCODE -ne 0 -or -not $portLine) {
         return $null
     }
@@ -129,6 +134,9 @@ function Health-Check {
     }
     if (-not $mappedPort) {
         Write-Host "No host port mapping found for container 8070/tcp. Health check will try -Port=$Port."
+        Write-Host "If this container was created without '-p $Port`:8070', recreate it:"
+        Write-Host "  .\scripts\grobid.ps1 -Action rm"
+        Write-Host "  .\scripts\grobid.ps1 -Action start -Port $Port"
     }
     $url = "http://localhost:$healthPort/api/isalive"
     for ($i = 1; $i -le $HealthRetries; $i++) {

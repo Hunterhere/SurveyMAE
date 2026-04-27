@@ -1,110 +1,142 @@
 # SurveyMAE
 
-**SurveyMAE**（Survey Multi-Agent Evaluation）是一个基于 LangGraph 的多智能体动态评测框架，用于评估 LLM 生成的学术综述（Survey）质量。
+**SurveyMAE** is a LangGraph-based multi-agent evaluation framework for assessing the quality of LLM-generated academic surveys.
 
-**核心特性**
-- 多维度评估：五个专业智能体从不同角度评估综述质量
-- 辩论机制：支持多轮辩论达成共识
-- MCP 协议：工具可通过 MCP 协议暴露和调用
-- 可扩展架构：易于添加新的评估维度和智能体
-- 配置驱动：所有配置外部化，支持 YAML 管理
+## Highlights
 
-**评估维度**
-| 智能体 | 维度 | 描述 |
-|--------|------|------|
-| VerifierAgent | 事实性 | 幻觉检测、引用验证 |
-| ExpertAgent | 深度 | 技术准确性、逻辑连贯性 |
-| ReaderAgent | 可读性 | 覆盖范围、清晰度 |
-| CorrectorAgent | 平衡性 | 偏见检测、观点平衡 |
-| ReportAgent | 报告生成 | 聚合评测结果、生成最终报告 |
+- Multi-dimensional review across factuality, expertise, readability, correction, and final reporting agents.
+- Evidence-grounded scoring with citation validation, citation graph analysis, temporal coverage, structure analysis, and literature search signals.
+- Multi-model correction for high hallucination-risk dimensions, including variance records for disagreement.
+- Config-driven runtime through YAML files and environment variables.
+- Extensible registries for metrics, evidence routing, tools, and agent dimensions.
 
-**快速开始**
-前置要求
+## Quick Start
+
+### Requirements
+
 - Python 3.12+
-- uv 包管理器
+- uv
+- Optional: Docker, when using GROBID as a PDF reference parsing backend
 
-安装与运行
+### Install
+
 ```bash
-# 安装依赖
 uv sync
+cp .env.example .env
+```
 
-# 配置环境变量
-# 项目根目录已有 .env 文件，可直接编辑
-# OPENAI_API_KEY=your-key-here
+Fill in your own API keys in the local `.env` file.
 
-# 运行评测（输入 PDF）
+### Run an Evaluation
+
+```bash
 uv run python -m src.main path/to/survey.pdf
-
-# 指定输出文件
-uv run python -m src.main path/to/survey.pdf -o report.md
-
-# 使用自定义配置
-uv run python -m src.main path/to/survey.pdf -c config/main.yaml
-
-# 启用详细日志
-uv run python -m src.main path/to/survey.pdf -v
+uv run python -m src.main path/to/survey.pdf -o ./output
+uv run python -m src.main path/to/survey.pdf -c config/main.yaml -v
 ```
 
-**项目结构**
+## Environment
+
+Use `.env.example` as the template for local configuration:
+
+```bash
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+DASHSCOPE_API_KEY=
+DEEPSEEK_API_KEY=
+SEMANTIC_SCHOLAR_API_KEY=
+OPENALEX_EMAIL=
+DATALAB_API_KEY=
+GROBID_URL=
 ```
+
+The template contains the full field list. Fill only the providers and tools you plan to use.
+
+## Optional GROBID Backend
+
+SurveyMAE can use GROBID to improve PDF reference parsing. The examples below follow the official GROBID Docker documentation: <https://grobid.readthedocs.io/en/latest/Grobid-docker/>.
+
+Pull the CRF-only image:
+
+```bash
+docker pull grobid/grobid:0.9.0-crf
+```
+
+Start, inspect, and stop GROBID on Windows PowerShell:
+
+```powershell
+.\scripts\grobid.ps1 -Action start
+.\scripts\grobid.ps1 -Action status
+.\scripts\grobid.ps1 -Action stop
+```
+
+Start, inspect, and stop GROBID on Linux/macOS:
+
+```bash
+scripts/grobid.sh start
+scripts/grobid.sh status
+scripts/grobid.sh stop
+```
+
+Both scripts default to `grobid/grobid:0.9.0-crf`, container name `grobid`, host port `8070`, and an 8 GB memory limit. Set `GROBID_URL=http://localhost:8070` in `.env` if you need an explicit backend URL.
+
+## Project Layout
+
+```text
 SurveyMAE/
-├── config/                  # 配置文件目录
-│   ├── main.yaml           # 主配置（LLM、Agent、MCP 服务器等）
-│   └── prompts/            # Agent System Prompt 模板
+├── config/                  # LLM, search, agent, and prompt configuration
+├── docs/                    # Developer guide, design notes, and Chinese README
+├── scripts/                 # Utility scripts, including GROBID container helpers
 ├── src/
-│   ├── main.py             # CLI 入口
-│   ├── core/               # 核心框架层
-│   ├── agents/             # 智能体实现
-│   ├── graph/              # LangGraph 编排层
-│   └── tools/              # 工具实现（PDF/引用等）
-└── tests/                  # 测试
+│   ├── agents/              # Agent implementations
+│   ├── core/                # State, config, logging, and MCP client code
+│   ├── graph/               # LangGraph nodes, edges, and workflow builder
+│   └── tools/               # PDF parsing, citation, search, and graph tools
+└── tests/                   # Unit and integration tests
 ```
 
-**配置说明**
-主配置文件 `config/main.yaml` 覆盖 LLM、Agent、辩论策略、MCP 服务、引用抽取等配置。
+## Secondary Development
 
-`.env` 示例：
+SurveyMAE is designed to be configurable and extensible. See [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for customization details, including:
+
+- Tool customization: [Customize the PDF parsing backend](docs/DEVELOPER_GUIDE.md#95-customize-the-pdf-parsing-backend)
+- Metric customization: [Add a new tool metric](docs/DEVELOPER_GUIDE.md#91-add-a-new-tool-metric)
+- Agent and sub-dimension extension: [Add or modify an agent sub-dimension](docs/DEVELOPER_GUIDE.md#92-add-or-modify-an-agent-sub-dimension)
+- Evidence-to-dimension routing: [Metrics and agent mapping](docs/DEVELOPER_GUIDE.md#6-metrics-and-agent-mapping)
+- Testing and code checks: [Testing and quality checks](docs/DEVELOPER_GUIDE.md#10-testing-and-quality-checks)
+
+Chinese documentation is available at [docs/README.zh-CN.md](docs/README.zh-CN.md), and the Chinese developer guide is available at [docs/DEVELOPER_GUIDE.zh-CN.md](docs/DEVELOPER_GUIDE.zh-CN.md).
+
+## Testing
+
+Unit tests cover deterministic logic and should not require external services or real API keys:
+
 ```bash
-OPENAI_API_KEY=sk-your-key-here
-# 可选
-ANTHROPIC_API_KEY=sk-ant-your-key-here
-OPENAI_BASE_URL=https://api.openai.com/v1
+uv run pytest tests/unit
+uv run pytest tests/unit/test_evidence_dispatch.py
+uv run pytest tests/unit/test_aggregator.py tests/unit/test_state.py
 ```
 
-**工具与 MCP**
-- PDF 解析工具：`src/tools/pdf_parser.py`（基于 `pymupdf4llm`）
-- 引用检查工具：`src/tools/citation_checker.py`
-- MCP Server：`src/tools/*_server.py`
+Integration tests exercise real pipeline boundaries such as PDF parsing, GROBID, external search providers, and citation graph generation. They may require Docker services, API keys, or sample PDFs:
 
-可选后端 GROBID：
 ```bash
-docker compose -f docker-compose.grobid.yaml up -d
+uv run pytest tests/integration
+uv run pytest tests/integration/test_citation_graph_pipeline.py
+uv run pytest tests/integration/test_citation_grobid.py
 ```
 
-**开发与测试**
-```bash
-# 运行测试
-uv run pytest
+Code quality checks:
 
-# 代码格式化
+```bash
 uv run ruff format .
-
-# 静态分析
 uv run ruff check .
-
-# 类型检查
 uv run mypy src/
 ```
 
-**贡献指南**
-1. Fork 项目
-2. 创建功能分支：`git checkout -b feature/my-feature`
-3. 提交更改：`git commit -am 'Add new feature'`
-4. 推送分支：`git push origin feature/my-feature`
-5. 创建 Pull Request
+## Acknowledgements
 
-**致谢**
-本项目复用 BibGuard 的文献检索组件，代码位于 `src/tools/fetchers/`。
+SurveyMAE reuses literature-search components from [BibGuard](https://github.com/HaucaVN/BibGuard) under `src/tools/fetchers/`, supports [GROBID](https://github.com/grobidOrg/grobid) as an optional PDF reference parsing backend, and can use [Marker](https://github.com/datalab-to/marker) for high-quality PDF-to-Markdown parsing.
 
-**许可证**
+## License
+
 MIT License

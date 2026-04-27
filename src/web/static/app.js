@@ -323,7 +323,11 @@ function loadAvailableData() {
     apiFile(id, pid, 'tools/extraction.json').then(d => { S.extraction = d; });
 
   if (cf.includes('tools/validation.json') && !S.validation)
-    apiFile(id, pid, 'tools/validation.json').then(d => { S.validation = d; showPartialValidation(); });
+    apiFile(id, pid, 'tools/validation.json').then(d => {
+      S.validation = d;
+      showPartialValidation();
+      if (document.getElementById('panel-graph')?.open && S.graphAnalysis) renderGraphPanel();
+    });
 
   if (cf.includes('tools/c6_alignment.json') && !S.c6)
     apiFile(id, pid, 'tools/c6_alignment.json').then(d => { S.c6 = d; });
@@ -335,7 +339,10 @@ function loadAvailableData() {
     apiFile(id, pid, 'tools/trend_baseline.json').then(d => { S.trendBaseline = d; showPartialTemporal(); });
 
   if (cf.includes('tools/graph_analysis.json') && !S.graphAnalysis)
-    apiFile(id, pid, 'tools/graph_analysis.json').then(d => { S.graphAnalysis = d; });
+    apiFile(id, pid, 'tools/graph_analysis.json').then(d => {
+      S.graphAnalysis = d;
+      if (document.getElementById('panel-graph')?.open && S.validation) renderGraphPanel();
+    });
 
   if (cf.includes('tools/key_papers.json') && !S.keyPapers)
     apiFile(id, pid, 'tools/key_papers.json').then(d => { S.keyPapers = d; });
@@ -942,17 +949,109 @@ const CLUSTER_PALETTE = [
 
 function renderCitationGraph() {
   const container = $('citation-graph');
-  if (!container || S.citationNetwork) return;
+  if (!container) return;
+  if (S.citationNetwork) {
+    S.citationNetwork.destroy();
+    S.citationNetwork = null;
+  }
 
   const vr = S.validation?.reference_validations || [];
   const edges = S.validation?.real_citation_edges || [];
-  const clusters = S.graphAnalysis?.citation_graph_analysis?.summary?.cocitation_clustering?.clusters || [];
+  const graph = S.graphAnalysis?.citation_graph_analysis || {};
+  // Preferred schema: evidence.clusters; keep backward compatibility with older summary path.
+  const clusters = graph?.evidence?.clusters || graph?.summary?.cocitation_clustering?.clusters || [];
+  // Optional full mapping (if future schema provides it).
+  const nodeToCluster = graph?.evidence?.node_to_cluster || graph?.summary?.cocitation_clustering?.node_to_cluster || null;
 
   // Build paper_id → cluster_id map
   const clusterMap = {};
-  clusters.forEach(cl => {
-    (cl.top_papers || []).forEach(tp => { clusterMap[tp.paper_id] = cl.cluster_id; });
-  });
+  if (nodeToCluster && typeof nodeToCluster === 'object') {
+    Object.entries(nodeToCluster).forEach(([paperId, clusterId]) => {
+      clusterMap[paperId] = clusterId;
+    });
+  } else {
+    clusters.forEach(cl => {
+      (cl.top_papers || []).forEach(tp => { clusterMap[tp.paper_id] = cl.cluster_id; });
+    });
+  }
+
+  // Visualization fallback:
+  // 1) If only top papers are labeled, propagate labels by neighbor majority vote.
+  // 2) If still unlabeled (or no seed labels), assign component-based pseudo clusters.
+  const vrKeys = new Set(vr.map(r => r.key).filter(Boolean));
+  const adj = {};
+  const addAdj = (a, b) => {
+    if (!vrKeys.has(a) || !vrKeys.has(b) || a === b) return;
+    if (!adj[a]) adj[a] = new Set();
+    if (!adj[b]) adj[b] = new Set();
+    adj[a].add(b);
+    adj[b].add(a);
+  };
+  edges.forEach(e => addAdj(e.source, e.target));
+
+  const seeded = Object.keys(clusterMap).length;
+  if (seeded > 0) {
+    for (let round = 0; round < 6; round++) {
+      let changed = 0;
+      vr.forEach(r => {
+        const id = r.key;
+        if (!id || clusterMap[id] != null) return;
+        const ns = adj[id];
+        if (!ns || ns.size === 0) return;
+        const votes = {};
+        ns.forEach(n => {
+          const cid = clusterMap[n];
+          if (cid == null) return;
+          votes[cid] = (votes[cid] || 0) + 1;
+        });
+        const entries = Object.entries(votes);
+        if (!entries.length) return;
+        entries.sort((a, b) => b[1] - a[1]);
+        clusterMap[id] = Number(entries[0][0]);
+        changed++;
+      });
+      if (!changed) break;
+    }
+  } else if (edges.length > 0) {
+    let nextCid = 0;
+    const seen = new Set();
+    vr.forEach(r => {
+      const start = r.key;
+      if (!start || seen.has(start)) return;
+      const stack = [start];
+      seen.add(start);
+      let hasEdge = false;
+      while (stack.length) {
+        const cur = stack.pop();
+        const ns = adj[cur];
+        if (ns && ns.size) {
+          hasEdge = true;
+          ns.forEach(n => {
+            if (!seen.has(n)) {
+              seen.add(n);
+              stack.push(n);
+            }
+          });
+        }
+      }
+      if (!hasEdge) return;
+      const stack2 = [start];
+      const seen2 = new Set([start]);
+      while (stack2.length) {
+        const cur = stack2.pop();
+        clusterMap[cur] = nextCid;
+        const ns = adj[cur];
+        if (!ns) continue;
+        ns.forEach(n => {
+          if (!seen2.has(n)) {
+            seen2.add(n);
+            stack2.push(n);
+          }
+        });
+      }
+      nextCid++;
+    });
+  }
 
   // Compute degrees
   const inDeg = {}, outDeg = {};
@@ -985,6 +1084,15 @@ function renderCitationGraph() {
     }
     return node;
   });
+
+  try {
+    const colorStats = nodes.reduce((acc, n) => {
+      const c = n.color || 'unknown';
+      acc[c] = (acc[c] || 0) + 1;
+      return acc;
+    }, {});
+    console.info('[citation-graph] color distribution', colorStats);
+  } catch (_) {}
 
   const edgeData = edges.map((e, i) => ({
     id: `e${i}`, from: e.source, to: e.target,

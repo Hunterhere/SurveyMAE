@@ -233,6 +233,7 @@ class CitationGraphAnalyzer:
                 topk=cfg.topk_papers,
             ),
             "clusters": cocitation["evidence"],
+            "node_to_cluster": cocitation.get("node_to_cluster", {}),
         }
 
         warnings = self._build_warnings(
@@ -581,10 +582,16 @@ class CitationGraphAnalyzer:
             undirected[v].add(u)
 
         clusters = self._connected_components(nodes, undirected)
+        ordered_clusters = sorted(clusters, key=len, reverse=True)
+        node_to_cluster: dict[str, int] = {}
+        for cluster_id, cluster_nodes in enumerate(ordered_clusters):
+            for node in cluster_nodes:
+                node_to_cluster[node] = cluster_id
+
         cluster_sizes = sorted((len(c) for c in clusters), reverse=True)
 
         cluster_evidence = []
-        for cluster_id, cluster_nodes in enumerate(sorted(clusters, key=len, reverse=True)):
+        for cluster_id, cluster_nodes in enumerate(ordered_clusters):
             if cluster_id >= topk_clusters:
                 break
             top_nodes = sorted(
@@ -616,6 +623,7 @@ class CitationGraphAnalyzer:
                 "cluster_size_stats": cluster_stats,
             },
             "evidence": cluster_evidence,
+            "node_to_cluster": node_to_cluster,
         }
 
     def _louvain_clustering(
@@ -677,11 +685,17 @@ class CitationGraphAnalyzer:
                 communities.setdefault(comm_id, []).append(node)
             clusters = list(communities.values())
 
+        ordered_clusters = sorted(clusters, key=len, reverse=True)
+        node_to_cluster: dict[str, int] = {}
+        for cluster_id, cluster_nodes in enumerate(ordered_clusters):
+            for node in cluster_nodes:
+                node_to_cluster[node] = cluster_id
+
         cluster_sizes = sorted((len(c) for c in clusters), reverse=True)
 
         # Build cluster evidence
         cluster_evidence = []
-        for cluster_id, cluster_nodes in enumerate(sorted(clusters, key=len, reverse=True)):
+        for cluster_id, cluster_nodes in enumerate(ordered_clusters):
             if cluster_id >= topk_clusters:
                 break
             top_nodes = sorted(
@@ -712,6 +726,7 @@ class CitationGraphAnalyzer:
                 "cluster_size_stats": cluster_stats,
             },
             "evidence": cluster_evidence,
+            "node_to_cluster": node_to_cluster,
         }
 
     def _spectral_clustering(
@@ -810,11 +825,17 @@ class CitationGraphAnalyzer:
                 communities.setdefault(int(label), []).append(nodes[i])
             clusters = list(communities.values())
 
+        ordered_clusters = sorted(clusters, key=len, reverse=True)
+        node_to_cluster: dict[str, int] = {}
+        for cluster_id, cluster_nodes in enumerate(ordered_clusters):
+            for node in cluster_nodes:
+                node_to_cluster[node] = cluster_id
+
         cluster_sizes = sorted((len(c) for c in clusters), reverse=True)
 
         # Build cluster evidence
         cluster_evidence = []
-        for cluster_id, cluster_nodes in enumerate(sorted(clusters, key=len, reverse=True)):
+        for cluster_id, cluster_nodes in enumerate(ordered_clusters):
             if cluster_id >= topk_clusters:
                 break
             top_nodes = sorted(
@@ -845,6 +866,7 @@ class CitationGraphAnalyzer:
                 "cluster_size_stats": cluster_stats,
             },
             "evidence": cluster_evidence,
+            "node_to_cluster": node_to_cluster,
         }
 
     def _elbow_center_count(
@@ -964,6 +986,7 @@ class CitationGraphAnalyzer:
                     "pagerank_alpha": pagerank_alpha,
                 },
                 "evidence": [],
+                "node_to_cluster": {node: None for node in nodes},
             }
 
         # Build networkx DiGraph for BFS on reversed graph.
@@ -1044,6 +1067,12 @@ class CitationGraphAnalyzer:
             communities.setdefault(cid, []).append(node)
         clusters = list(communities.values())
 
+        ordered_clusters = sorted(clusters, key=len, reverse=True)
+        node_to_cluster: dict[str, Optional[int]] = {node: None for node in nodes}
+        for cluster_id, cluster_nodes in enumerate(ordered_clusters):
+            for node in cluster_nodes:
+                node_to_cluster[node] = cluster_id
+
         cluster_sizes = sorted((len(c) for c in clusters), reverse=True)
         cluster_stats = {
             "max": cluster_sizes[0] if cluster_sizes else 0,
@@ -1054,9 +1083,7 @@ class CitationGraphAnalyzer:
 
         # Build evidence: top-k clusters by size, top-k papers by pagerank.
         cluster_evidence = []
-        for cluster_id, cluster_nodes in enumerate(
-            sorted(clusters, key=len, reverse=True)
-        ):
+        for cluster_id, cluster_nodes in enumerate(ordered_clusters):
             if cluster_id >= topk_clusters:
                 break
             top_nodes = sorted(
@@ -1101,6 +1128,7 @@ class CitationGraphAnalyzer:
                 "centers": center_stats,
             },
             "evidence": cluster_evidence,
+            "node_to_cluster": node_to_cluster,
         }
 
     def _connected_components(

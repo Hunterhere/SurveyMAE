@@ -1033,12 +1033,86 @@ class CitationChecker:
         # Process batches with concurrency limit
         semaphore = asyncio.Semaphore(max_concurrency)
 
-        async def bounded_process(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        async def bounded_process(
+            batch_index: int,
+            batch: list[dict[str, Any]],
+        ) -> tuple[int, list[dict[str, Any]], float]:
+            loop = asyncio.get_running_loop()
+            t0 = loop.time()
             async with semaphore:
-                return await process_batch(batch)
+                result = await process_batch(batch)
+            elapsed_s = loop.time() - t0
+            return batch_index, result, elapsed_s
 
-        results = await asyncio.gather(*[bounded_process(b) for b in batches])
-        batch_results = [item for sublist in results for item in sublist]
+        total_batches = len(batches)
+        batch_results: list[dict[str, Any]] = []
+        if total_batches > 0:
+            loop = asyncio.get_running_loop()
+            t_start = loop.time()
+            heartbeat_every_s = 30.0
+            next_heartbeat = t_start + heartbeat_every_s
+            completed = 0
+
+            tasks = [
+                asyncio.create_task(bounded_process(i + 1, batch))
+                for i, batch in enumerate(batches)
+            ]
+            pending: set[asyncio.Task] = set(tasks)
+
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending,
+                    timeout=5.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                now = loop.time()
+                if not done:
+                    if now >= next_heartbeat:
+                        elapsed = now - t_start
+                        pct = (completed / total_batches) * 100
+                        logger.info(
+                            "C6 progress heartbeat: %d/%d batches complete (%.1f%%), "
+                            "elapsed=%.1fs, pending=%d",
+                            completed,
+                            total_batches,
+                            pct,
+                            elapsed,
+                            len(pending),
+                        )
+                        next_heartbeat = now + heartbeat_every_s
+                    continue
+
+                for task in done:
+                    batch_idx, result, batch_elapsed = task.result()
+                    batch_results.extend(result)
+                    completed += 1
+
+                    elapsed = now - t_start
+                    avg_per_batch = elapsed / completed if completed else 0.0
+                    remaining = total_batches - completed
+                    eta = remaining * avg_per_batch
+                    pct = (completed / total_batches) * 100
+
+                    logger.info(
+                        "C6 progress: batch %d/%d done in %.1fs; completed %d/%d (%.1f%%), "
+                        "elapsed=%.1fs, eta=%.1fs",
+                        batch_idx,
+                        total_batches,
+                        batch_elapsed,
+                        completed,
+                        total_batches,
+                        pct,
+                        elapsed,
+                        eta,
+                    )
+            total_elapsed = loop.time() - t_start
+            logger.info(
+                "C6 batch processing finished: %d/%d batches completed in %.1fs",
+                completed,
+                total_batches,
+                total_elapsed,
+            )
 
         # Add insufficient pairs (no abstract)
         for p in insufficient_pairs:
