@@ -157,4 +157,4 @@ SurveyMAE reuses literature-search components from [BibGuard](https://github.com
 
 ## License
 
-MIT License
+This project is licensed under the [MIT License](LICENSE).

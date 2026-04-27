@@ -122,4 +122,4 @@ uv run mypy src/
 
 ## 许可证
 
-MIT License
+本项目采用 [MIT License](../LICENSE) 开源许可。
