@@ -210,11 +210,12 @@ def _init_metrics_index(config: Any = None) -> dict:
             },
             "G4": {
                 "name": "foundational_coverage_rate",
-                "computed_by": "FoundationalCoverageAnalyzer.analyze",
+                "computed_by": "FoundationalCoverageAnalyzer.analyze + ExpertAgent.E1 (topic relevance)",
                 "source_file": "key_papers.json",
-                "llm_involved": True,
-                "hallucination_risk": "low",
-                "consumed_by": ["ExpertAgent.E1"]
+                "llm_involved": False,
+                "hallucination_risk": None,
+                "consumed_by": ["ExpertAgent.E1"],
+                "note": "Cluster-centric: fraction of co-citation clusters whose center paper has citation_count >= 50. Topic relevance is judged by ExpertAgent.E1. Edge case: G4_valid=False when n_clusters <= 1 → E1 falls back to qualitative scoring.",
             },
             "G5": {
                 "name": "cluster_count",
@@ -411,7 +412,6 @@ async def _wrap_evidence_collection(state: SurveyState) -> dict:
                 "ref_metadata_cache": {},
                 "topic_keywords": [],
                 "field_trend_baseline": {},
-                "candidate_key_papers": [],
                 "warnings": [{"code": "EVIDENCE_COLLECTION_ERROR", "message": str(e)}],
             },
             input_state=input_state,

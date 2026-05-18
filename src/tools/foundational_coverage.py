@@ -1,31 +1,40 @@
 """Foundational coverage analysis tool for survey evaluation.
 
-This tool implements G4 (foundational_coverage_rate) metric:
-- Retrieve top-K highly-cited papers using topic keywords
-- LLM-assisted filtering to remove irrelevant papers
-- Match with survey's reference list
-- Output coverage rate and missing key papers
+This tool implements G4 (foundational_coverage_rate) metric.
+
+Cluster-Centric approach (v2):
+  1. Extract cluster centers from co-citation clustering (computed by
+     CitationGraphAnalyzer → graph_analysis.json). For each cluster, the
+     paper with the highest PageRank is the "cluster center".
+  2. For each cluster center, compute a citation_norm score:
+       citation_norm = citation_count / CITATION_THRESHOLD
+     where CITATION_THRESHOLD = 50 (fixed threshold, empirically chosen).
+     A cluster center with citation_norm >= 1.0 is a "foundational anchor".
+  3. G4 = fraction of clusters that have a foundational anchor.
+  4. Topic relevance judgment is deferred to ExpertAgent.E1 scoring phase.
+     The ExpertAgent LLM receives the cluster_centers list and judges whether
+     each center is genuinely a foundational paper for the survey's domain.
+
+Future enhancement:
+  Use field- and year-normalized baselines instead of a fixed threshold:
+    citation_norm = citation_count / (field_avg_citation_per_year × log₂(year_diff + 1))
+  This requires a new LiteratureSearch.search_field_citation_baseline() method.
 """
 
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field
 from typing import Any, Optional
-
-from src.tools.literature_search import LiteratureSearch
 
 logger = logging.getLogger("surveymae.tools.foundational_coverage")
 
+# Fixed citation threshold — a paper with >= 50 external citations is
+# considered a candidate foundational paper for its sub-field.
+CITATION_THRESHOLD = 50
+
 
 def _convert_numpy_types(obj: Any) -> Any:
-    """Recursively convert numpy types to Python native types for JSON serialization.
-
-    Args:
-        obj: Any object that might contain numpy types
-
-    Returns:
-        Object with numpy types converted to Python native types
-    """
+    """Recursively convert numpy types to Python native types for JSON serialization."""
     try:
         import numpy as np
     except ImportError:
@@ -46,290 +55,154 @@ def _convert_numpy_types(obj: Any) -> Any:
 
 @dataclass
 class FoundationalCoverageResult:
-    """Result of foundational coverage analysis."""
+    """Result of foundational coverage analysis (cluster-centric)."""
 
     coverage_rate: float
+    cluster_centers: list[dict[str, Any]]
     matched_papers: list[dict[str, Any]]
     missing_key_papers: list[dict[str, Any]]
     suspicious_centrality: list[dict[str, Any]]
     llm_involved: bool
     hallucination_risk: str
+    citation_threshold: int = CITATION_THRESHOLD
 
 
 class FoundationalCoverageAnalyzer:
     """Analyze foundational paper coverage for surveys.
 
-    This implements the G4 metric from Plan v2:
-    - Retrieve candidate key papers via academic API search
-    - Filter with LLM to remove irrelevant papers
-    - Match with survey references
-    - Identify suspicious centrality (high in-graph but low external citations)
+    Cluster-centric approach:
+      - For each co-citation cluster, identify the center paper (highest PageRank).
+      - Cross-reference its external citation count from ref_metadata_cache.
+      - A center with citation_count >= citation_threshold is a "foundational anchor".
+      - G4 = fraction of clusters that have at least one foundational anchor.
+      - Topic relevance is deferred to ExpertAgent.E1 LLM scoring.
     """
 
     def __init__(
         self,
-        literature_search: Optional[LiteratureSearch] = None,
-        top_k: int = 30,
-        match_threshold: float = 0.85,
+        citation_threshold: int = CITATION_THRESHOLD,
     ):
         """Initialize the analyzer.
 
         Args:
-            literature_search: Literature search instance.
-            top_k: Number of top-cited papers to retrieve per query.
-            match_threshold: Title matching threshold (0-1).
+            citation_threshold: Minimum external citation count for a paper
+                to be considered a foundational anchor. Default 50.
         """
-        self.literature_search = literature_search or LiteratureSearch()
-        self.top_k = top_k
-        self.match_threshold = match_threshold
+        self.citation_threshold = citation_threshold
 
     async def analyze(
         self,
-        topic_keywords: list[str],
-        survey_references: list[dict[str, Any]],
+        *,
+        cluster_evidence: list[dict[str, Any]],
         ref_metadata_cache: dict[str, dict],
-        llm_filter=None,
+        survey_references: list[dict[str, Any]],
     ) -> FoundationalCoverageResult:
-        """Analyze foundational paper coverage.
+        """Analyze foundational paper coverage using co-citation clusters.
 
         Args:
-            topic_keywords: Keywords extracted from survey.
-            survey_references: Survey's reference list.
+            cluster_evidence: Co-citation cluster evidence from graph analysis.
+                Each cluster has: cluster_id, size, top_papers (list of
+                {paper_id, score} sorted by PageRank descending).
             ref_metadata_cache: Metadata cache from CitationChecker.
-            llm_filter: Optional LLM for filtering irrelevant papers.
+                Maps reference key → {title, year, citation_count, ...}.
+            survey_references: Survey's reference list.
+                Each ref has: key, title, year.
 
         Returns:
-            FoundationalCoverageResult with coverage metrics.
+            FoundationalCoverageResult with coverage rate and cluster-center data.
         """
-        # Step 1: Search for candidate key papers
-        all_candidates = []
-        for keyword in topic_keywords[:5]:  # Limit queries
-            try:
-                results = self.literature_search.search_by_keywords(
-                    keywords=keyword,
-                    max_results=self.top_k,
-                    sort_by="citation_count",
-                )
-                all_candidates.extend(results)
-            except Exception as e:
-                logger.warning(f"Failed to search for keyword '{keyword}': {e}")
+        # Build a lookup for reference metadata: try ref_metadata_cache first,
+        # fall back to survey_references for basic fields.
+        ref_lookup: dict[str, dict] = {}
+
+        for ref in survey_references:
+            key = ref.get("key", "")
+            if not key:
+                continue
+            ref_lookup[key] = {
+                "title": ref.get("title", ""),
+                "year": ref.get("year", ""),
+                "citation_count": 0,
+            }
+
+        # Overlay verified metadata from CitationChecker
+        for key, meta in ref_metadata_cache.items():
+            if key in ref_lookup:
+                ref_lookup[key].update({
+                    "title": meta.get("title") or ref_lookup[key].get("title", ""),
+                    "year": meta.get("year") or ref_lookup[key].get("year", ""),
+                    "citation_count": meta.get("citation_count", 0) or 0,
+                })
+
+        # Step 1: Extract cluster centers and compute citation_norm
+        cluster_centers: list[dict[str, Any]] = []
+        for cluster in cluster_evidence:
+            cluster_id = cluster.get("cluster_id", -1)
+            cluster_size = cluster.get("size", 0)
+            top_papers = cluster.get("top_papers", [])
+
+            if not top_papers:
+                # Cluster with no papers — shouldn't happen, but handle gracefully
+                cluster_centers.append({
+                    "cluster_id": cluster_id,
+                    "cluster_size": cluster_size,
+                    "center_paper_id": "",
+                    "center_title": "(empty cluster)",
+                    "center_year": "",
+                    "citation_count": 0,
+                    "citation_norm": 0.0,
+                    "pagerank_score": 0.0,
+                    "is_foundational_anchor": False,
+                })
                 continue
 
-        # Deduplicate by title
-        seen_titles = set()
-        unique_candidates = []
-        for r in all_candidates:
-            title_lower = r.title.lower().strip()
-            if title_lower not in seen_titles:
-                seen_titles.add(title_lower)
-                unique_candidates.append(r)
+            # Center is the paper with highest PageRank in this cluster
+            center = top_papers[0]
+            paper_id = center.get("paper_id", "")
+            pagerank_score = center.get("score", 0.0)
 
-        # Step 2: LLM filtering (if provided)
-        if llm_filter:
-            filtered_candidates = await self._llm_filter(
-                unique_candidates, topic_keywords, llm_filter
-            )
-        else:
-            filtered_candidates = unique_candidates
+            meta = ref_lookup.get(paper_id, {})
+            title = meta.get("title", paper_id)
+            year = meta.get("year", "")
+            citation_count = meta.get("citation_count", 0)
+            if citation_count is None:
+                citation_count = 0
 
-        # Step 3: Match with survey references
-        matched, missing = self._match_references(filtered_candidates, survey_references)
+            citation_norm = citation_count / self.citation_threshold if self.citation_threshold > 0 else 0.0
+            is_anchor = citation_norm >= 1.0
 
-        # Step 4: Identify suspicious centrality
-        suspicious = self._find_suspicious_centrality(matched, ref_metadata_cache)
+            cluster_centers.append({
+                "cluster_id": cluster_id,
+                "cluster_size": cluster_size,
+                "center_paper_id": paper_id,
+                "center_title": title,
+                "center_year": str(year) if year else "",
+                "citation_count": citation_count,
+                "citation_norm": round(citation_norm, 2),
+                "pagerank_score": round(pagerank_score, 6),
+                "is_foundational_anchor": is_anchor,
+            })
 
-        # Calculate coverage rate
-        coverage_rate = len(matched) / len(filtered_candidates) if filtered_candidates else 0
+        # Step 2: Classify into anchors and non-anchors
+        anchors = [c for c in cluster_centers if c["is_foundational_anchor"]]
+        non_anchors = [c for c in cluster_centers if not c["is_foundational_anchor"]]
+        coverage_rate = len(anchors) / len(cluster_centers) if cluster_centers else 0.0
+
+        logger.info(
+            "G4 cluster-centric: %d/%d clusters have foundational anchors (rate=%.2f)",
+            len(anchors), len(cluster_centers), coverage_rate,
+        )
 
         return FoundationalCoverageResult(
             coverage_rate=coverage_rate,
-            matched_papers=matched,
-            missing_key_papers=missing,
-            suspicious_centrality=suspicious,
-            llm_involved=llm_filter is not None,
-            hallucination_risk="low" if llm_filter else "none",
+            cluster_centers=cluster_centers,
+            matched_papers=anchors,
+            missing_key_papers=non_anchors,
+            suspicious_centrality=[],
+            llm_involved=False,
+            hallucination_risk="none",
+            citation_threshold=self.citation_threshold,
         )
-
-    async def _llm_filter(
-        self,
-        candidates: list,
-        topic_keywords: list[str],
-        llm,
-    ) -> list:
-        """Filter irrelevant papers using LLM."""
-        from langchain_core.messages import HumanMessage
-
-        filtered = []
-
-        for candidate in candidates:
-            prompt = f"""You are evaluating whether a candidate paper is relevant to a survey's topic.
-
-Survey Topic Keywords: {", ".join(topic_keywords)}
-
-Candidate Paper:
-- Title: {candidate.title}
-- Abstract: {candidate.abstract[:500] if candidate.abstract else "N/A"}
-- Citation Count: {candidate.citation_count}
-
-Is this paper relevant to the survey's topic? Answer only "yes" or "no"."""
-
-            try:
-                response = await llm.ainvoke([HumanMessage(content=prompt)])
-                content = response.content if hasattr(response, "content") else str(response)
-                content = content.strip().lower()
-
-                if content.startswith("yes"):
-                    filtered.append(candidate)
-            except Exception as e:
-                logger.warning(f"LLM filter failed for '{candidate.title}': {e}")
-                # Include if filter fails
-                filtered.append(candidate)
-
-        return filtered
-
-    def _match_references(
-        self,
-        candidates: list,
-        survey_references: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Match candidates with survey references."""
-        try:
-            from rapidfuzz import fuzz
-        except ImportError:
-            # Fallback to simple matching
-            fuzz = None
-
-        matched = []
-        unmatched_candidates = []
-
-        # Build reference lookup
-        ref_lookup: dict[str, dict] = {}
-        for ref in survey_references:
-            key = ref.get("key", "")
-            title = ref.get("title", "").lower().strip()
-            doi = ref.get("doi", "").lower().strip()
-            if key:
-                ref_lookup[key] = ref
-            if title:
-                ref_lookup[f"title:{title}"] = ref
-            if doi:
-                ref_lookup[f"doi:{doi}"] = ref
-
-        for candidate in candidates:
-            is_matched = False
-
-            # Convert candidate to JSON-serializable dict to avoid numpy type issues
-            paper_dict = _convert_numpy_types({
-                "title": candidate.title,
-                "year": candidate.year,
-                "authors": candidate.authors,
-                "doi": candidate.doi,
-                "venue": getattr(candidate, "venue", None),
-                "citation_count": candidate.citation_count,
-            })
-
-            # Check DOI first
-            if candidate.doi:
-                doi_key = f"doi:{candidate.doi.lower().strip()}"
-                if doi_key in ref_lookup:
-                    matched.append(
-                        {
-                            "paper": paper_dict,
-                            "matched_ref": ref_lookup[doi_key],
-                            "match_type": "doi",
-                        }
-                    )
-                    is_matched = True
-
-            # Check title
-            if not is_matched and candidate.title:
-                candidate_title = candidate.title.lower().strip()
-                for ref_key, ref in ref_lookup.items():
-                    if ref_key.startswith("title:"):
-                        ref_title = ref_key[6:].lower().strip()
-                        if fuzz:
-                            score = fuzz.token_sort_ratio(candidate_title, ref_title)
-                            if score >= self.match_threshold * 100:
-                                matched.append(
-                                    {
-                                        "paper": paper_dict,
-                                        "matched_ref": ref,
-                                        "match_type": "title",
-                                        "match_score": score / 100,
-                                    }
-                                )
-                                is_matched = True
-                                break
-                        else:
-                            # Simple substring match
-                            if candidate_title in ref_title or ref_title in candidate_title:
-                                matched.append(
-                                    {
-                                        "paper": paper_dict,
-                                        "matched_ref": ref,
-                                        "match_type": "title",
-                                    }
-                                )
-                                is_matched = True
-                                break
-
-            if not is_matched:
-                unmatched_candidates.append(candidate)
-
-        # Missing = candidates that weren't matched
-        missing = [
-            _convert_numpy_types({
-                "title": c.title,
-                "year": c.year,
-                "citation_count": c.citation_count,
-                "venue": getattr(c, "venue", ""),
-            })
-            for c in unmatched_candidates
-        ]
-
-        return matched, missing
-
-    def _find_suspicious_centrality(
-        self,
-        matched: list[dict[str, Any]],
-        ref_metadata_cache: dict[str, dict],
-    ) -> list[dict[str, Any]]:
-        """Find papers with suspicious centrality.
-
-        These are papers that have high centrality in the survey's citation graph
-        but low external citation counts.
-        """
-        suspicious = []
-
-        for match in matched:
-            ref = match.get("matched_ref", {})
-            ref_key = ref.get("key", "")
-
-            # Get external citation count from metadata cache
-            cache_entry = ref_metadata_cache.get(ref_key, {})
-            external_citations = cache_entry.get("citation_count", 0)
-
-            # If external citations are very low but paper is heavily cited in survey
-            # (we don't have graph centrality here, so just flag low external citations)
-            if external_citations is not None and external_citations < 10:
-                # Handle both dict and object access for paper
-                paper = match.get("paper", {})
-                if isinstance(paper, dict):
-                    title = paper.get("title", "")
-                    year = paper.get("year", "")
-                else:
-                    title = getattr(paper, "title", "")
-                    year = getattr(paper, "year", "")
-                suspicious.append(
-                    {
-                        "title": title,
-                        "year": year,
-                        "external_citations": external_citations,
-                        "reason": "Low external citations",
-                    }
-                )
-
-        return suspicious
 
 
 def create_foundational_coverage_mcp_server():
@@ -345,31 +218,31 @@ def create_foundational_coverage_mcp_server():
         return [
             Tool(
                 name="analyze_foundational_coverage",
-                description="Analyze foundational paper coverage (G4 metric)",
+                description="Analyze foundational paper coverage (G4 metric, cluster-centric)",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "topic_keywords": {
+                        "cluster_evidence": {
                             "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Keywords extracted from survey",
+                            "items": {"type": "object"},
+                            "description": "Co-citation cluster evidence from CitationGraphAnalyzer",
+                        },
+                        "ref_metadata_cache": {
+                            "type": "object",
+                            "description": "Metadata cache from CitationChecker (key → metadata)",
                         },
                         "survey_references": {
                             "type": "array",
                             "items": {"type": "object"},
-                            "description": "Survey reference list",
+                            "description": "Survey reference list with key, title, year",
                         },
-                        "ref_metadata_cache": {
-                            "type": "object",
-                            "description": "Metadata cache from CitationChecker",
-                        },
-                        "top_k": {
+                        "citation_threshold": {
                             "type": "integer",
-                            "description": "Number of top-cited papers to retrieve",
-                            "default": 30,
+                            "description": "Minimum citation count for foundational anchor",
+                            "default": CITATION_THRESHOLD,
                         },
                     },
-                    "required": ["topic_keywords", "survey_references"],
+                    "required": ["cluster_evidence", "survey_references"],
                 },
             )
         ]
@@ -381,17 +254,19 @@ def create_foundational_coverage_mcp_server():
 
         try:
             result = await analyzer.analyze(
-                topic_keywords=arguments["topic_keywords"],
-                survey_references=arguments["survey_references"],
+                cluster_evidence=arguments["cluster_evidence"],
                 ref_metadata_cache=arguments.get("ref_metadata_cache", {}),
+                survey_references=arguments.get("survey_references", []),
             )
             output = {
                 "coverage_rate": result.coverage_rate,
+                "cluster_centers": result.cluster_centers,
                 "matched_papers": result.matched_papers,
                 "missing_key_papers": result.missing_key_papers,
                 "suspicious_centrality": result.suspicious_centrality,
                 "llm_involved": result.llm_involved,
                 "hallucination_risk": result.hallucination_risk,
+                "citation_threshold": result.citation_threshold,
             }
             return [TextContent(type="text", text=json.dumps(output, ensure_ascii=False))]
         except Exception as exc:

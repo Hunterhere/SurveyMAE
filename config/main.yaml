@@ -59,10 +59,16 @@ evidence:
   clustering_seed: 42
 
   # C6 (Citation-Sentence Alignment) related
-  c6_batch_size: 10                    # Number of sentence-abstract pairs per LLM batch
-  c6_model: "qwen3.5-flash"         # Model for C6 batch processing
+  c6_batch_size: 20                    # Number of sentence-abstract pairs per LLM batch
   c6_max_concurrency: 5              # Max concurrent batches for C6
   contradiction_threshold: 0.05       # Threshold for auto-fail (5%)
+
+  # LLM reference parsing related
+  llm_ref_parse_batch_size: 20        # Number of raw references per LLM batch
+  llm_ref_parse_max_concurrency: 5     # Max concurrent batches for LLM ref parsing
+
+  # Batch processing heartbeat
+  batch_heartbeat_interval_s: 30       # Heartbeat log interval for all batch LLM processing
 
   # V2 (Citation-Assertion Alignment) scoring thresholds
   v2_score_5_threshold: 0.01         # <1% -> score 5

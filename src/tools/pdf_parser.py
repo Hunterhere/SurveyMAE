@@ -423,6 +423,7 @@ class PDFParser:
 
 
 def create_pdf_parser(config=None) -> "PDFParser":
+    #TODO: english docstring
     """根据配置和环境变量创建 PDF 解析器实例（工厂函数）。
 
     优先使用 Marker API（需要 DATALAB_API_KEY），降级时使用 pymupdf4llm。

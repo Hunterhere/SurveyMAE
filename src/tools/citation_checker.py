@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict, Optional, Any, Iterable, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Any, Iterable, Tuple, TypeVar
 
 import httpx
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -20,6 +20,7 @@ from langchain_openai import ChatOpenAI
 from anthropic import AsyncAnthropic
 
 from src.tools.citation_metadata import (
+    ArxivFetcher,
     CitationMetadataChecker,
     bib_entry_from_dict,
 )
@@ -29,6 +30,108 @@ from src.core.config import load_config, SurveyMAEConfig, ModelConfig
 from src.core.log import create_progress
 
 logger = logging.getLogger("surveymae.tools.citation_checker")
+
+
+# ── Batch LLM utility ────────────────────────────────────────────────
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+
+async def _run_batched_llm(
+    items: list[_T],
+    *,
+    batch_size: int,
+    max_concurrency: int,
+    log_label: str,
+    process_batch_fn: Callable[[list[_T]], Awaitable[list[_R]]],
+    heartbeat_every_s: float = 30.0,
+) -> list[_R]:
+    """Run an async batch-processing function over items with concurrency control.
+
+    Splits ``items`` into batches of ``batch_size``, executes
+    ``process_batch_fn`` on each batch, limited to ``max_concurrency``
+    concurrent calls via :class:`asyncio.Semaphore`.  Logs per-batch
+    timing, overall ETA, and heartbeat for long runs.
+
+    Used by both C6 alignment and LLM reference parsing.
+    """
+    if not items:
+        return []
+
+    batches = [
+        items[i : i + batch_size]
+        for i in range(0, len(items), batch_size)
+    ]
+    total_batches = len(batches)
+    semaphore = asyncio.Semaphore(max_concurrency)
+    loop = asyncio.get_running_loop()
+    t_start = loop.time()
+
+    async def _timed(batch_index: int, batch: list[_T]) -> tuple[int, list[_R], float]:
+        t0 = loop.time()
+        async with semaphore:
+            result = await process_batch_fn(batch)
+        elapsed_s = loop.time() - t0
+        return batch_index, result, elapsed_s
+
+    tasks = [
+        asyncio.create_task(_timed(i + 1, batch))
+        for i, batch in enumerate(batches)
+    ]
+    pending: set[asyncio.Task] = set(tasks)
+    completed = 0
+    all_results: list[_R] = []
+
+    next_heartbeat = t_start + heartbeat_every_s
+
+    while pending:
+        done, pending = await asyncio.wait(
+            pending,
+            timeout=5.0,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        now = loop.time()
+        if not done:
+            if now >= next_heartbeat:
+                elapsed = now - t_start
+                pct = (completed / total_batches) * 100
+                logger.info(
+                    "%s progress heartbeat: %d/%d batches (%.1f%%), "
+                    "elapsed=%.1fs, pending=%d",
+                    log_label, completed, total_batches, pct,
+                    elapsed, len(pending),
+                )
+                next_heartbeat = now + heartbeat_every_s
+            continue
+
+        for task in done:
+            batch_idx, batch_result, batch_elapsed = task.result()
+            all_results.extend(batch_result)
+            completed += 1
+
+            now = loop.time()
+            elapsed = now - t_start
+            avg_per = elapsed / completed if completed else 0.0
+            eta = (total_batches - completed) * avg_per
+            pct = (completed / total_batches) * 100
+            logger.info(
+                "%s batch %d/%d done in %.1fs; "
+                "completed %d/%d (%.1f%%), elapsed=%.1fs, eta=%.1fs",
+                log_label, batch_idx, total_batches, batch_elapsed,
+                completed, total_batches, pct, elapsed, eta,
+            )
+
+    total_elapsed = loop.time() - t_start
+    logger.info(
+        "%s finished: %d/%d batches, %d results in %.1fs",
+        log_label, completed, total_batches, len(all_results), total_elapsed,
+    )
+    return all_results
+
+
+# ── Data classes ─────────────────────────────────────────────────────
 
 
 @dataclass
@@ -580,7 +683,7 @@ class CitationChecker:
             base = self._extract_citations_with_context_text(pdf_path)
         else:
             base = self._extract_citations_with_context_mupdf(pdf_path)
-        references, backend, errors = self._extract_references_with_backend(pdf_path)
+        references, backend, errors = await self._extract_references_with_backend(pdf_path)
         citation_backend = base.backend or "mupdf"
         base.references = references
         base.backend = f"citations:{citation_backend};references:{backend}"
@@ -636,7 +739,385 @@ class CitationChecker:
         content = self.parse_pdf(pdf_path)
         return self.extract_references_from_text(content)
 
-    def _extract_references_with_backend(
+    def _scan_arxiv_ids_from_pdf(self, pdf_path: str) -> list[str]:
+        """Scan full PDF text and link annotations for arXiv identifiers.
+
+        Extracts arXiv IDs from:
+        1. Plain text patterns: arxiv.org/abs/2501.12345, arXiv:2501.12345
+        2. PDF hyperlink annotations on \"arXiv.org\" display text.
+
+        Uses PyMuPDF directly because PyMuPDF4LLM markdown conversion can
+        strip URL paths.
+
+        Returns deduplicated list of cleaned arXiv IDs (e.g. '2501.12345').
+        """
+        seen: set[str] = set()
+        ids: list[str] = []
+        id_pattern = re.compile(r"(\d{4}\.\d{4,5}(?:v\d+)?)")
+
+        if Path(pdf_path).suffix.lower() == ".md":
+            content = self.parse_pdf(pdf_path)
+            for match in re.finditer(
+                r"arxiv\.org/abs/(\d{4}\.\d{4,5}(?:v\d+)?)",
+                content,
+                re.IGNORECASE,
+            ):
+                if match.group(1) not in seen:
+                    seen.add(match.group(1))
+                    ids.append(match.group(1))
+            for match in re.finditer(
+                r"arXiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?)",
+                content,
+                re.IGNORECASE,
+            ):
+                if match.group(1) not in seen:
+                    seen.add(match.group(1))
+                    ids.append(match.group(1))
+            return ids
+
+        try:
+            import fitz
+        except Exception:
+            return ids
+
+        doc = fitz.open(pdf_path)
+        for page in doc:
+            # --- plain text pass ---
+            text = page.get_text()
+            for match in re.finditer(
+                r"arxiv\.org/abs/(\d{4}\.\d{4,5}(?:v\d+)?)",
+                text,
+                re.IGNORECASE,
+            ):
+                if match.group(1) not in seen:
+                    seen.add(match.group(1))
+                    ids.append(match.group(1))
+            for match in re.finditer(
+                r"arXiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?)",
+                text,
+                re.IGNORECASE,
+            ):
+                if match.group(1) not in seen:
+                    seen.add(match.group(1))
+                    ids.append(match.group(1))
+
+            # --- link annotation pass (handles hyperlinked "arXiv.org" text) ---
+            for link in page.get_links():
+                uri = link.get("uri", "")
+                if not uri:
+                    continue
+                match = re.search(
+                    r"arxiv\.org/abs/(\d{4}\.\d{4,5}(?:v\d+)?)",
+                    uri,
+                    re.IGNORECASE,
+                )
+                if match and match.group(1) not in seen:
+                    seen.add(match.group(1))
+                    ids.append(match.group(1))
+
+        doc.close()
+        return ids
+
+    async def _extract_references_via_arxiv_or_llm(
+        self,
+        pdf_path: str,
+    ) -> tuple[list[ReferenceEntry], str, list[str]]:
+        """Extract references via arXiv API (when ID available) or LLM parsing.
+
+        Hybrid approach:
+        1. Split raw reference entries via regex (good at finding entry boundaries).
+        2. For each entry with an arXiv ID → fetch structured metadata from arXiv API.
+        3. For entries without arXiv ID → use LLM to parse title / authors / year.
+        4. Merge results and return with backend label 'arxiv', 'llm', or 'arxiv_llm'.
+
+        Returns (references, backend_label, errors).
+        """
+        errors: list[str] = []
+        content = self.parse_pdf(pdf_path)
+        reference_block = self._find_reference_block(content)
+        if not reference_block:
+            # Fall back to arXiv link scanning for PDFs without a reference section
+            return await self._extract_references_via_arxiv_links(pdf_path)
+
+        raw_entries = self._split_reference_entries(reference_block)
+        if not raw_entries:
+            return await self._extract_references_via_arxiv_links(pdf_path)
+
+        # Filter out entries that are clearly not references (body text false matches)
+        # and limit LLM batch size to avoid excessive token usage.
+        _MAX_LLM_ENTRIES = 200
+
+        # Classify entries: has arXiv ID → API; otherwise → LLM
+        arxiv_indexed: list[tuple[int, str, str]] = []  # (idx, arxiv_id, raw)
+        llm_pending: list[tuple[int, str]] = []  # (idx, raw)
+
+        for idx, raw in enumerate(raw_entries):
+            arxiv_id = self._extract_arxiv_id(raw)
+            if arxiv_id:
+                arxiv_indexed.append((idx, arxiv_id, raw))
+            elif len(raw) < 800 and self._looks_like_reference(raw):
+                llm_pending.append((idx, raw))
+
+        if len(llm_pending) > _MAX_LLM_ENTRIES:
+            logger.warning(
+                "Too many reference candidates for LLM parsing (%d), "
+                "keeping first %d",
+                len(llm_pending),
+                _MAX_LLM_ENTRIES,
+            )
+            llm_pending = llm_pending[:_MAX_LLM_ENTRIES]
+
+        entries: list[ReferenceEntry] = []
+
+        # ── arXiv API batch ──────────────────────────────────────────
+        if arxiv_indexed:
+            fetcher = ArxivFetcher()
+            for idx, arxiv_id, raw in arxiv_indexed:
+                try:
+                    meta = await fetcher.fetch_by_id(arxiv_id)
+                except Exception as exc:
+                    msg = f"arxiv_fetch_failed: {arxiv_id}: {exc}"
+                    errors.append(msg)
+                    llm_pending.append((idx, raw))
+                    continue
+
+                if meta is None:
+                    errors.append(f"arxiv: no metadata returned for {arxiv_id}")
+                    llm_pending.append((idx, raw))
+                    continue
+
+                entries.append(
+                    ReferenceEntry(
+                        key=f"b{idx}",
+                        title=meta.title,
+                        author=" and ".join(meta.authors),
+                        year=meta.year,
+                        doi=meta.doi,
+                        arxiv_id=meta.arxiv_id,
+                        entry_type="reference",
+                        reference_number=idx,
+                        raw=raw,
+                        source="arxiv",
+                    )
+                )
+
+        # ── LLM batch for remaining entries ─────────────────────────
+        if llm_pending:
+            try:
+                llm_entries = await self._llm_parse_references(llm_pending)
+            except Exception as exc:
+                msg = f"llm_parse_failed: {exc}"
+                errors.append(msg)
+                logger.warning("LLM reference parsing failed: %s", exc)
+                llm_entries = []
+
+            for entry in llm_entries:
+                entries.append(entry)
+
+        if not entries:
+            return [], "", errors
+
+        backend = "arxiv_llm" if (arxiv_indexed and llm_pending) else (
+            "arxiv" if arxiv_indexed else "llm"
+        )
+        return entries, backend, errors
+
+    async def _extract_references_via_arxiv_links(
+        self,
+        pdf_path: str,
+    ) -> tuple[list[ReferenceEntry], str, list[str]]:
+        """Fallback: scan PDF hyperlinks for arXiv IDs and fetch metadata.
+
+        Used when no reference-section text is found but arXiv hyperlinks
+        may exist in the body.
+        """
+        errors: list[str] = []
+        arxiv_ids = self._scan_arxiv_ids_from_pdf(pdf_path)
+
+        if not arxiv_ids:
+            return [], "", ["arxiv: no arXiv identifiers found in PDF text"]
+
+        fetcher = ArxivFetcher()
+        entries: list[ReferenceEntry] = []
+
+        for idx, arxiv_id in enumerate(arxiv_ids):
+            try:
+                meta = await fetcher.fetch_by_id(arxiv_id)
+            except Exception as exc:
+                msg = f"arxiv_fetch_failed: {arxiv_id}: {exc}"
+                errors.append(msg)
+                continue
+
+            if meta is None:
+                errors.append(f"arxiv: no metadata returned for {arxiv_id}")
+                continue
+
+            entries.append(
+                ReferenceEntry(
+                    key=f"b{idx}",
+                    title=meta.title,
+                    author=" and ".join(meta.authors),
+                    year=meta.year,
+                    doi=meta.doi,
+                    arxiv_id=meta.arxiv_id,
+                    entry_type="reference",
+                    reference_number=idx,
+                    raw=f"arXiv:{meta.arxiv_id} {meta.title}",
+                    source="arxiv",
+                )
+            )
+
+        if not entries:
+            return [], "arxiv", errors
+        return entries, "arxiv", errors
+
+    async def _llm_parse_references(
+        self,
+        pending: list[tuple[int, str]],
+        batch_size: int | None = None,
+        max_concurrency: int | None = None,
+    ) -> list[ReferenceEntry]:
+        """Parse raw reference strings into structured fields using batch LLM calls.
+
+        Follows the same batch + semaphore concurrency pattern as
+        ``analyze_citation_sentence_alignment``.
+
+        Args:
+            pending: List of (index, raw_text) tuples.
+            batch_size: Number of references per LLM call. Reads from config if None.
+            max_concurrency: Maximum concurrent LLM calls. Reads from config if None.
+
+        Returns:
+            List of ReferenceEntry objects with LLM-extracted fields.
+        """
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from langchain_openai import ChatOpenAI
+
+        if not pending:
+            return []
+
+        # Resolve batch params from config when not explicitly passed
+        evidence_cfg = getattr(self.config, "evidence", None)
+        if batch_size is None:
+            batch_size = getattr(evidence_cfg, "llm_ref_parse_batch_size", None) or 10
+        if max_concurrency is None:
+            max_concurrency = getattr(evidence_cfg, "llm_ref_parse_max_concurrency", None) or 5
+        heartbeat = getattr(evidence_cfg, "batch_heartbeat_interval_s", None) or 30
+
+        try:
+            model_config = ModelConfig.from_yaml("config/models.yaml")
+            llm_cfg = model_config.get_tool_config("citation_checker")
+        except Exception as exc:
+            logger.warning("Failed to load model config for LLM reference parsing: %s", exc)
+            return []
+
+        if not llm_cfg.api_key:
+            logger.warning("No API key configured for LLM reference parsing, skipping")
+            return []
+
+        llm = ChatOpenAI(
+            model=llm_cfg.model,
+            api_key=llm_cfg.api_key,
+            base_url=llm_cfg.base_url,
+            temperature=0.0,
+        )
+
+        system_prompt = (
+            "You are a reference parser. Extract structured metadata from raw academic "
+            "reference strings.\n\n"
+            "For each reference, output a JSON object with these fields:\n"
+            '- "title": paper title (string, "" if not found)\n'
+            '- "authors": list of author names (list of strings)\n'
+            '- "year": publication year, 4-digit (string, "" if not found)\n'
+            '- "doi": DOI string (string, "" if not found)\n\n'
+            "Rules:\n"
+            "1. Return ONLY the JSON array, no other text.\n"
+            "2. Strip author names and year from the title field.\n"
+            "3. Extract full author names when visible, not just \"et al.\".\n"
+            "4. If a field cannot be determined, use empty string or empty list."
+        )
+
+        def _build_user_prompt(batch: list[tuple[int, str]]) -> str:
+            parts = ["Parse these reference strings into JSON:\n"]
+            for i, (_, raw) in enumerate(batch):
+                parts.append(f"[{i}] {raw}\n")
+            return "\n".join(parts)
+
+        async def _process_batch(
+            batch: list[tuple[int, str]],
+        ) -> list[ReferenceEntry]:
+            user_prompt = _build_user_prompt(batch)
+            try:
+                response = await llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ])
+            except Exception as exc:
+                logger.warning("LLM batch call failed: %s", exc)
+                return []
+
+            import json as _json
+            content = response.content.strip()
+            if content.startswith("```"):
+                content = re.sub(r"^```(?:json)?\s*", "", content)
+                content = re.sub(r"\s*```$", "", content)
+            array_start = content.find("[")
+            if array_start == -1:
+                logger.warning("LLM response contains no JSON array")
+                return []
+            content = content[array_start:]
+            array_end = content.rfind("]")
+            if array_end != -1:
+                content = content[:array_end + 1]
+
+            try:
+                parsed_list = _json.loads(content)
+            except _json.JSONDecodeError:
+                logger.warning("LLM returned invalid JSON for reference parsing")
+                return []
+
+            entries: list[ReferenceEntry] = []
+            for idx_in_resp, item in enumerate(parsed_list):
+                if not isinstance(item, dict):
+                    continue
+                original_idx = (
+                    batch[idx_in_resp][0]
+                    if idx_in_resp < len(batch)
+                    else len(entries)
+                )
+                raw = (
+                    batch[idx_in_resp][1]
+                    if idx_in_resp < len(batch)
+                    else ""
+                )
+                authors_list = item.get("authors", [])
+                author_str = " and ".join(authors_list) if authors_list else ""
+                entries.append(
+                    ReferenceEntry(
+                        key=f"b{original_idx}",
+                        title=str(item.get("title", "")).strip(),
+                        author=author_str,
+                        year=str(item.get("year", "")).strip(),
+                        doi=str(item.get("doi", "")).strip(),
+                        arxiv_id="",
+                        entry_type="reference",
+                        reference_number=original_idx,
+                        raw=raw,
+                        source="llm",
+                    )
+                )
+            return entries
+
+        return await _run_batched_llm(
+            pending,
+            batch_size=batch_size,
+            max_concurrency=max_concurrency,
+            log_label="LLM ref-parse",
+            process_batch_fn=_process_batch,
+            heartbeat_every_s=heartbeat,
+        )
+
+    async def _extract_references_with_backend(
         self,
         pdf_path: str,
     ) -> tuple[list[ReferenceEntry], str, list[str]]:
@@ -645,42 +1126,53 @@ class CitationChecker:
         errors: list[str] = []
         is_pdf_source = Path(pdf_path).suffix.lower() == ".pdf"
 
-        if is_pdf_source and backend in {"grobid", "auto"}:
-            if backend == "auto" and not self._grobid_is_available(
-                getattr(citation_cfg, "grobid_url", "http://localhost:8070")
-            ):
-                fallback_refs = self.extract_references_from_pdf(pdf_path)
-                return (
-                    self._reference_entries_from_dicts(fallback_refs, source="mupdf"),
-                    "mupdf",
-                    errors,
-                )
-            try:
-                extractor = GrobidReferenceExtractor(
-                    url=getattr(citation_cfg, "grobid_url", "http://localhost:8070"),
-                    timeout_s=int(getattr(citation_cfg, "grobid_timeout_s", 30)),
-                    consolidate=bool(getattr(citation_cfg, "grobid_consolidate", False)),
-                )
-                refs = extractor.extract_references(pdf_path)
-                if refs:
-                    return refs, "grobid", errors
-            except Exception as exc:
-                msg = f"grobid_failed: {exc}"
-                errors.append(msg)
-                grobid_url = str(getattr(citation_cfg, "grobid_url", "http://localhost:8070"))
-                grobid_timeout = int(getattr(citation_cfg, "grobid_timeout_s", 30))
-                logger.warning(
-                    "[DEGRADED] GROBID call failed: %s. "
-                    "Falling back to regex reference parsing. "
-                    "[Impact] Reference metadata (title/author/year) accuracy will be lower, "
-                    "C5 and citation graph quality affected. "
-                    "[Fix] Ensure GROBID is reachable at %s and increase citation.grobid_timeout_s "
-                    "(current=%ss, suggested=180s for large PDFs).",
-                    exc,
-                    grobid_url,
-                    grobid_timeout,
-                )
+        async def _try_arxiv_llm() -> tuple[list[ReferenceEntry], str, list[str]]:
+            hybrid_entries, hybrid_backend, hybrid_errors = (
+                await self._extract_references_via_arxiv_or_llm(pdf_path)
+            )
+            errors.extend(hybrid_errors)
+            return hybrid_entries, hybrid_backend, hybrid_errors
 
+        # ── 1. GROBID (highest priority) ──────────────────────────────────
+        if is_pdf_source and backend in {"grobid", "auto"}:
+            grobid_available = self._grobid_is_available(
+                getattr(citation_cfg, "grobid_url", "http://localhost:8070")
+            )
+            if backend == "auto" and not grobid_available:
+                # GROBID not reachable → fall through to arXiv+LLM step
+                pass
+            else:
+                try:
+                    extractor = GrobidReferenceExtractor(
+                        url=getattr(citation_cfg, "grobid_url", "http://localhost:8070"),
+                        timeout_s=int(getattr(citation_cfg, "grobid_timeout_s", 30)),
+                        consolidate=bool(getattr(citation_cfg, "grobid_consolidate", False)),
+                    )
+                    refs = extractor.extract_references(pdf_path)
+                    if refs:
+                        return refs, "grobid", errors
+                except Exception as exc:
+                    msg = f"grobid_failed: {exc}"
+                    errors.append(msg)
+                    grobid_url = str(getattr(citation_cfg, "grobid_url", "http://localhost:8070"))
+                    grobid_timeout = int(getattr(citation_cfg, "grobid_timeout_s", 30))
+                    logger.warning(
+                        "[DEGRADED] GROBID call failed: %s. "
+                        "Trying arXiv+LLM hybrid extraction. "
+                        "[Fix] Ensure GROBID is reachable at %s and increase "
+                        "citation.grobid_timeout_s (current=%ss, suggested=180s).",
+                        exc,
+                        grobid_url,
+                        grobid_timeout,
+                    )
+
+        # ── 2. arXiv + LLM hybrid (medium priority) ─────────────────────
+        if is_pdf_source:
+            hybrid_entries, hybrid_backend, _ = await _try_arxiv_llm()
+            if hybrid_entries:
+                return hybrid_entries, hybrid_backend, errors
+
+        # ── 3. mupdf / text regex (lowest priority) ──────────────────────
         fallback_refs = self.extract_references_from_pdf(pdf_path)
         fallback_source = "mupdf" if is_pdf_source else "text"
         fallback_entries = self._reference_entries_from_dicts(fallback_refs, source=fallback_source)
@@ -894,9 +1386,8 @@ class CitationChecker:
         self,
         citations: list[dict[str, Any]],
         references: list[ReferenceEntry],
-        batch_size: int = 10,
-        model_name: str = "qwen3.5-flash",
-        max_concurrency: int = 5,
+        batch_size: int | None = None,
+        max_concurrency: int | None = None,
         contradiction_threshold: float = 0.05,
     ) -> dict[str, Any]:
         """Analyze citation-sentence alignment (C6 metric).
@@ -904,12 +1395,13 @@ class CitationChecker:
         For each citation-sentence pair, determines whether the sentence's claim
         is supported, contradicted, or insufficiently evidenced by the cited paper's abstract.
 
+        Model is loaded from ``config/models.yaml`` → ``tools.citation_checker``.
+
         Args:
             citations: List of citation dicts from extraction (with sentence context).
             references: List of ReferenceEntry objects with validation metadata.
-            batch_size: Number of pairs to process per LLM call.
-            model_name: Model to use for batch processing.
-            max_concurrency: Maximum concurrent batch calls.
+            batch_size: Number of pairs per LLM call. Reads from config if None.
+            max_concurrency: Maximum concurrent batch calls. Reads from config if None.
             contradiction_threshold: Threshold for auto-fail.
 
         Returns:
@@ -917,6 +1409,14 @@ class CitationChecker:
         """
         from langchain_core.messages import HumanMessage
         from langchain_openai import ChatOpenAI
+
+        # Resolve batch params from config when not explicitly passed
+        evidence_cfg = getattr(self.config, "evidence", None)
+        if batch_size is None:
+            batch_size = getattr(evidence_cfg, "c6_batch_size", None) or 10
+        if max_concurrency is None:
+            max_concurrency = getattr(evidence_cfg, "c6_max_concurrency", None) or 5
+        heartbeat = getattr(evidence_cfg, "batch_heartbeat_interval_s", None) or 30
 
         logger.info(f"Starting C6 citation-sentence alignment analysis...")
 
@@ -1001,16 +1501,7 @@ class CitationChecker:
                 "error": str(e),
             }
 
-        # Create batches
-        batches = [
-            pairs_with_abstract[i:i + batch_size]
-            for i in range(0, len(pairs_with_abstract), batch_size)
-        ]
-        #TODO: add more log info to track the batch process
-        logger.info(f"Processing {len(batches)} batches with max concurrency {max_concurrency}")
-
         async def process_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            """Process a single batch of pairs."""
             prompt = self._build_c6_prompt(batch)
             try:
                 response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -1018,7 +1509,6 @@ class CitationChecker:
                 return self._parse_c6_response(content, batch)
             except Exception as e:
                 logger.warning(f"Batch processing failed: {e}")
-                # Mark all as insufficient on error
                 return [
                     {
                         "citation_marker": p["citation_marker"],
@@ -1030,89 +1520,14 @@ class CitationChecker:
                     for p in batch
                 ]
 
-        # Process batches with concurrency limit
-        semaphore = asyncio.Semaphore(max_concurrency)
-
-        async def bounded_process(
-            batch_index: int,
-            batch: list[dict[str, Any]],
-        ) -> tuple[int, list[dict[str, Any]], float]:
-            loop = asyncio.get_running_loop()
-            t0 = loop.time()
-            async with semaphore:
-                result = await process_batch(batch)
-            elapsed_s = loop.time() - t0
-            return batch_index, result, elapsed_s
-
-        total_batches = len(batches)
-        batch_results: list[dict[str, Any]] = []
-        if total_batches > 0:
-            loop = asyncio.get_running_loop()
-            t_start = loop.time()
-            heartbeat_every_s = 30.0
-            next_heartbeat = t_start + heartbeat_every_s
-            completed = 0
-
-            tasks = [
-                asyncio.create_task(bounded_process(i + 1, batch))
-                for i, batch in enumerate(batches)
-            ]
-            pending: set[asyncio.Task] = set(tasks)
-
-            while pending:
-                done, pending = await asyncio.wait(
-                    pending,
-                    timeout=5.0,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                now = loop.time()
-                if not done:
-                    if now >= next_heartbeat:
-                        elapsed = now - t_start
-                        pct = (completed / total_batches) * 100
-                        logger.info(
-                            "C6 progress heartbeat: %d/%d batches complete (%.1f%%), "
-                            "elapsed=%.1fs, pending=%d",
-                            completed,
-                            total_batches,
-                            pct,
-                            elapsed,
-                            len(pending),
-                        )
-                        next_heartbeat = now + heartbeat_every_s
-                    continue
-
-                for task in done:
-                    batch_idx, result, batch_elapsed = task.result()
-                    batch_results.extend(result)
-                    completed += 1
-
-                    elapsed = now - t_start
-                    avg_per_batch = elapsed / completed if completed else 0.0
-                    remaining = total_batches - completed
-                    eta = remaining * avg_per_batch
-                    pct = (completed / total_batches) * 100
-
-                    logger.info(
-                        "C6 progress: batch %d/%d done in %.1fs; completed %d/%d (%.1f%%), "
-                        "elapsed=%.1fs, eta=%.1fs",
-                        batch_idx,
-                        total_batches,
-                        batch_elapsed,
-                        completed,
-                        total_batches,
-                        pct,
-                        elapsed,
-                        eta,
-                    )
-            total_elapsed = loop.time() - t_start
-            logger.info(
-                "C6 batch processing finished: %d/%d batches completed in %.1fs",
-                completed,
-                total_batches,
-                total_elapsed,
-            )
+        batch_results = await _run_batched_llm(
+            pairs_with_abstract,
+            batch_size=batch_size,
+            max_concurrency=max_concurrency,
+            log_label="C6 alignment",
+            process_batch_fn=process_batch,
+            heartbeat_every_s=heartbeat,
+        )
 
         # Add insufficient pairs (no abstract)
         for p in insufficient_pairs:
@@ -1130,7 +1545,7 @@ class CitationChecker:
         insufficient = sum(1 for r in batch_results if r.get("llm_judgment") == "insufficient")
 
         # Calculate contradiction rate (excluding insufficient)
-        valid_count = support + contradict #FIXME: should include insufficient or not? 
+        valid_count = support + contradict
         contradiction_rate = contradict / valid_count if valid_count > 0 else 0.0
         auto_fail = contradiction_rate >= contradiction_threshold
 
@@ -1973,6 +2388,28 @@ Output:"""
         if re.match(self.REF_AUTHOR_YEAR_PATTERN, line):
             return True
         return False
+
+    def _looks_like_reference(self, text: str) -> bool:
+        """Quick heuristic to filter out body text falsely matched as references.
+
+        Returns False for entries that are clearly body paragraphs rather than
+        bibliographic references (e.g. long prose with no author-year markers).
+        """
+        # Must not be excessively long (body paragraphs can be >500 chars)
+        if len(text) > 600:
+            return False
+        # Must contain a year-like token or a DOI / arXiv identifier
+        if re.search(r"\b(19|20)\d{2}\b", text):
+            return True
+        if re.search(r"10\.\d{4,9}/[^\s\"<>]+", text):
+            return True
+        if re.search(r"arxiv", text, re.IGNORECASE):
+            return True
+        # Must not be dominated by numeric tokens (like "[8, 1, 2, ...]")
+        digit_ratio = sum(1 for c in text if c.isdigit()) / max(len(text), 1)
+        if digit_ratio > 0.25:
+            return False
+        return True
 
     def _parse_reference_entries(self, entries: List[str]) -> List[Dict[str, Any]]:
         parsed: List[Dict[str, Any]] = []

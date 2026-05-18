@@ -63,8 +63,8 @@ agents:
         - provider: qwen
           model: glm-5
           temperature: 0.2
-        - provider: kimi
-          model: kimi-k2.5
+        - provider: deepseek
+          model: deepseek-v4-pro
           temperature: 0.2
 
   # Reporter Agent - used for report generation
@@ -165,6 +165,8 @@ providers:
   deepseek:
     base_url: https://api.deepseek.com/v1
     models:
+      - deepseek-v4-pro
+      - deepseek-v4-flash
       - deepseek-v3.2
       - deepseek-v3.1
       - deepseek-chat

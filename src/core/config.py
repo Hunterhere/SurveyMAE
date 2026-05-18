@@ -446,9 +446,11 @@ class EvidenceConfig(BaseModel):
         clustering_seed: Random seed for clustering.
         citation_sample_size: Number of citation-claim pairs to sample.
         c6_batch_size: Number of sentence-abstract pairs per batch for C6.
-        c6_model: Model to use for C6 batch processing.
         c6_max_concurrency: Maximum concurrent batches for C6.
         contradiction_threshold: Threshold for auto-fail (0-1).
+        llm_ref_parse_batch_size: Number of raw references per LLM batch.
+        llm_ref_parse_max_concurrency: Max concurrent batches for LLM ref parsing.
+        batch_heartbeat_interval_s: Heartbeat log interval for batch LLM processing.
     """
 
     # 必填字段（无默认值，强制从 YAML 读取）
@@ -460,9 +462,11 @@ class EvidenceConfig(BaseModel):
     clustering_seed: int
     citation_sample_size: int
     c6_batch_size: int
-    c6_model: str
     c6_max_concurrency: int
     contradiction_threshold: float
+    llm_ref_parse_batch_size: int
+    llm_ref_parse_max_concurrency: int
+    batch_heartbeat_interval_s: int
 
     # V2 (Citation-Assertion Alignment) scoring thresholds
     v2_score_5_threshold: float

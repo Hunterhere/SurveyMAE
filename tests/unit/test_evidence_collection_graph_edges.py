@@ -57,10 +57,6 @@ class _FakeLiteratureSearch:
         assert year_range is not None
         return {"yearly_counts": {"2024": 3}}
 
-    async def search_top_cited(self, _kw: str, top_k=30):
-        assert top_k > 0
-        return []
-
 
 class _FakeCitationAnalyzer:
     def compute_temporal_metrics(self, _refs, field_trend_baseline=None):
@@ -119,6 +115,8 @@ class _FakeFoundationalCoverageAnalyzer:
     async def analyze(self, **_kwargs):
         return SimpleNamespace(
             coverage_rate=0.6,
+            cluster_centers=[],
+            matched_papers=[],
             missing_key_papers=[],
             suspicious_centrality=[],
         )

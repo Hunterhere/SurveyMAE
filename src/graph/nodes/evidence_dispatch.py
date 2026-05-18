@@ -198,11 +198,12 @@ METRIC_REGISTRY: Dict[str, MetricDef] = {
     "G4": MetricDef(
         metric_id="G4",
         name="foundational_coverage_rate",
-        description="Coverage of field's foundational papers. Retrieved via academic API + LLM filtering.",
+        description="Fraction of co-citation clusters whose center paper has >= 50 external citations. Topic relevance is judged by ExpertAgent.E1.",
         source="FoundationalCoverageAnalyzer",
         extract_path="graph_analysis.G4_coverage_rate",
-        llm_involved=True,
-        hallucination_risk="low",
+        llm_involved=False,
+        hallucination_risk="none",
+        extra_fields=["G4_valid", "G4_skip_reason", "G4_cluster_centers"],
     ),
     "G5": MetricDef(
         metric_id="G5",
@@ -276,12 +277,35 @@ VERIFIER_RUBRIC_V4 = """Rate the internal consistency (V4) dimension:
 
 
 # EXPERT Rubrics (E1-E4)
-EXPERT_RUBRIC_E1 = """Rate the core literature coverage (E1) dimension:
-- 5: G4 >= 0.8, no foundational works missing
-- 4: G4 >= 0.6, minor omissions in non-critical areas
-- 3: G4 >= 0.4, 1-2 important papers missing
-- 2: G4 >= 0.2, several important papers missing
-- 1: G4 < 0.2, major foundational works missing"""
+EXPERT_RUBRIC_E1 = """Rate the core literature coverage (E1) dimension.
+
+You will receive cluster_centers data — each co-citation cluster's center paper
+(highest PageRank) with its citation_count, citation_norm (citation_count / 50),
+and whether it is flagged as a "foundational_anchor" (citation_norm >= 1.0).
+
+Your task:
+1. For each cluster center, judge whether the paper is genuinely TOPIC-RELEVANT
+   to this survey's domain. A paper may have high citations but belong to a
+   different field — those should NOT count as foundational anchors.
+2. After judging topic relevance, determine how many sub-fields (clusters) have
+   proper foundational coverage.
+
+Scoring:
+- **If G4_valid is False (no valid clusters):** Ignore G4 and cluster_centers.
+  Score 1-5 based purely on qualitative assessment of whether the citation list
+  appears comprehensive for a survey on this topic.
+- **If G4_valid is True:**
+  - 5: All or nearly all clusters have a topic-relevant foundational anchor
+       (citation_norm >= 1.0 AND the paper is genuinely about this field).
+       No major sub-field lacks foundational coverage.
+  - 4: Most clusters (>= 80%) have a topic-relevant foundational anchor.
+       Minor sub-fields may lack anchors but core areas are well-covered.
+  - 3: >= 60% of clusters have topic-relevant foundational anchors.
+       Some important sub-fields may be missing coverage.
+  - 2: < 60% of clusters have topic-relevant foundational anchors, or
+       core sub-fields clearly lack foundational works.
+  - 1: Most clusters lack a topic-relevant foundational anchor, or the
+       citation graph is too sparse to form meaningful sub-fields."""
 
 EXPERT_RUBRIC_E2 = """Rate the method classification reasonableness (E2) dimension:
 - 5: Classification is clear, comprehensive, and aligns with academic consensus; all major methods are categorized
@@ -384,8 +408,8 @@ AGENT_REGISTRY: Dict[str, AgentDef] = {
             SubDimensionDef(
                 sub_id="E1",
                 name="core_literature_coverage",
-                description="Whether foundational and representative works are included",
-                hallucination_risk="low",  # Based on G4 threshold, deterministic
+                description="Whether foundational and representative works are included. LLM judges topic relevance of each cluster center.",
+                hallucination_risk="medium",  # Requires LLM topic-relevance judgment on cluster centers
                 evidence_metric_ids=["G4"],
                 rubric=EXPERT_RUBRIC_E1,
             ),
@@ -550,7 +574,16 @@ def build_warnings(agent_name: str, tool_evidence: Dict[str, Any], sub_dim: SubD
 
     elif agent_name == "expert":
         g4_coverage = extract_metric_value(tool_evidence, "G4")
-        if g4_coverage is not None and g4_coverage < 0.6:
+        g4_data = extract_metric_with_extra(tool_evidence, "G4")
+        g4_valid = g4_data.get("G4_valid", True)
+
+        if not g4_valid:
+            g4_skip_reason = g4_data.get("G4_skip_reason", "Unknown reason")
+            warnings.append(
+                f"🚨 G4 metric is not meaningful: {g4_skip_reason}. "
+                "ExpertAgent should NOT rely on G4 for E1 scoring; use qualitative assessment instead."
+            )
+        elif g4_coverage is not None and g4_coverage < 0.6:
             warnings.append(f"⚠ G4={g4_coverage:.0%}, coverage rate is low")
 
         g6_isolates = extract_metric_value(tool_evidence, "G6")
@@ -623,13 +656,44 @@ def build_sub_dimension_context(
                     tool_evidence.get("analysis", {}).get("year_distribution", {})
                 )
             elif data_key == "missing_key_papers":
-                supplementary_data["missing_key_papers"] = tool_evidence.get("graph_analysis", {}).get("missing_key_papers", [])
+                raw_missing = tool_evidence.get("graph_analysis", {}).get("missing_key_papers", [])
+                supplementary_data["missing_key_papers"] = [
+                    {
+                        "cluster_id": p.get("cluster_id", ""),
+                        "cluster_size": p.get("cluster_size", 0),
+                        "center_paper_id": p.get("center_paper_id", ""),
+                        "center_title": p.get("center_title", "")[:200],
+                        "center_year": p.get("center_year", ""),
+                        "citation_count": p.get("citation_count", 0),
+                        "is_foundational_anchor": p.get("is_foundational_anchor", False),
+                    }
+                    for p in raw_missing
+                ]
             elif data_key == "suspicious_centrality":
                 supplementary_data["suspicious_centrality"] = tool_evidence.get("graph_analysis", {}).get("suspicious_centrality", [])
             elif data_key == "c6_contradictions":
-                supplementary_data["c6_contradictions"] = tool_evidence.get("c6_alignment", {}).get("contradictions", [])
+                raw_contradictions = tool_evidence.get("c6_alignment", {}).get("contradictions", [])
+                supplementary_data["c6_contradictions"] = [
+                    {
+                        "citation": c.get("citation", ""),
+                        "sentence": c.get("sentence", "")[:100],
+                        "note": c.get("note", ""),
+                    }
+                    for c in raw_contradictions
+                ]
             elif data_key == "unverified_references":
-                supplementary_data["unverified_references"] = tool_evidence.get("validation", {}).get("references", [])[:10]
+                raw_refs = tool_evidence.get("validation", {}).get("references", [])[:10]
+                supplementary_data["unverified_references"] = [
+                    {
+                        "key": r.get("key", ""),
+                        "title": r.get("title", "")[:200],
+                        "author": r.get("author", ""),
+                        "year": r.get("year", ""),
+                        "doi": r.get("doi", ""),
+                        "status": r.get("validation", {}).get("status", "unknown") if isinstance(r.get("validation"), dict) else "unknown",
+                    }
+                    for r in raw_refs
+                ]
 
     # Build warnings
     warnings = build_warnings(agent_name, tool_evidence, sub_dim)

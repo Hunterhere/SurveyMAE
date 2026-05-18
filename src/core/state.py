@@ -361,7 +361,8 @@ class SurveyState(TypedDict):
 
         field_trend_baseline: Field publication trend retrieved from academic APIs.
 
-        candidate_key_papers: Retrieved candidate key papers for G4 analysis.
+        candidate_key_papers: (Deprecated) Candidate key papers from external search.
+            Replaced by cluster-centric G4 analysis in evidence_collection.
 
         evaluations: Accumulated evaluation records from all agents.
                      Uses operator.add to append records from parallel nodes.

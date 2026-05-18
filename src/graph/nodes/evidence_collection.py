@@ -88,10 +88,9 @@ _EVIDENCE_CONFIG = _load_evidence_config()
 # Default configuration values (fallback if config not available)
 DEFAULT_VERIFY_SOURCES = _EVIDENCE_CONFIG.get("fallback_order", ["semantic_scholar", "openalex"])
 DEFAULT_VERIFY_LIMIT = _EVIDENCE_CONFIG.get("verify_limit", 50)
-DEFAULT_TOP_K = _EVIDENCE_CONFIG.get("foundational_top_k", 30)
+
 DEFAULT_TREND_YEAR_RANGE = _EVIDENCE_CONFIG.get("trend_year_range", (2015, 2025))
 DEFAULT_C6_BATCH_SIZE = _EVIDENCE_CONFIG.get("c6_batch_size", 10)
-DEFAULT_C6_MODEL = _EVIDENCE_CONFIG.get("c6_model", "qwen3.5-flash")
 DEFAULT_C6_MAX_CONCURRENCY = _EVIDENCE_CONFIG.get("c6_max_concurrency", 5)
 DEFAULT_CONTRADICTION_THRESHOLD = _EVIDENCE_CONFIG.get("contradiction_threshold", 0.05)
 
@@ -200,7 +199,7 @@ def _build_ref_metadata_cache(references: List[Dict[str, Any]]) -> Dict[str, Dic
         # Add validation data if available
         validation = ref.get("validation", {})
         if validation:
-            metadata["citation_count"] = validation.get("citation_count", 0)
+            metadata["citation_count"] = validation.get("metadata", {}).get("citation_count", 0) or 0
             metadata["external_ids"] = validation.get("external_ids", {})
             metadata["verified"] = validation.get("verified", False)
 
@@ -294,14 +293,17 @@ async def _collect_citation_extraction(
     orphan_ref_rate = uncited_refs / total_refs if total_refs > 0 else 0.0
 
     # Calculate C5 (metadata_verify_rate)
+    # Denominator is the number of references actually sent for verification
+    # (verify_limit may be smaller than total_refs).
     verified_count = sum(
         1 for r in references
-        if r.get("validation") and r["validation"].get("verified", False)
+        if r.get("validation") and r["validation"].get("is_valid", False)
     )
-    metadata_verify_rate = verified_count / total_refs if total_refs > 0 else 0.0
+    verify_count = min(total_refs, DEFAULT_VERIFY_LIMIT) if total_refs > 0 else 0
+    metadata_verify_rate = verified_count / verify_count if verify_count > 0 else 0.0
 
     logger.info(f"  C3 (orphan_ref_rate): {orphan_ref_rate:.2%}")
-    logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%}")
+    logger.info(f"  C5 (metadata_verify_rate): {metadata_verify_rate:.2%} ({verified_count}/{verify_count} verified)")
 
     return extraction, references, orphan_ref_rate, metadata_verify_rate
 
@@ -357,7 +359,6 @@ async def _collect_c6_citation_alignment(
             citations=extraction.get("citations", []),
             references=ref_entries,
             batch_size=DEFAULT_C6_BATCH_SIZE,
-            model_name=DEFAULT_C6_MODEL,
             max_concurrency=DEFAULT_C6_MAX_CONCURRENCY,
             contradiction_threshold=DEFAULT_CONTRADICTION_THRESHOLD,
         )
@@ -602,7 +603,6 @@ async def run_evidence_collection(
             "ref_metadata_cache": {},
             "topic_keywords": [],
             "field_trend_baseline": {},
-            "candidate_key_papers": [],
         }
 
     try:
@@ -644,14 +644,16 @@ async def run_evidence_collection(
         orphan_ref_rate = uncited_refs / total_refs if total_refs > 0 else 0.0
 
         # Calculate C5 (metadata_verify_rate) - verified references ratio
+        # Denominator is verify_count = min(total_refs, verify_limit),
+        # since verify_limit may be smaller than total_refs.
         verified_count = 0
         for r in references:
             validation = r.get("validation")
             if validation and isinstance(validation, dict):
-                # Check is_valid field (not "verified")
                 if validation.get("is_valid", False):
                     verified_count += 1
-        metadata_verify_rate = verified_count / total_refs if total_refs > 0 else 0.0
+        verify_count = min(total_refs, DEFAULT_VERIFY_LIMIT) if total_refs > 0 else 0
+        metadata_verify_rate = verified_count / verify_count if verify_count > 0 else 0.0
 
         # Primary source for graph edges is extraction-level real_citation_edges,
         # which is produced by CitationChecker.build_real_citation_edges().
@@ -705,7 +707,7 @@ async def run_evidence_collection(
         step1_elapsed = time_module.monotonic() - step_start
         log_substep(
             "citation_validate",
-            f"C3={orphan_ref_rate:.2%} C5={metadata_verify_rate:.2%} ({verified_count}/{total_refs}) "
+            f"C3={orphan_ref_rate:.2%} C5={metadata_verify_rate:.2%} ({verified_count}/{verify_count}) "
             f"edges={len(real_citation_edges)}",
             elapsed=step1_elapsed,
         )
@@ -801,42 +803,10 @@ async def run_evidence_collection(
             except Exception as e:
                 logger.warning(f"  Failed to save trend_baseline: {e}")
 
-        # =========================================================================
-        # Step 4: Candidate Key Papers Retrieval
-        # =========================================================================
-        logger.info("Step 4: Retrieving candidate key papers...")
-        candidate_key_papers = []
-
-        for kw in topic_keywords[:3]:
-            try:
-                papers = await lit_search.search_top_cited(kw, top_k=DEFAULT_TOP_K)
-                candidate_key_papers.extend(papers)
-            except Exception as e:
-                logger.warning(f"  Failed to search top cited for '{kw}': {e}")
-                continue
-
-        # Deduplicate
-        seen_titles = set()
-        unique_papers = []
-        for paper in candidate_key_papers:
-            title_lower = paper.get("title", "").lower()
-            if title_lower and title_lower not in seen_titles:
-                seen_titles.add(title_lower)
-                unique_papers.append(paper)
-
-        candidate_key_papers = unique_papers
-        step4_elapsed = time_module.monotonic() - step_start
-        log_substep(
-            "key_papers",
-            f"{len(candidate_key_papers)} candidates",
-            elapsed=step4_elapsed,
-        )
-
-        # Prepare key_papers_data for persistence (v3)
-        key_papers_data = {
-            "candidate_papers": candidate_key_papers,
-        }
-        # Note: G4 coverage data will be added after G4 analysis
+        # Prepare key_papers_data for persistence (v3, cluster-centric)
+        # candidate_papers (external search) removed — G4 now uses co-citation
+        # cluster centers from the citation graph instead.
+        key_papers_data: dict[str, Any] = {}
 
         # =========================================================================
         # Step 5: Temporal Analysis (T1-T5)
@@ -961,33 +931,76 @@ async def run_evidence_collection(
         # Step 7: Foundational Coverage Analysis (G4)
         # =========================================================================
         logger.info("Step 7: Computing foundational coverage...")
-        g4_analyzer = FoundationalCoverageAnalyzer()
 
-        try:
-            g4_result = await g4_analyzer.analyze(
-                topic_keywords=topic_keywords,
-                survey_references=ref_dicts,
-                ref_metadata_cache=ref_metadata_cache,
+        # Check whether the citation graph has meaningful cluster structure.
+        # G4 relies on co-citation clusters to identify sub-field centers;
+        # without valid clusters, G4 is not meaningful.
+        g4_valid = True
+        g4_skip_reason: str = ""
+        g4_coverage: Optional[float] = None
+        missing_papers: list[dict[str, Any]] = []
+        suspicious_papers: list[dict[str, Any]] = []
+
+        # Derive cluster validity from graph analysis output (Step 6).
+        cocitation_summary = summary.get("cocitation_clustering", {})
+        n_clusters_val = cocitation_summary.get("n_clusters", 0)
+        if isinstance(n_clusters_val, str):
+            # "N/A" or other placeholder → treat as 0
+            n_clusters_val = 0
+
+        if n_clusters_val <= 1:
+            g4_valid = False
+            g4_skip_reason = (
+                f"No valid co-citation clusters found (n_clusters={n_clusters_val}). "
+                "The citation graph lacks sufficient structure for foundational "
+                "coverage analysis — G4 is set to 0 and should be considered unreliable."
             )
-            g4_coverage = g4_result.coverage_rate
-            missing_papers = g4_result.missing_key_papers
-            suspicious_papers = g4_result.suspicious_centrality
-        except Exception as e:
-            logger.warning(f"  G4 analysis failed: {e}")
-            g4_coverage = None
-            missing_papers = []
-            suspicious_papers = []
+            g4_coverage = 0.0
+            logger.warning(f"  {g4_skip_reason}")
+        elif not cluster_evidence or len(cluster_evidence) == 0:
+            g4_valid = False
+            g4_skip_reason = (
+                "Co-citation cluster evidence is empty. "
+                "G4 is set to 0 and should be considered unreliable."
+            )
+            g4_coverage = 0.0
+            logger.warning(f"  {g4_skip_reason}")
+
+        if g4_valid:
+            g4_analyzer = FoundationalCoverageAnalyzer()
+            try:
+                g4_result = await g4_analyzer.analyze(
+                    cluster_evidence=cluster_evidence,
+                    ref_metadata_cache=ref_metadata_cache,
+                    survey_references=ref_dicts,
+                )
+                g4_coverage = g4_result.coverage_rate
+                cluster_centers = g4_result.cluster_centers
+                missing_papers = g4_result.missing_key_papers
+                suspicious_papers = g4_result.suspicious_centrality
+            except Exception as e:
+                logger.warning(f"  G4 analysis failed: {e}")
+                g4_coverage = None
+                cluster_centers = []
+                missing_papers = []
+                suspicious_papers = []
+        else:
+            cluster_centers = []
 
         step7_elapsed = time_module.monotonic() - step_start
         log_substep(
             "foundational_coverage",
-            f"G4={g4_coverage:.2%}" if g4_coverage is not None else "G4=N/A",
+            (
+                f"G4={g4_coverage:.2%}" if g4_coverage is not None
+                else "G4=N/A"
+            ),
             elapsed=step7_elapsed,
         )
 
         # Save key_papers with G4 data (v3)
         key_papers_data.update({
             "coverage_rate": g4_coverage,
+            "cluster_centers": cluster_centers,
             "missing_key_papers": missing_papers,
             "suspicious_centrality": suspicious_papers,
         })
@@ -1053,6 +1066,9 @@ async def run_evidence_collection(
                 "G2_components": summary.get("density_connectivity", {}).get("n_weak_components"),
                 "G3_lcc_frac": summary.get("density_connectivity", {}).get("lcc_frac"),
                 "G4_coverage_rate": _require_float(g4_coverage, "G4_coverage_rate"),
+                "G4_valid": g4_valid,
+                "G4_skip_reason": g4_skip_reason,
+                "G4_cluster_centers": cluster_centers,
                 "G5_clusters": summary.get("cocitation_clustering", {}).get("n_clusters"),
                 "G6_isolates": summary.get("density_connectivity", {}).get("n_isolates"),
                 # Section-cluster alignment (S5)
@@ -1077,17 +1093,12 @@ async def run_evidence_collection(
 
         # Convert numpy types to Python native types for msgpack serialization
         tool_evidence = _convert_numpy_types(tool_evidence)
-        candidate_key_papers = _convert_numpy_types(candidate_key_papers)
-
-        # Dump tool_evidence schema for Step 0 refactoring
-        # dump_tool_evidence_schema(tool_evidence, "docs/tool_evidence_schema.json") #[x]: used to debug
 
         return {
             "tool_evidence": tool_evidence,
             "ref_metadata_cache": ref_metadata_cache,
             "topic_keywords": topic_keywords,
             "field_trend_baseline": {"yearly_counts": field_trend_baseline},
-            "candidate_key_papers": candidate_key_papers,
         }
 
     except Exception as e:

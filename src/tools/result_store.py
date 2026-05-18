@@ -123,7 +123,7 @@ class ResultStore:
         return self._write_json(self._tools_dir(paper_id) / "trend_baseline.json", data)
 
     def save_key_papers(self, paper_id: str, data: dict[str, Any]) -> Path:
-        """Save candidate_key_papers + G4 coverage + missing/suspicious lists to tools/."""
+        """Save cluster-centric G4 data (cluster_centers, coverage_rate, etc.) to tools/."""
         return self._write_json(self._tools_dir(paper_id) / "key_papers.json", data)
 
     def append_error(self, paper_id: str, record: dict[str, Any]) -> None:

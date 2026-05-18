@@ -1,125 +1,127 @@
-"""Unit tests for G4 (foundational_coverage_rate) calculation."""
+"""Unit tests for G4 (foundational_coverage_rate) — cluster-centric v2."""
 
 import pytest
-from src.tools.foundational_coverage import FoundationalCoverageAnalyzer
+from src.tools.foundational_coverage import FoundationalCoverageAnalyzer, CITATION_THRESHOLD
 
 
-class MockLiteratureResult:
-    """Mock LiteratureResult for testing."""
-
-    def __init__(self, title, year, citation_count, doi="", abstract=""):
-        self.title = title
-        self.year = year
-        self.citation_count = citation_count
-        self.doi = doi
-        self.abstract = abstract
+def _make_cluster(cluster_id, size, top_papers):
+    """Helper to build a cluster evidence dict."""
+    return {
+        "cluster_id": cluster_id,
+        "size": size,
+        "top_papers": top_papers,
+    }
 
 
-class TestFoundationalCoverage:
-    """Tests for FoundationalCoverageAnalyzer."""
+def _make_center(paper_id, score=0.05):
+    """Helper to build a top_paper entry."""
+    return {"paper_id": paper_id, "score": score}
+
+
+class TestFoundationalCoverageV2:
+    """Tests for the cluster-centric G4 analyzer."""
 
     @pytest.mark.asyncio
-    async def test_full_coverage(self):
-        """Test case with 100% coverage."""
-        analyzer = FoundationalCoverageAnalyzer(top_k=10)
+    async def test_all_clusters_have_anchors(self):
+        """All cluster centers have citation_count >= threshold → G4 = 1.0."""
+        analyzer = FoundationalCoverageAnalyzer(citation_threshold=50)
 
-        # Survey references
+        cluster_evidence = [
+            _make_cluster(0, 10, [_make_center("r1", 0.05)]),
+            _make_cluster(1, 8, [_make_center("r2", 0.03)]),
+            _make_cluster(2, 6, [_make_center("r3", 0.04)]),
+        ]
+
         survey_references = [
             {"key": "r1", "title": "Paper A", "year": "2020"},
             {"key": "r2", "title": "Paper B", "year": "2021"},
             {"key": "r3", "title": "Paper C", "year": "2022"},
         ]
 
-        # Candidate papers (all matched)
-        mock_candidates = [
-            MockLiteratureResult("Paper A", "2020", 100),
-            MockLiteratureResult("Paper B", "2021", 200),
-            MockLiteratureResult("Paper C", "2022", 150),
-        ]
-
-        # Mock the literature search
-        class MockSearch:
-            def search_by_keywords(self, keywords, max_results, sort_by):
-                return mock_candidates
-
-        analyzer.literature_search = MockSearch()
+        ref_metadata_cache = {
+            "r1": {"citation_count": 120},
+            "r2": {"citation_count": 80},
+            "r3": {"citation_count": 50},
+        }
 
         result = await analyzer.analyze(
-            topic_keywords=["test topic"],
+            cluster_evidence=cluster_evidence,
+            ref_metadata_cache=ref_metadata_cache,
             survey_references=survey_references,
-            ref_metadata_cache={},
         )
 
         assert result.coverage_rate == 1.0
         assert len(result.matched_papers) == 3
         assert len(result.missing_key_papers) == 0
+        assert result.llm_involved is False
+        assert result.hallucination_risk == "none"
+        assert len(result.cluster_centers) == 3
+        # Verify citation_norm values
+        assert result.cluster_centers[0]["citation_norm"] == 2.4   # 120 / 50
+        assert result.cluster_centers[1]["citation_norm"] == 1.6   # 80 / 50
+        assert result.cluster_centers[2]["citation_norm"] == 1.0   # 50 / 50
 
     @pytest.mark.asyncio
     async def test_partial_coverage(self):
-        """Test case with partial coverage."""
-        analyzer = FoundationalCoverageAnalyzer(top_k=10)
+        """Some clusters lack foundational anchors → G4 < 1.0."""
+        analyzer = FoundationalCoverageAnalyzer(citation_threshold=50)
+
+        cluster_evidence = [
+            _make_cluster(0, 10, [_make_center("r1", 0.05)]),
+            _make_cluster(1, 8, [_make_center("r2", 0.03)]),
+            _make_cluster(2, 6, [_make_center("r3", 0.04)]),
+        ]
+
+        survey_references = [
+            {"key": "r1", "title": "Paper A", "year": "2020"},
+            {"key": "r2", "title": "Paper B", "year": "2021"},
+            {"key": "r3", "title": "Paper C", "year": "2022"},
+        ]
+
+        ref_metadata_cache = {
+            "r1": {"citation_count": 120},   # anchor
+            "r2": {"citation_count": 5},     # NOT an anchor
+            "r3": {"citation_count": 0},     # NOT an anchor
+        }
+
+        result = await analyzer.analyze(
+            cluster_evidence=cluster_evidence,
+            ref_metadata_cache=ref_metadata_cache,
+            survey_references=survey_references,
+        )
+
+        assert result.coverage_rate == pytest.approx(1.0 / 3.0, abs=0.01)
+        assert len(result.matched_papers) == 1
+        assert len(result.missing_key_papers) == 2
+        # Verify correct classification
+        assert result.cluster_centers[0]["is_foundational_anchor"] is True
+        assert result.cluster_centers[1]["is_foundational_anchor"] is False
+        assert result.cluster_centers[2]["is_foundational_anchor"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_anchors(self):
+        """No cluster center meets the threshold → G4 = 0.0."""
+        analyzer = FoundationalCoverageAnalyzer(citation_threshold=50)
+
+        cluster_evidence = [
+            _make_cluster(0, 5, [_make_center("r1", 0.05)]),
+            _make_cluster(1, 5, [_make_center("r2", 0.03)]),
+        ]
 
         survey_references = [
             {"key": "r1", "title": "Paper A", "year": "2020"},
             {"key": "r2", "title": "Paper B", "year": "2021"},
         ]
 
-        # Only one matches
-        mock_candidates = [
-            MockLiteratureResult("Paper A", "2020", 100),
-            MockLiteratureResult("Paper X", "2019", 500),  # Not in survey
-            MockLiteratureResult("Paper Y", "2018", 300),  # Not in survey
-        ]
-
-        class MockSearch:
-            def search_by_keywords(self, keywords, max_results, sort_by):
-                return mock_candidates
-
-        analyzer.lit_search = MockSearch()
-
-        # Need to properly mock
-        analyzer.literature_search = type(
-            "MockSearch",
-            (),
-            {"search_by_keywords": lambda self, keywords, max_results, sort_by: mock_candidates},
-        )()
+        ref_metadata_cache = {
+            "r1": {"citation_count": 3},
+            "r2": {"citation_count": 10},
+        }
 
         result = await analyzer.analyze(
-            topic_keywords=["test topic"],
+            cluster_evidence=cluster_evidence,
+            ref_metadata_cache=ref_metadata_cache,
             survey_references=survey_references,
-            ref_metadata_cache={},
-        )
-
-        # 1 out of 3 = 33%
-        assert result.coverage_rate == pytest.approx(0.333, abs=0.01)
-        assert len(result.matched_papers) == 1
-        assert len(result.missing_key_papers) == 2
-
-    @pytest.mark.asyncio
-    async def test_no_coverage(self):
-        """Test case with no coverage."""
-        analyzer = FoundationalCoverageAnalyzer(top_k=10)
-
-        survey_references = [
-            {"key": "r1", "title": "Paper A", "year": "2020"},
-        ]
-
-        # None match
-        mock_candidates = [
-            MockLiteratureResult("Paper X", "2019", 500),
-            MockLiteratureResult("Paper Y", "2018", 300),
-        ]
-
-        analyzer.literature_search = type(
-            "MockSearch",
-            (),
-            {"search_by_keywords": lambda self, keywords, max_results, sort_by: mock_candidates},
-        )()
-
-        result = await analyzer.analyze(
-            topic_keywords=["test topic"],
-            survey_references=survey_references,
-            ref_metadata_cache={},
         )
 
         assert result.coverage_rate == 0.0
@@ -127,114 +129,117 @@ class TestFoundationalCoverage:
         assert len(result.missing_key_papers) == 2
 
     @pytest.mark.asyncio
-    async def test_doi_matching(self):
-        """Test DOI-based matching."""
-        analyzer = FoundationalCoverageAnalyzer(top_k=10, match_threshold=0.8)
-
-        survey_references = [
-            {"key": "r1", "title": "Paper A", "doi": "10.1234/test"},
-        ]
-
-        mock_candidates = [
-            MockLiteratureResult("Different Title", "2020", 100, doi="10.1234/test"),
-        ]
-
-        analyzer.literature_search = type(
-            "MockSearch",
-            (),
-            {"search_by_keywords": lambda self, keywords, max_results, sort_by: mock_candidates},
-        )()
+    async def test_empty_clusters(self):
+        """No cluster evidence → coverage_rate = 0.0."""
+        analyzer = FoundationalCoverageAnalyzer(citation_threshold=50)
 
         result = await analyzer.analyze(
-            topic_keywords=["test"],
-            survey_references=survey_references,
+            cluster_evidence=[],
             ref_metadata_cache={},
+            survey_references=[],
         )
 
-        # DOI match should work
-        assert len(result.matched_papers) == 1
-        assert result.matched_papers[0]["match_type"] == "doi"
+        assert result.coverage_rate == 0.0
+        assert len(result.cluster_centers) == 0
 
+    @pytest.mark.asyncio
+    async def test_fallback_to_survey_references(self):
+        """When ref_metadata_cache has no entry, fall back to survey_references title/year but citation_count=0."""
+        analyzer = FoundationalCoverageAnalyzer(citation_threshold=50)
 
-class TestTitleMatching:
-    """Tests for title matching logic."""
-
-    def test_exact_match(self):
-        """Test exact title matching."""
-        analyzer = FoundationalCoverageAnalyzer()
-
-        candidates = [MockLiteratureResult("Paper A", "2020", 100)]
-        survey_refs = [{"key": "r1", "title": "Paper A"}]
-
-        matched, missing = analyzer._match_references(candidates, survey_refs)
-
-        assert len(matched) == 1
-
-    def test_fuzzy_match(self):
-        """Test fuzzy title matching."""
-        analyzer = FoundationalCoverageAnalyzer(match_threshold=0.85)
-
-        candidates = [MockLiteratureResult("Attention Is All You Need", "2017", 50000)]
-        survey_refs = [{"key": "r1", "title": "Attention Is All You Need"}]
-
-        matched, missing = analyzer._match_references(candidates, survey_refs)
-
-        assert len(matched) == 1
-        assert matched[0]["match_type"] == "title"
-
-    def test_no_match(self):
-        """Test when titles don't match."""
-        analyzer = FoundationalCoverageAnalyzer()
-
-        candidates = [MockLiteratureResult("Completely Different", "2020", 100)]
-        survey_refs = [{"key": "r1", "title": "Paper A"}]
-
-        matched, missing = analyzer._match_references(candidates, survey_refs)
-
-        assert len(matched) == 0
-        assert len(missing) == 1
-
-
-class TestSuspiciousCentrality:
-    """Tests for suspicious centrality detection."""
-
-    def test_suspicious_papers(self):
-        """Test detection of suspicious centrality."""
-        analyzer = FoundationalCoverageAnalyzer()
-
-        matched = [
-            {
-                "paper": MockLiteratureResult("Paper A", "2020", 5),
-                "matched_ref": {"key": "r1"},
-                "match_type": "title",
-            }
+        cluster_evidence = [
+            _make_cluster(0, 5, [_make_center("r1", 0.05)]),
         ]
 
-        ref_cache = {
-            "r1": {"citation_count": 5}  # Low external citations
-        }
-
-        suspicious = analyzer._find_suspicious_centrality(matched, ref_cache)
-
-        assert len(suspicious) == 1
-        assert suspicious[0]["title"] == "Paper A"
-
-    def test_normal_papers(self):
-        """Test that normal papers are not flagged."""
-        analyzer = FoundationalCoverageAnalyzer()
-
-        matched = [
-            {
-                "paper": MockLiteratureResult("Paper A", "2020", 5000),
-                "matched_ref": {"key": "r1"},
-                "match_type": "title",
-            }
+        survey_references = [
+            {"key": "r1", "title": "Paper A", "year": "2020"},
         ]
 
-        ref_cache = {
-            "r1": {"citation_count": 5000}  # High external citations
+        # No metadata cache entry for r1
+        result = await analyzer.analyze(
+            cluster_evidence=cluster_evidence,
+            ref_metadata_cache={},
+            survey_references=survey_references,
+        )
+
+        assert result.coverage_rate == 0.0  # citation_count defaults to 0
+        assert result.cluster_centers[0]["center_title"] == "Paper A"
+        assert result.cluster_centers[0]["citation_count"] == 0
+        assert result.cluster_centers[0]["citation_norm"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_metadata_overrides_survey_ref(self):
+        """ref_metadata_cache overrides basic fields from survey_references."""
+        analyzer = FoundationalCoverageAnalyzer(citation_threshold=50)
+
+        cluster_evidence = [
+            _make_cluster(0, 5, [_make_center("r1", 0.05)]),
+        ]
+
+        survey_references = [
+            {"key": "r1", "title": "Old Title", "year": "2020"},
+        ]
+
+        ref_metadata_cache = {
+            "r1": {"title": "Verified Title", "year": "2021", "citation_count": 100},
         }
 
-        suspicious = analyzer._find_suspicious_centrality(matched, ref_cache)
+        result = await analyzer.analyze(
+            cluster_evidence=cluster_evidence,
+            ref_metadata_cache=ref_metadata_cache,
+            survey_references=survey_references,
+        )
 
-        assert len(suspicious) == 0
+        assert result.coverage_rate == 1.0
+        assert result.cluster_centers[0]["center_title"] == "Verified Title"
+        assert result.cluster_centers[0]["center_year"] == "2021"
+        assert result.cluster_centers[0]["citation_count"] == 100
+
+    @pytest.mark.asyncio
+    async def test_cluster_with_empty_top_papers(self):
+        """Cluster with no top_papers should not crash."""
+        analyzer = FoundationalCoverageAnalyzer(citation_threshold=50)
+
+        cluster_evidence = [
+            _make_cluster(0, 3, [_make_center("r1", 0.05)]),
+            _make_cluster(1, 0, []),  # Empty cluster
+        ]
+
+        survey_references = [
+            {"key": "r1", "title": "Paper A", "year": "2020"},
+        ]
+
+        ref_metadata_cache = {
+            "r1": {"citation_count": 100},
+        }
+
+        result = await analyzer.analyze(
+            cluster_evidence=cluster_evidence,
+            ref_metadata_cache=ref_metadata_cache,
+            survey_references=survey_references,
+        )
+
+        assert result.coverage_rate == 0.5  # 1 out of 2
+        assert result.cluster_centers[1]["center_title"] == "(empty cluster)"
+        assert result.cluster_centers[1]["is_foundational_anchor"] is False
+
+    @pytest.mark.asyncio
+    async def test_custom_threshold(self):
+        """Custom citation_threshold is respected."""
+        analyzer = FoundationalCoverageAnalyzer(citation_threshold=100)
+
+        cluster_evidence = [
+            _make_cluster(0, 5, [_make_center("r1", 0.05)]),
+        ]
+
+        survey_references = [{"key": "r1", "title": "Paper A", "year": "2020"}]
+        ref_metadata_cache = {"r1": {"citation_count": 80}}
+
+        result = await analyzer.analyze(
+            cluster_evidence=cluster_evidence,
+            ref_metadata_cache=ref_metadata_cache,
+            survey_references=survey_references,
+        )
+
+        assert result.coverage_rate == 0.0  # 80 < 100
+        assert result.cluster_centers[0]["citation_norm"] == 0.8
