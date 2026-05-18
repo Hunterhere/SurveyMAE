@@ -34,8 +34,11 @@ const RUBRICS = {
         2:'30–49% 支持，大量不匹配', 1:'<30% 支持或存在严重误引' },
   V4: { 5:'无矛盾检出', 4:'轻微不一致，容易解释', 3:'部分矛盾需澄清',
         2:'多处矛盾影响可信度', 1:'严重矛盾使综述失去可靠性' },
-  E1: { 5:'G4 ≥ 0.8，无关键文献遗漏', 4:'G4 ≥ 0.6，遗漏非核心文献',
-        3:'G4 ≥ 0.4，遗漏 1-2 篇核心文献', 2:'G4 ≥ 0.2，多篇核心文献缺失', 1:'G4 < 0.2，基础文献严重缺失' },
+  E1: { 5:'各子领域聚类均有高被引锚点文献，主题高度相关',
+        4:'≥80% 聚类有锚点文献，核心领域覆盖良好',
+        3:'≥60% 聚类有锚点文献，部分子领域可能缺失',
+        2:'<60% 聚类有锚点文献，核心领域缺乏基础文献',
+        1:'多数聚类缺乏锚点，或引文图过于稀疏无法形成有效子领域' },
   E2: { 5:'S5 (NMI) 高，分类与引用聚类高度吻合', 4:'良好对齐，少许偏差',
         3:'部分不对齐但尚可接受', 2:'显著不对齐', 1:'分类与引用结构相悖' },
   E3: { 5:'无技术错误', 4:'轻微技术不准确', 3:'部分错误但不影响理解',
@@ -631,16 +634,36 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
     detail.appendChild(cs);
   }
 
-  // Special: E1 missing papers inline
+  // Special: E1 cluster centers overview (new format) or missing papers (old format)
   if (dimId === 'E1' && S.keyPapers) {
-    const mp = (S.keyPapers.missing_key_papers || []).slice(0, 3);
-    if (mp.length) {
-      const ms = el('div', 'detail-section');
-      ms.innerHTML = `<h4>缺失核心文献（前${mp.length}篇）</h4>` +
-        mp.map(p => `<div style="font-size:.82rem;padding:3px 0"><strong>${escHtml(p.title||'')}</strong> (${p.year||'?'}, 被引 ${p.citation_count||'?'})</div>`).join('') +
+    const centers = S.keyPapers.cluster_centers || [];
+    const oldMissing = S.keyPapers.missing_key_papers || [];
+    const ms = el('div', 'detail-section');
+
+    if (centers.length > 0) {
+      // New cluster-centric format
+      const top3 = centers.slice(0, 3);
+      const anchorCount = centers.filter(c => c.is_foundational_anchor).length;
+      ms.innerHTML = `<h4>聚类锚点分析（${anchorCount}/${centers.length} 聚类有锚点）</h4>` +
+        top3.map(c => {
+          const label = c.is_foundational_anchor ? '[Anchor]' : '[No anchor]';
+          const norm = c.citation_norm != null ? `| norm: ${c.citation_norm.toFixed(1)}` : '';
+          return `<div style="font-size:.82rem;padding:3px 0"><span class="pill" style="font-size:.7rem;margin-right:4px">${label}</span><strong>${escHtml(c.center_title||'(empty)')}</strong> (${c.center_year||'?'}, 被引 ${c.citation_count||0}${norm})</div>`;
+        }).join('') +
+        (centers.length > 3 ? `<div style="font-size:.78rem;padding:3px 0;color:var(--text-muted)">… 还有 ${centers.length - 3} 个聚类</div>` : '') +
+        `<a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">查看完整聚类分析 →</a>`;
+    } else if (oldMissing.length > 0) {
+      // Old-format fallback: missing papers from external search
+      const top3 = oldMissing.slice(0, 3);
+      ms.innerHTML = `<h4>缺失核心文献（旧版数据，前${top3.length}篇）</h4>` +
+        top3.map(p => `<div style="font-size:.82rem;padding:3px 0"><strong>${escHtml(p.title||'')}</strong> (${p.year||'?'}, 被引 ${p.citation_count||'?'})</div>`).join('') +
         `<a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">查看完整列表 →</a>`;
-      detail.appendChild(ms);
+    } else {
+      ms.innerHTML = `<h4>聚类锚点分析</h4>
+        <div style="font-size:.82rem;padding:6px 0;color:var(--text-muted)">(!)引文图无有效聚类结构，G4 指标不可用，评分基于定性评估。</div>
+        <a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">查看详情 →</a>`;
     }
+    detail.appendChild(ms);
   }
 
   // Raw toggle
@@ -695,9 +718,20 @@ function buildToolEvidenceLines(dimId, te) {
       }
       break;
     }
-    case 'E1':
-      pushIf('G4 核心覆盖率', te.G4 != null ? pct(te.G4) : null);
+    case 'E1': {
+      pushIf('G4 聚类锚点覆盖率', te.G4 != null ? pct(te.G4) : null);
+      // Show anchor cluster summary from keyPapers if available
+      const kp = S.keyPapers;
+      const centers = kp?.cluster_centers || [];
+      if (centers.length > 0) {
+        const anchorCount = centers.filter(c => c.is_foundational_anchor).length;
+        pushIf('锚点聚类 / 总聚类', `${anchorCount} / ${centers.length}`);
+      } else if (kp?.missing_key_papers?.length > 0) {
+        // Old-format fallback
+        pushIf('缺失文献（旧格式）', `${kp.missing_key_papers.length} 篇`);
+      }
       break;
+    }
     case 'E2':
     case 'R3':
       pushIf('S5 (NMI)', te.S5 != null ? numFmt(te.S5) : null);
@@ -935,7 +969,7 @@ function renderGraphPanel() {
         <div class="stat-box"><div class="stat-val">${fmt3(metrics.G1??dc.density_global)}</div><div class="stat-key">G1 密度</div></div>
         <div class="stat-box"><div class="stat-val">${metrics.G2??dc.n_weak_components??'?'}</div><div class="stat-key">G2 连通分量</div></div>
         <div class="stat-box"><div class="stat-val">${fmt3(metrics.G3??dc.lcc_frac)}</div><div class="stat-key">G3 最大分量比</div></div>
-        <div class="stat-box"><div class="stat-val">${pct(metrics.G4)}</div><div class="stat-key">G4 核心覆盖率</div></div>
+        <div class="stat-box"><div class="stat-val">${pct(metrics.G4)}</div><div class="stat-key">G4 聚类锚点覆盖率</div></div>
         <div class="stat-box"><div class="stat-val">${pct(metrics.G6)}</div><div class="stat-key">G6 孤立节点率</div></div>
       </div>`;
   }
@@ -1145,27 +1179,56 @@ function renderKeyPapersPanel() {
   if (!S.keyPapers) return;
   const body = $('body-keypapers');
   const kp = S.keyPapers;
-  const missing = kp.missing_key_papers || [];
-  const matched = (kp.candidate_papers || []).filter(p =>
-    !(missing.some(m => m.title === p.title)));
+  const centers = kp.cluster_centers || [];
+  const threshold = kp.citation_threshold || 50;
+
+  // Edge case: no valid clusters → G4 is meaningless
+  if (centers.length === 0) {
+    body.innerHTML = `
+      <div class="stat-row">
+        <div class="stat-box"><div class="stat-val" style="color:var(--text-muted)">N/A</div><div class="stat-key">G4 覆盖率</div></div>
+      </div>
+      <p class="empty-msg" style="margin-top:12px">引文图无有效共被引聚类结构，G4 指标不可用。<br>ExpertAgent 已基于定性评估对 E1 进行评分。</p>`;
+    return;
+  }
+
+  const anchors = centers.filter(c => c.is_foundational_anchor);
+  const nonAnchors = centers.filter(c => !c.is_foundational_anchor);
 
   body.innerHTML = `
     <div class="stat-row">
-      <div class="stat-box"><div class="stat-val">${pct(kp.coverage_rate)}</div><div class="stat-key">G4 覆盖率</div></div>
-      <div class="stat-box"><div class="stat-val">${matched.length}</div><div class="stat-key">已覆盖</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${missing.length}</div><div class="stat-key">缺失</div></div>
+      <div class="stat-box"><div class="stat-val">${pct(kp.coverage_rate)}</div><div class="stat-key">G4 聚类锚点覆盖率</div></div>
+      <div class="stat-box"><div class="stat-val">${anchors.length}</div><div class="stat-key">有锚点聚类</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${nonAnchors.length}</div><div class="stat-key">无锚点聚类</div></div>
+      <div class="stat-box"><div class="stat-val">≥${threshold}</div><div class="stat-key">引用量阈值</div></div>
     </div>
-    ${missing.length === 0 ? '<p class="empty-msg" style="margin-top:12px">未检测到缺失核心文献。</p>' : `
-      <h4 style="margin:16px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">缺失核心文献（建议补充）</h4>
-      <div class="paper-list">
-        ${missing.slice(0,20).map(p => `<div class="paper-item">
-          <div class="paper-year">${p.year||'?'}</div>
+    <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px">锚点定义：聚类中心文献（最高 PageRank）引用量 ≥ ${threshold}，表示该子领域有一篇公认的高影响力论文。相关性由 ExpertAgent 综合判断。</p>
+
+    ${nonAnchors.length > 0 ? `
+    <h4 style="margin:16px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">(!)缺少锚点的聚类（${nonAnchors.length} 个）</h4>
+    <div class="paper-list">
+      ${nonAnchors.map(c => `<div class="paper-item">
+        <div class="paper-year">${c.center_year||'?'}</div>
+        <div class="paper-info">
+          <div class="paper-title">${escHtml(c.center_title||'(empty cluster)')}</div>
+          <div class="paper-meta">被引 ${c.citation_count} 次　|　citation_norm: ${(c.citation_norm||0).toFixed(2)}　|　聚类规模: ${c.cluster_size} 篇</div>
+        </div>
+      </div>`).join('')}
+    </div>` : '<p class="empty-msg" style="margin-top:12px">所有聚类均有基础锚点文献。</p>'}
+
+    <h4 style="margin:16px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">所有聚类中心文献（${centers.length} 个，按引用量降序）</h4>
+    <div class="paper-list">
+      ${[...centers].sort((a,b) => (b.citation_count||0) - (a.citation_count||0)).map(c => {
+        const icon = c.is_foundational_anchor ? '[Anchor]' : '[No anchor]';
+        return `<div class="paper-item">
+          <div class="paper-year">${c.center_year||'?'}</div>
           <div class="paper-info">
-            <div class="paper-title">${escHtml(p.title||'')}</div>
-            <div class="paper-meta">被引 ${p.citation_count??'?'} 次　${escHtml(p.venue||'')}</div>
+            <div class="paper-title">${icon} ${escHtml(c.center_title||'(empty cluster)')}</div>
+            <div class="paper-meta">被引 ${c.citation_count||0} 次　|　citation_norm: ${(c.citation_norm||0).toFixed(2)}　|　PageRank: ${(c.pagerank_score||0).toFixed(4)}　|　聚类 ${c.cluster_id}（${c.cluster_size} 篇）</div>
           </div>
-        </div>`).join('')}
-      </div>`}
+        </div>`;
+      }).join('')}
+    </div>
   `;
 }
 
