@@ -33,13 +33,14 @@ _STATIC_DIR = _HERE / "static"
 def _detect_project_root() -> Path:
     """Detect project root, handling both main repo and git worktree layouts.
 
-    Worktree layout:  .../SurveyMAE/worktrees/frontend/src/web/app.py
+    Worktree layout:  .../SurveyMAE/.claude/worktrees/<name>/src/web/app.py
     Main repo layout: .../SurveyMAE/src/web/app.py
     """
     parts = _HERE.resolve().parts
     if "worktrees" in parts:
         idx = parts.index("worktrees")
-        return Path(*parts[:idx])
+        # .claude/worktrees/<name> — skip .claude parent too
+        return Path(*parts[:idx - 1])
     return _HERE.parent.parent  # src/web → src → project root
 
 

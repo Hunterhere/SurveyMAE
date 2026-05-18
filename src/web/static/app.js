@@ -52,7 +52,7 @@ const RUBRICS = {
         3:'尚可，有些不一致', 2:'频繁语言问题', 1:'语言质量差，难以理解' },
 };
 
-const STEP_ICONS = { done: '✅', active: '', pending: '⬜', error: '❌' };
+const STEP_ICONS = { done: '✓', active: '', pending: '○', error: '✗' };
 const STEP_LABELS = {
   1: 'PDF 解析', 2: '证据收集', 3: '证据分发',
   4: 'Agent 评估', 5: '校正投票', 6: '评分聚合', 7: '报告生成',
@@ -112,14 +112,14 @@ const fmt1 = v => v == null ? 'N/A' : v.toFixed(1);
 const fmt3 = v => v == null ? 'N/A' : v.toFixed(3);
 
 function gradeColor(g) {
-  return { A:'#1aae39', B:'#0075de', C:'#ca8a04', D:'#dd5b00', F:'#dc2626' }[g] || '#a39e98';
+  return { A:'#4A7C59', B:'#2C3E50', C:'#B07D3A', D:'#8B3A3A', F:'#8B3A3A' }[g] || '#999999';
 }
 
 function scoreColor(s) {
-  if (s >= 4.5) return '#1aae39';
-  if (s >= 3.5) return '#0075de';
-  if (s >= 2.5) return '#ca8a04';
-  return '#dc2626';
+  if (s >= 4.5) return '#4A7C59';
+  if (s >= 3.5) return '#2C3E50';
+  if (s >= 2.5) return '#B07D3A';
+  return '#8B3A3A';
 }
 
 // ── API helpers ──────────────────────────────────────────────────────────────
@@ -284,7 +284,7 @@ function showError(msg) {
   setPhase('processing');
   const hint = $('waiting-hint');
   hint.style.display = 'block';
-  hint.innerHTML = `<span style="color:var(--danger)">❌ 评测失败：${msg}</span>`;
+  hint.innerHTML = `<span style="color:var(--danger)">✗ 评测失败：${msg}</span>`;
 }
 
 // ── Steps rendering ───────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ function renderSteps(currentStep, completed) {
     const isDone = doneSteps.has(s);
     const isActive = !isDone && s === currentStep + 1;
     const cls = isDone ? 'done' : isActive ? 'active' : 'error' === 'error' ? 'error' : 'pending';
-    const icon = isDone ? '✅' : isActive ? '<span class="spinner"></span>' : '⬜';
+    const icon = isDone ? STEP_ICONS.done : isActive ? '<span class="spinner"></span>' : STEP_ICONS.pending;
 
     const li = el('li', `step-item ${isDone ? 'done' : isActive ? 'active' : 'pending'}`);
     li.innerHTML = `<span class="step-icon">${icon}</span>
@@ -365,14 +365,14 @@ function showPartialValidation() {
   const vr = S.validation.reference_validations || [];
   const c5 = vr.length ? (vr.filter(r => r.is_valid).length / vr.length) : 0;
   hint.style.display = 'block';
-  hint.innerHTML = `📋 已完成证据收集：<strong>${vr.length}</strong> 条引用，验证率 <strong>${pct(c5)}</strong>`;
+  hint.innerHTML = `已完成证据收集：<strong>${vr.length}</strong> 条引用，验证率 <strong>${pct(c5)}</strong>`;
 }
 
 function showPartialTemporal() {
   if (!S.analysis) return;
   const t = S.analysis.temporal || {};
   const hint = $('waiting-hint');
-  hint.innerHTML += `<br>🕐 时序跨度 T1=${t.T1_year_span ?? '?'} 年，趋势对齐 T5=${t.T5_trend_alignment != null ? fmt3(t.T5_trend_alignment) : '计算中…'}`;
+  hint.innerHTML += `<br>时序跨度 T1=${t.T1_year_span ?? '?'} 年，趋势对齐 T5=${t.T5_trend_alignment != null ? fmt3(t.T5_trend_alignment) : '计算中…'}`;
 }
 
 // ── Switch to results ─────────────────────────────────────────────────────────
@@ -440,8 +440,8 @@ function renderOverview() {
   const low  = Object.entries(dims).filter(([,d]) => d.final_score < 3).map(([k]) => DIMENSIONS[k]?.label || k);
   const high = Object.entries(dims).filter(([,d]) => d.final_score >= 4).map(([k]) => DIMENSIONS[k]?.label || k);
   const parts = [];
-  if (high.length) parts.push(`<strong>亮点维度：</strong>${high.join('、')}`);
-  if (low.length)  parts.push(`<strong>需改进：</strong>${low.join('、')}`);
+  if (high.length) parts.push(`<strong>Strengths：</strong>${high.join('、')}`);
+  if (low.length)  parts.push(`<strong>Limitations：</strong>${low.join('、')}`);
   $('summary-text').innerHTML = parts.join('<br>') || '评测完成，见维度详情。';
 
   // Key alerts
@@ -454,48 +454,52 @@ function renderOverview() {
   };
 
   const c6 = S.c6;
-  if (c6?.auto_fail) addAlert('danger', '⛔ C6 自动失败：引用矛盾率过高，V2 被强制评为 1 分');
+  if (c6?.auto_fail) addAlert('danger', 'C6 自动失败：引用矛盾率过高，V2 被强制评为 1 分');
 
   const metrics = sum.deterministic_metrics || {};
   if (metrics.C5 != null && metrics.C5 < 0.3)
-    addAlert('warn', `⚠ 引用验证率极低 (C5 = ${pct(metrics.C5)})，可能存在大量虚构引用`);
+    addAlert('warn', `引用验证率极低 (C5 = ${pct(metrics.C5)})，可能存在大量虚构引用`);
 
   const correctedDims = Object.entries(sum.corrected_scores || {}).filter(([,v]) => Math.abs((v.corrected||0) - (v.original||0)) >= 2);
-  if (correctedDims.length) addAlert('warn', `⚠ ${correctedDims.map(([k])=>k).join('、')} 被 Corrector 校正幅度 ≥ 2 分`);
+  if (correctedDims.length) addAlert('warn', `${correctedDims.map(([k])=>k).join('、')} 被 Corrector 校正幅度 ≥ 2 分`);
 
   const highDisagree = Object.values(sum.dimension_scores || {}).some(d => d.variance?.high_disagreement);
-  if (highDisagree) addAlert('info', 'ℹ 部分维度模型间存在较大分歧（high_disagreement=true）');
+  if (highDisagree) addAlert('info', '部分维度模型间存在较大分歧（high_disagreement=true）');
 }
 
 function renderRadar(sum) {
   const dims = sum.dimension_scores || {};
   const indicators = DIM_ORDER.map(d => ({ name: DIMENSIONS[d].label, max: 5 }));
   const values = DIM_ORDER.map(d => dims[d]?.final_score ?? 0);
-  const riskColors = DIM_ORDER.map(d => {
-    const risk = dims[d]?.hallucination_risk;
-    return risk === 'high' ? '#dc2626' : risk === 'medium' ? '#dd5b00' : '#1aae39';
-  });
-
   const container = $('radar-chart');
   if (!S.radarChart) S.radarChart = echarts.init(container);
   S.radarChart.setOption({
-    tooltip: { trigger: 'item' },
+    tooltip: {
+      trigger: 'item',
+      backgroundColor: '#FFFFFF',
+      borderColor: '#E5E5E5',
+      borderWidth: 1,
+      textStyle: { color: '#333333', fontSize: 12 },
+    },
     radar: {
       indicator: indicators,
       radius: '65%',
       splitNumber: 5,
-      axisName: { fontSize: 11, color: '#374151', formatter: v => v },
+      axisName: { fontSize: 11, color: '#666666', formatter: v => v },
+      splitLine: { lineStyle: { color: '#E5E5E5' } },
+      splitArea: { show: false },
+      axisLine: { lineStyle: { color: '#E5E5E5' } },
     },
     series: [{
       type: 'radar',
       data: [{
         value: values,
-        name: '评分',
+        name: 'Score',
         symbol: 'circle',
-        symbolSize: 6,
-        lineStyle: { color: '#0075de', width: 2 },
-        areaStyle: { color: 'rgba(0,117,222,.12)' },
-        itemStyle: { color: (p) => riskColors[p.dataIndex] },
+        symbolSize: 4,
+        lineStyle: { color: '#2C3E50', width: 1.5 },
+        areaStyle: { color: 'rgba(44, 62, 80, 0.06)' },
+        itemStyle: { color: '#2C3E50' },
       }],
     }],
   });
@@ -551,11 +555,11 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
   scoreDiv.innerHTML = `
     <span class="score-num" style="color:${scoreColor(score)}">${Number.isInteger(score) ? score : score.toFixed(1)}</span>
     <span class="score-denom">/5</span>
-    <div class="score-bar"><div class="score-fill" style="width:${pct5}%;background:${scoreColor(score)}"></div></div>
+    <div class="score-bar"><div class="score-fill" style="width:${pct5}%"></div></div>
   `;
 
   const expandBtn = el('button', 'expand-btn');
-  expandBtn.textContent = '▼';
+  expandBtn.textContent = '▾';
   expandBtn.type = 'button';
 
   header.appendChild(titleDiv);
@@ -641,7 +645,7 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
 
   // Raw toggle
   const rawBtn = el('button', 'raw-toggle-btn');
-  rawBtn.textContent = '查看原始数据 ▼';
+  rawBtn.textContent = '查看原始数据 ▾';
   rawBtn.type = 'button';
   rawBtn.onclick = e => { e.stopPropagation(); toggleRaw(dimId); };
   detail.appendChild(rawBtn);
@@ -817,7 +821,7 @@ function renderValidationPanel() {
         <td class="mono">${r.key}</td>
         <td style="font-size:.78rem">${escHtml(r.comparison?.bib_title || '')}</td>
         <td>${r.comparison?.bib_year || ''}</td>
-        <td><span class="valid-badge ${r.is_valid ? 'pass' : 'fail'}">${r.is_valid ? '✓ 通过' : '✗ 失败'}</span></td>
+        <td><span class="valid-badge ${r.is_valid ? 'pass' : 'fail'}">${r.is_valid ? '通过' : '失败'}</span></td>
         <td class="mono">${(r.confidence||0).toFixed(2)}</td>
       </tr>`).join('')}
     </table>`;
@@ -835,9 +839,9 @@ function renderC6Panel() {
       <div class="stat-box"><div class="stat-val" style="color:var(--success)">${d.support}</div><div class="stat-key">支持</div></div>
       <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${d.contradict}</div><div class="stat-key">矛盾</div></div>
       <div class="stat-box"><div class="stat-val">${d.insufficient}</div><div class="stat-key">信息不足</div></div>
-      <div class="stat-box"><div class="stat-val ${d.auto_fail ? 'fail' : ''}">${pct(d.contradiction_rate)}</div><div class="stat-key">矛盾率 ${d.auto_fail ? '⛔AUTO-FAIL' : ''}</div></div>
+      <div class="stat-box"><div class="stat-val ${d.auto_fail ? 'fail' : ''}">${pct(d.contradiction_rate)}</div><div class="stat-key">矛盾率 ${d.auto_fail ? 'AUTO-FAIL' : ''}</div></div>
     </div>
-    ${d.missing_abstract_count ? `<p class="empty-msg" style="margin-top:8px">⚠ ${d.missing_abstract_count} 对因缺少摘要而标记为 insufficient</p>` : ''}
+    ${d.missing_abstract_count ? `<p class="empty-msg" style="margin-top:8px">${d.missing_abstract_count} 对因缺少摘要而标记为 insufficient</p>` : ''}
     ${cons.length === 0 ? '<p class="empty-msg" style="margin-top:12px">无矛盾案例。</p>' : `
       <h4 style="margin:14px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">矛盾案例列表</h4>
       <div class="contradiction-list">
@@ -903,11 +907,11 @@ function renderTemporalChart(temporal, trendBaseline) {
     ],
     series: [
       { name: '综述引用分布', type: 'bar', data: surveyYears.map((y, i) => [y, surveyCounts[i]]),
-        itemStyle: { color: '#0075de' } },
+        itemStyle: { color: '#5B7B8C' } },
       { name: '领域发表趋势', type: 'line', yAxisIndex: 1,
         data: trendYears.map(y => [y, (trendData[y]||0) * scale]),
-        lineStyle: { color: '#dd5b00', width: 2 }, symbol: 'circle', symbolSize: 5,
-        itemStyle: { color: '#dd5b00' } },
+        lineStyle: { color: '#8C6B5B', width: 2 }, symbol: 'circle', symbolSize: 5,
+        itemStyle: { color: '#8C6B5B' } },
     ],
   };
   S.temporalChart.setOption(option);
@@ -943,8 +947,9 @@ function renderGraphPanel() {
 }
 
 const CLUSTER_PALETTE = [
-  '#60a5fa','#f59e0b','#34d399','#f472b6','#a78bfa',
-  '#22d3ee','#fb7185','#facc15','#2dd4bf','#c084fc'
+  '#5B7B8C','#8C6B5B','#6B8C5B','#7B5B8C',
+  '#8C7B5B','#5B8C8C','#8C5B7B','#6B6B8C',
+  '#5B8C6B','#8C8C5B'
 ];
 
 function renderCitationGraph() {
@@ -1070,7 +1075,7 @@ function renderCitationGraph() {
   const nodes = vr.map((r, i) => {
     const cid = clusterMap[r.key];
     const isolated = !(inDeg[r.key] || outDeg[r.key]);
-    const color = isolated ? '#a39e98' : cid != null ? CLUSTER_PALETTE[cid % 10] : '#0075de';
+    const color = isolated ? '#CCCCCC' : cid != null ? CLUSTER_PALETTE[cid % 10] : '#2C3E50';
     const meta = r.comparison || r.metadata || {};
     const title = `<b>${escHtml(meta.bib_title || r.key)}</b><br>` +
       `年份：${meta.bib_year||'?'}　验证：${r.is_valid?'✓':'✗'}`;
@@ -1096,7 +1101,7 @@ function renderCitationGraph() {
 
   const edgeData = edges.map((e, i) => ({
     id: `e${i}`, from: e.source, to: e.target,
-    arrows: 'to', color: { color: '#94a3b844' }, width: 0.7,
+    arrows: 'to', color: { color: '#E5E5E599' }, width: 0.7,
   }));
 
   if (typeof vis === 'undefined') {
@@ -1227,7 +1232,7 @@ function renderPdfViewer() {
   if (!pdfUrl) {
     container.innerHTML = `
       <div class="pdf-placeholder">
-        <p>📄 无法加载 PDF 预览</p>
+        <p>无法加载 PDF 预览</p>
         <p class="pdf-hint">未找到 PDF 文件路径</p>
       </div>`;
     return;
