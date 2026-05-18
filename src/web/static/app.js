@@ -941,11 +941,11 @@ function renderTemporalChart(temporal, trendBaseline) {
     ],
     series: [
       { name: '综述引用分布', type: 'bar', data: surveyYears.map((y, i) => [y, surveyCounts[i]]),
-        itemStyle: { color: '#5B7B8C' } },
+        itemStyle: { color: '#4E8BAF' } },
       { name: '领域发表趋势', type: 'line', yAxisIndex: 1,
         data: trendYears.map(y => [y, (trendData[y]||0) * scale]),
-        lineStyle: { color: '#8C6B5B', width: 2 }, symbol: 'circle', symbolSize: 5,
-        itemStyle: { color: '#8C6B5B' } },
+        lineStyle: { color: '#C0684A', width: 2 }, symbol: 'circle', symbolSize: 5,
+        itemStyle: { color: '#C0684A' } },
     ],
   };
   S.temporalChart.setOption(option);
@@ -981,9 +981,9 @@ function renderGraphPanel() {
 }
 
 const CLUSTER_PALETTE = [
-  '#5B7B8C','#8C6B5B','#6B8C5B','#7B5B8C',
-  '#8C7B5B','#5B8C8C','#8C5B7B','#6B6B8C',
-  '#5B8C6B','#8C8C5B'
+  '#4E8BAF','#C0694E','#5C9E7A','#8E5E9E',
+  '#B8A04E','#4E9E9E','#C06085','#6E9E4E',
+  '#9E7050','#5C6EAE'
 ];
 
 function renderCitationGraph() {
