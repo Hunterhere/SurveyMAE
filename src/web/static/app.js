@@ -1135,7 +1135,7 @@ function renderCitationGraph() {
 
   const edgeData = edges.map((e, i) => ({
     id: `e${i}`, from: e.source, to: e.target,
-    arrows: 'to', color: { color: '#E5E5E599' }, width: 0.7,
+    arrows: 'to', color: { color: '#999999' }, width: 1.0,
   }));
 
   if (typeof vis === 'undefined') {
