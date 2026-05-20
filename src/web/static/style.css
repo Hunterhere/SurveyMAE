@@ -298,9 +298,29 @@ a:hover {
 }
 
 .history-header .tagline {
-  color: var(--warm-gray-500);
+  color: var(--text-muted);
   font-size: 0.85rem;
   font-weight: 500;
+}
+
+.lang-toggle {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  letter-spacing: 0.06em;
+  transition: all 0.15s;
+}
+.lang-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .history-content {
@@ -482,6 +502,9 @@ a:hover {
   overflow-y: auto;
 }
 
+.progress-header {
+  position: relative;
+}
 .progress-header h2 {
   font-size: 1.1rem;
   font-weight: 700;

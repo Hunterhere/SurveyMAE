@@ -446,6 +446,7 @@ class CitationChecker:
         r"^\[\d+\]\s+",
         r"^\d+\.\s+",
         r"^\d+\)\s+",
+        r"^-\s*\[\d+\]\s+",  # Markdown bullet list: - [1] ...
     ]
     REF_AUTHOR_YEAR_PATTERN = r"^[A-Z].{0,160}\b(19|20)\d{2}\b"
 
@@ -843,9 +844,14 @@ class CitationChecker:
         if not raw_entries:
             return await self._extract_references_via_arxiv_links(pdf_path)
 
-        # Filter out entries that are clearly not references (body text false matches)
-        # and limit LLM batch size to avoid excessive token usage.
-        _MAX_LLM_ENTRIES = 200
+        # Filter out entries that are clearly not references (body text false matches).
+        # Cap LLM entries to verify_limit from search_engines.yaml — no point parsing
+        # more references than will be verified against external APIs.
+        try:
+            from src.core.config import SearchEnginesConfig
+            _MAX_LLM_ENTRIES = SearchEnginesConfig.from_yaml().verify_limit
+        except Exception:
+            _MAX_LLM_ENTRIES = 100
 
         # Classify entries: has arXiv ID → API; otherwise → LLM
         arxiv_indexed: list[tuple[int, str, str]] = []  # (idx, arxiv_id, raw)
@@ -1416,6 +1422,7 @@ class CitationChecker:
             batch_size = getattr(evidence_cfg, "c6_batch_size", None) or 10
         if max_concurrency is None:
             max_concurrency = getattr(evidence_cfg, "c6_max_concurrency", None) or 5
+        max_pairs = getattr(evidence_cfg, "c6_max_pairs", None) or 30
         heartbeat = getattr(evidence_cfg, "batch_heartbeat_interval_s", None) or 30
 
         logger.info(f"Starting C6 citation-sentence alignment analysis...")
@@ -1472,7 +1479,19 @@ class CitationChecker:
         insufficient_pairs = [p for p in pairs if not p["has_abstract"]]
         pairs_with_abstract = [p for p in pairs if p["has_abstract"]]
 
-        logger.info(f"Pairs with abstract: {len(pairs_with_abstract)}, without: {len(insufficient_pairs)}")
+        # Truncate to max_pairs to control LLM cost
+        skipped_by_limit = 0
+        if len(pairs_with_abstract) > max_pairs:
+            skipped_by_limit = len(pairs_with_abstract) - max_pairs
+            pairs_with_abstract = pairs_with_abstract[:max_pairs]
+
+        validated_pairs = len(pairs_with_abstract)
+
+        logger.info(
+            f"Pairs with abstract: {len(pairs_with_abstract) + skipped_by_limit} "
+            f"(validating {validated_pairs}, skipped {skipped_by_limit}), "
+            f"without: {len(insufficient_pairs)}"
+        )
 
         # Initialize LLM using ModelConfig (resolves base_url from models.yaml providers)
         try:
@@ -1572,6 +1591,7 @@ class CitationChecker:
             "llm_involved": True,
             "hallucination_risk": "low",
             "total_pairs": len(pairs),
+            "validated_pairs": validated_pairs,
             "support": support,
             "contradict": contradict,
             "insufficient": insufficient,
@@ -1579,6 +1599,7 @@ class CitationChecker:
             "auto_fail": auto_fail,
             "contradictions": contradictions[:50],  # Limit to 50 for report size
             "missing_abstract_count": len(insufficient_pairs),
+            "skipped_by_limit": skipped_by_limit,
             "status": "ok" if not auto_fail else "auto_fail",
         }
 

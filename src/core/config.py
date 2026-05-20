@@ -447,6 +447,7 @@ class EvidenceConfig(BaseModel):
         citation_sample_size: Number of citation-claim pairs to sample.
         c6_batch_size: Number of sentence-abstract pairs per batch for C6.
         c6_max_concurrency: Maximum concurrent batches for C6.
+        c6_max_pairs: Maximum citation-sentence pairs to validate per paper.
         contradiction_threshold: Threshold for auto-fail (0-1).
         llm_ref_parse_batch_size: Number of raw references per LLM batch.
         llm_ref_parse_max_concurrency: Max concurrent batches for LLM ref parsing.
@@ -463,6 +464,7 @@ class EvidenceConfig(BaseModel):
     citation_sample_size: int
     c6_batch_size: int
     c6_max_concurrency: int
+    c6_max_pairs: int
     contradiction_threshold: float
     llm_ref_parse_batch_size: int
     llm_ref_parse_max_concurrency: int

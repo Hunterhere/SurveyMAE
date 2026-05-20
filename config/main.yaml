@@ -61,6 +61,7 @@ evidence:
   # C6 (Citation-Sentence Alignment) related
   c6_batch_size: 20                    # Number of sentence-abstract pairs per LLM batch
   c6_max_concurrency: 5              # Max concurrent batches for C6
+  c6_max_pairs: 50                   # Maximum citation-sentence pairs to validate
   contradiction_threshold: 0.05       # Threshold for auto-fail (5%)
 
   # LLM reference parsing related

@@ -18,7 +18,7 @@ import re
 
 from src.core.log import log_pipeline_step, log_substep
 from src.core.state import SurveyState
-from src.core.config import load_config, SearchEnginesConfig
+from src.core.config import load_config, load_model_config, SearchEnginesConfig
 from src.tools.citation_checker import CitationChecker, GrobidReferenceExtractor
 from src.tools.citation_analysis import CitationAnalyzer
 
@@ -60,7 +60,9 @@ def _load_evidence_config() -> Dict[str, Any]:
     """Load evidence configuration from config files."""
     try:
         cfg = load_config()
+        model_cfg = load_model_config()
         search_cfg = SearchEnginesConfig.from_yaml()
+        c6_tool = model_cfg.tools.get("citation_checker")
         return {
             "foundational_top_k": cfg.evidence.foundational_top_k,
             "foundational_match_threshold": cfg.evidence.foundational_match_threshold,
@@ -73,7 +75,7 @@ def _load_evidence_config() -> Dict[str, Any]:
             "fallback_order": search_cfg.fallback_order,
             "verify_limit": search_cfg.verify_limit,
             "c6_batch_size": cfg.evidence.c6_batch_size,
-            "c6_model": cfg.evidence.c6_model,
+            "c6_model": c6_tool.model if c6_tool else "gpt-4o",
             "c6_max_concurrency": cfg.evidence.c6_max_concurrency,
             "contradiction_threshold": cfg.evidence.contradiction_threshold,
         }

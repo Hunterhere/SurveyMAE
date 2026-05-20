@@ -75,6 +75,215 @@ const STEP_SIGNALS = [
   [7, 'run_summary.json'],
 ];
 
+// ── i18n ──────────────────────────────────────────────────────────────────────
+
+let LANG = localStorage.getItem('surveymae-lang') || 'zh';
+
+const I18N = {
+  zh: {
+    // Page
+    page: { title:'SurveyMAE — 学术综述质量评测' },
+    // Dimension labels
+    dim: { V1:'引用存在性', V2:'引用-断言对齐', V4:'内部一致性', E1:'核心文献覆盖', E2:'方法分类', E3:'技术准确性', E4:'批判性分析', R1:'时效性', R2:'信息分布', R3:'结构清晰度', R4:'文字质量' },
+    // Rubrics
+    rubric: {
+      V1: { 5:'C5 ≥ 0.95', 4:'C5 ≥ 0.85', 3:'C5 ≥ 0.70', 2:'C5 ≥ 0.50', 1:'C5 < 0.50' },
+      V2: { 5:'≥90% 引用-断言对支持', 4:'70–89% 支持，少量局部支持', 3:'50–69% 支持', 2:'30–49% 支持，大量不匹配', 1:'<30% 支持或存在严重误引' },
+      V4: { 5:'无矛盾检出', 4:'轻微不一致，容易解释', 3:'部分矛盾需澄清', 2:'多处矛盾影响可信度', 1:'严重矛盾使综述失去可靠性' },
+      E1: { 5:'各子领域聚类均有高被引锚点文献，主题高度相关', 4:'≥80% 聚类有锚点文献，核心领域覆盖良好', 3:'≥60% 聚类有锚点文献，部分子领域可能缺失', 2:'<60% 聚类有锚点文献，核心领域缺乏基础文献', 1:'多数聚类缺乏锚点，或引文图过于稀疏无法形成有效子领域' },
+      E2: { 5:'S5 (NMI) 高，分类与引用聚类高度吻合', 4:'良好对齐，少许偏差', 3:'部分不对齐但尚可接受', 2:'显著不对齐', 1:'分类与引用结构相悖' },
+      E3: { 5:'无技术错误', 4:'轻微技术不准确', 3:'部分错误但不影响理解', 2:'频繁技术错误', 1:'严重技术误解' },
+      E4: { 5:'系统性比较，趋势清晰，详细分析局限', 4:'良好比较，有一定分析', 3:'有比较但主要是罗列', 2:'几乎只有罗列，分析极少', 1:'纯摘要，没有分析' },
+      R1: { 5:'T5 ≥ 0.7，T2 ≤ 2年，T4 ≤ 1年', 4:'T5 ≥ 0.5，T4 ≤ 2年，覆盖合理', 3:'T5 ≥ 0.3，有小的缺口', 2:'T5 < 0.3 或 T4 ≥ 3年', 1:'引用集中在 1-2 年或缺少基础工作' },
+      R2: { 5:'均衡分布，重点章节聚焦合理', 4:'基本均衡，轻微不均', 3:'有不均衡但有理由', 2:'显著不均衡', 1:'严重不均衡影响完整性' },
+      R3: { 5:'层次清晰，S5 (NMI) 高', 4:'结构良好，轻微问题', 3:'结构尚可', 2:'结构不清晰', 1:'结构混乱，难以跟读' },
+      R4: { 5:'语言流畅，术语一致', 4:'语言良好，轻微问题', 3:'尚可，有些不一致', 2:'频繁语言问题', 1:'语言质量差，难以理解' },
+    },
+    // Steps
+    step: { 1:'PDF 解析', 2:'证据收集', 3:'证据分发', 4:'Agent 评估', 5:'校正投票', 6:'评分聚合', 7:'报告生成' },
+    // Upload
+    upload: { subtitle:'多智能体学术综述质量评测系统', title:'上传文献', drag:'拖放 PDF 文件到此处', sub:'或者选择本地文件', select:'选择文件', start:'开始评测', uploading:'上传中…', failPrefix:'上传失败：' },
+    // History
+    history: { title:'历史评测记录', empty:'暂无评测记录', loadError:'加载历史记录失败' },
+    // Processing
+    processing: { title:'评测进行中', waiting:'等待 PDF 解析完成…', errorPrefix:'评测过程出错', failPrefix:'✗ 评测失败：' },
+    // Navigation
+    nav: { overview:'概览', dimensions:'维度评分', tools:'工具详情', sysinfo:'系统信息', back:'← 返回' },
+    // Overview
+    overview: { title:'诊断概览', summaryTitle:'评测摘要', totalScore:'TOTAL SCORE / 5.0', strengths:'Strengths', limitations:'Limitations', complete:'评测完成，见维度详情。' },
+    // Dimension cards
+    dims: {
+      factual:'事实性验证', depth:'学术深度', readability:'可读性与信息量',
+      dimensionsTitle:'维度评分详情',
+      corrected:'已校正',
+      agentReasoning:'Agent 推理', evidenceSummary:'证据摘要', flaggedItems:'标记项目',
+      correctorAdj:'Corrector 校正', model:'模型', subScores:'各分',
+      c6Title:'C6 引用-断言对齐', contradictionRate:'矛盾率', pairs:'对', viewContradictions:'查看完整矛盾列表 →',
+      clusterAnchor:'聚类锚点分析', clustersWithAnchor:'{0}/{1} 聚类有锚点', moreClusters:'… 还有 {0} 个聚类', viewCluster:'查看完整聚类分析 →',
+      missingOld:'缺失核心文献（旧版数据，前{0}篇）', viewList:'查看完整列表 →',
+      noClusterTitle:'聚类锚点分析', noClusterMsg:'(!)引文图无有效聚类结构，G4 指标不可用，评分基于定性评估。', viewDetails:'查看详情 →',
+      viewRaw:'查看原始数据 ▾',
+    },
+    // Tool panels
+    panel: {
+      extraction:'C1 · PDF 解析结果', validation:'C2 · 引用验证', c6:'C3 · 引用-断言对齐（C6）',
+      temporal:'C4 · 时序分布分析', graph:'C6 · 引用网络图', keypapers:'G4 · 聚类锚点文献分析',
+      sysinfo:'系统信息与原始数据',
+    },
+    // Tool evidence
+    evidence: {
+      C5:'C5 验证率', C6_rate:'C6 矛盾率', C6_samples:'C6 矛盾样本', items:'条', example:'示例',
+      G4:'G4 聚类锚点覆盖率', anchorClusters:'锚点聚类 / 总聚类', missingOld:'缺失文献（旧格式）', papers:'篇',
+      fallbackItem:'项', fallbackObj:'对象',
+    },
+    // Extraction panel
+    extraction: { refs:'参考文献', citations:'引用实例', sections:'章节', sectionList:'章节列表', refList:'参考文献（前20）', colNum:'编号', colTitle:'标题', colAuthor:'作者', colYear:'年份' },
+    // Validation panel
+    validation: { passed:'通过验证', failed:'未通过', total:'总计', C5:'C5 验证率', C3:'C3 孤立引用率', colKey:'引用键', colTitle:'标题', colYear:'年份', colStatus:'状态', colConf:'置信度', pass:'通过', fail:'失败' },
+    // C6 panel
+    c6: { totalPairs:'总对数', support:'支持', contradict:'矛盾', insufficient:'信息不足', rate:'矛盾率', insufficientNote:'{0} 对因缺少摘要而标记为 insufficient', noContradictions:'无矛盾案例。', listTitle:'矛盾案例列表' },
+    // Temporal panel
+    temporal: {
+      T1:'T1 时间跨度（年）', T2:'T2 基础文献缺口', T3:'T3 近年引用比', T4:'T4 最大连续空白', T5:'T5 趋势对齐（r）',
+      S1:'S1 章节数', S2:'S2 引用密度', S3:'S3 Gini 系数', S4:'S4 零引用章节率',
+      barName:'综述引用分布', lineName:'领域发表趋势', y1:'引用数', y2:'归一化趋势',
+    },
+    // Graph panel
+    graph: {
+      nodes:'节点数', edges:'边数', G1:'G1 密度', G2:'G2 连通分量', G3:'G3 最大分量比', G4:'G4 聚类锚点覆盖率', G6:'G6 孤立节点率',
+      tooltipYear:'年份', tooltipValid:'验证', visFail:'vis.js 库加载失败，请检查网络连接。', nodeEdge:'{0} 节点 · {1} 边',
+    },
+    // Key papers panel
+    keypapers: {
+      G4:'G4 覆盖率', G4Coverage:'G4 聚类锚点覆盖率', anchorClusters:'有锚点聚类', noAnchorClusters:'无锚点聚类', threshold:'引用量阈值',
+      noClusterMsg:'引文图无有效共被引聚类结构，G4 指标不可用。<br>ExpertAgent 已基于定性评估对 E1 进行评分。',
+      anchorDef:'锚点定义：聚类中心文献（最高 PageRank）引用量 ≥ {0}，表示该子领域有一篇公认的高影响力论文。相关性由 ExpertAgent 综合判断。',
+      missingTitle:'(!)缺少锚点的聚类（{0} 个）', cited:'被引', times:'次', clusterSize:'聚类规模', papersUnit:'篇',
+      allAnchored:'所有聚类均有基础锚点文献。',
+      allCenters:'所有聚类中心文献（{0} 个，按引用量降序）', anchor:'[Anchor]', noAnchor:'[No anchor]',
+    },
+    // Sysinfo
+    sysinfo: { field:'字段', value:'值', timestamp:'时间戳', pdfSource:'PDF 来源', schemaVer:'Schema 版本', metricsIndex:'指标定义（metrics_index）', rawSummary:'run_summary.json 原始数据' },
+    // Risk
+    risk: { deterministic:'确定性', llm:'LLM判断', llmHigh:'LLM判断(高风险)' },
+    // PDF viewer
+    pdf: { loadFail:'无法加载 PDF 预览', notFound:'未找到 PDF 文件路径', cannotDisplay:'无法直接显示 PDF', downloadHint:'浏览器不支持 PDF 预览，请<a href="{0}">点击下载</a>', loading:'PDF 预览加载中…', hint:'如果无法显示，请检查文件路径' },
+    // Lang
+    lang: { label:'EN' },
+    // Common
+    common: { cited:'被引' },
+    // C6 alerts
+    alert: {
+      autoFail:'C6 自动失败：引用矛盾率过高，V2 被强制评为 1 分',
+      lowVerification:'引用验证率极低 (C5 = {0})，可能存在大量虚构引用',
+      correctorAdjust:'{0} 被 Corrector 校正幅度 ≥ 2 分',
+      highDisagreement:'部分维度模型间存在较大分歧（high_disagreement=true）',
+    },
+  },
+  en: {
+    page: { title:'SurveyMAE — Academic Survey Quality Evaluation' },
+    dim: { V1:'Citation Existence', V2:'Citation-Claim Alignment', V4:'Internal Consistency', E1:'Core Literature Coverage', E2:'Method Taxonomy', E3:'Technical Accuracy', E4:'Critical Analysis', R1:'Timeliness', R2:'Information Distribution', R3:'Structural Clarity', R4:'Language Quality' },
+    rubric: {
+      V1: { 5:'C5 ≥ 0.95', 4:'C5 ≥ 0.85', 3:'C5 ≥ 0.70', 2:'C5 ≥ 0.50', 1:'C5 < 0.50' },
+      V2: { 5:'≥90% citation-claim pairs supported', 4:'70–89% supported, minor gaps', 3:'50–69% supported', 2:'30–49% supported, many mismatches', 1:'<30% supported or severe misrepresentation' },
+      V4: { 5:'No contradictions detected', 4:'Minor inconsistencies, easily explained', 3:'Some contradictions need clarification', 2:'Multiple contradictions affect credibility', 1:'Severe contradictions undermine reliability' },
+      E1: { 5:'All subfield clusters have high-citation anchor papers, topics highly relevant', 4:'≥80% clusters have anchors, core areas well covered', 3:'≥60% clusters have anchors, some subfields may be missing', 2:'<60% clusters have anchors, core areas lack foundational papers', 1:'Most clusters lack anchors, or citation graph too sparse to form subfields' },
+      E2: { 5:'S5 (NMI) high, taxonomy aligns strongly with citation clusters', 4:'Good alignment, minor deviations', 3:'Partial misalignment but acceptable', 2:'Significant misalignment', 1:'Taxonomy contradicts citation structure' },
+      E3: { 5:'No technical errors', 4:'Minor technical inaccuracies', 3:'Some errors but not misleading', 2:'Frequent technical errors', 1:'Severe technical misunderstandings' },
+      E4: { 5:'Systematic comparison, clear trends, detailed limitation analysis', 4:'Good comparison with some analysis', 3:'Some comparison but mostly listing', 2:'Mostly listing, minimal analysis', 1:'Pure summary, no analysis' },
+      R1: { 5:'T5 ≥ 0.7, T2 ≤ 2yr, T4 ≤ 1yr', 4:'T5 ≥ 0.5, T4 ≤ 2yr, reasonable coverage', 3:'T5 ≥ 0.3, minor gaps', 2:'T5 < 0.3 or T4 ≥ 3yr', 1:'Citations concentrated in 1–2 years or missing foundational work' },
+      R2: { 5:'Balanced distribution, key sections well focused', 4:'Mostly balanced, minor unevenness', 3:'Uneven but justifiable', 2:'Significantly uneven', 1:'Severe imbalance affecting completeness' },
+      R3: { 5:'Clear hierarchy, S5 (NMI) high', 4:'Good structure, minor issues', 3:'Acceptable structure', 2:'Unclear structure', 1:'Chaotic structure, hard to follow' },
+      R4: { 5:'Fluent language, consistent terminology', 4:'Good language, minor issues', 3:'Adequate, some inconsistencies', 2:'Frequent language problems', 1:'Poor language quality, hard to understand' },
+    },
+    step: { 1:'PDF Parsing', 2:'Evidence Collection', 3:'Evidence Dispatch', 4:'Agent Evaluation', 5:'Correction Voting', 6:'Score Aggregation', 7:'Report Generation' },
+    upload: { subtitle:'Multi-Agent Academic Survey Quality Evaluation System', title:'Upload Paper', drag:'Drop PDF file here', sub:'or browse from local disk', select:'Choose File', start:'Start Evaluation', uploading:'Uploading…', failPrefix:'Upload failed: ' },
+    history: { title:'Evaluation History', empty:'No evaluation records', loadError:'Failed to load history' },
+    processing: { title:'Evaluation in Progress', waiting:'Waiting for PDF parsing…', errorPrefix:'Evaluation error', failPrefix:'✗ Evaluation failed: ' },
+    nav: { overview:'Overview', dimensions:'Dimensions', tools:'Tool Details', sysinfo:'System Info', back:'← Back' },
+    overview: { title:'Diagnostic Overview', summaryTitle:'Evaluation Summary', totalScore:'TOTAL SCORE / 5.0', strengths:'Strengths', limitations:'Limitations', complete:'Evaluation complete. See dimension details below.' },
+    dims: {
+      factual:'Factual Verification', depth:'Academic Depth', readability:'Readability & Information',
+      dimensionsTitle:'Dimension Scores',
+      corrected:'Corrected',
+      agentReasoning:'Agent Reasoning', evidenceSummary:'Evidence Summary', flaggedItems:'Flagged Items',
+      correctorAdj:'Corrector Adjustment', model:'Models', subScores:'Sub-scores',
+      c6Title:'C6 Citation-Claim Alignment', contradictionRate:'Contradiction Rate', pairs:'pairs', viewContradictions:'View Full Contradiction List →',
+      clusterAnchor:'Cluster Anchor Analysis', clustersWithAnchor:'{0}/{1} clusters have anchors', moreClusters:'… {0} more clusters', viewCluster:'View Full Cluster Analysis →',
+      missingOld:'Missing Core Papers (legacy data, top {0})', viewList:'View Full List →',
+      noClusterTitle:'Cluster Anchor Analysis', noClusterMsg:'(!)No valid co-citation cluster structure found. G4 metric unavailable; E1 scored by qualitative assessment.', viewDetails:'View Details →',
+      viewRaw:'View Raw Data ▾',
+    },
+    panel: {
+      extraction:'C1 · PDF Extraction Results', validation:'C2 · Citation Validation', c6:'C3 · Citation-Claim Alignment (C6)',
+      temporal:'C4 · Temporal Distribution Analysis', graph:'C6 · Citation Network Graph', keypapers:'G4 · Cluster-Anchor Literature Analysis',
+      sysinfo:'System Information & Raw Data',
+    },
+    evidence: {
+      C5:'C5 Verification Rate', C6_rate:'C6 Contradiction Rate', C6_samples:'C6 Contradiction Samples', items:'items', example:'Example',
+      G4:'G4 Cluster-Anchor Coverage', anchorClusters:'Anchor Clusters / Total', missingOld:'Missing Papers (legacy)', papers:'papers',
+      fallbackItem:'items', fallbackObj:'object',
+    },
+    extraction: { refs:'References', citations:'Citation Instances', sections:'Sections', sectionList:'Section List', refList:'References (Top 20)', colNum:'#', colTitle:'Title', colAuthor:'Author', colYear:'Year' },
+    validation: { passed:'Passed', failed:'Failed', total:'Total', C5:'C5 Verification Rate', C3:'C3 Orphan Citation Rate', colKey:'Ref Key', colTitle:'Title', colYear:'Year', colStatus:'Status', colConf:'Confidence', pass:'Pass', fail:'Fail' },
+    c6: { totalPairs:'Total Pairs', support:'Support', contradict:'Contradict', insufficient:'Insufficient', rate:'Contradiction Rate', insufficientNote:'{0} pairs marked insufficient due to missing abstracts', noContradictions:'No contradictions found.', listTitle:'Contradiction List' },
+    temporal: {
+      T1:'T1 Time Span (years)', T2:'T2 Foundational Gap', T3:'T3 Recent Citation Ratio', T4:'T4 Maximum Consecutive Gap', T5:'T5 Trend Alignment (r)',
+      S1:'S1 Section Count', S2:'S2 Citation Density', S3:'S3 Gini Coefficient', S4:'S4 Zero-Citation Section Rate',
+      barName:'Survey Citation Distribution', lineName:'Field Publication Trend', y1:'Citation Count', y2:'Normalized Trend',
+    },
+    graph: {
+      nodes:'Nodes', edges:'Edges', G1:'G1 Density', G2:'G2 Components', G3:'G3 LCC Fraction', G4:'G4 Cluster-Anchor Coverage', G6:'G6 Isolate Rate',
+      tooltipYear:'Year', tooltipValid:'Valid', visFail:'vis.js library failed to load. Please check your network connection.', nodeEdge:'{0} nodes · {1} edges',
+    },
+    keypapers: {
+      G4:'G4 Coverage', G4Coverage:'G4 Cluster-Anchor Coverage', anchorClusters:'Anchored Clusters', noAnchorClusters:'Unanchored Clusters', threshold:'Citation Threshold',
+      noClusterMsg:'No valid co-citation cluster structure found. G4 metric unavailable.<br>ExpertAgent scored E1 based on qualitative assessment.',
+      anchorDef:'Anchor definition: the highest-PageRank center paper in a cluster with ≥ {0} citations, indicating a recognized high-impact paper in that subfield. Relevance judged by ExpertAgent.',
+      missingTitle:'(!)Clusters Without Anchors ({0})', cited:'cited', times:'times', clusterSize:'cluster size', papersUnit:'papers',
+      allAnchored:'All clusters have foundational anchor papers.',
+      allCenters:'All Cluster Center Papers ({0}, sorted by citation count)', anchor:'[Anchor]', noAnchor:'[No anchor]',
+    },
+    sysinfo: { field:'Field', value:'Value', timestamp:'Timestamp', pdfSource:'PDF Source', schemaVer:'Schema Version', metricsIndex:'Metrics Index', rawSummary:'run_summary.json Raw Data' },
+    risk: { deterministic:'Deterministic', llm:'LLM Judgment', llmHigh:'LLM Judgment (High Risk)' },
+    pdf: { loadFail:'Failed to load PDF preview', notFound:'PDF file path not found', cannotDisplay:'Cannot display PDF directly', downloadHint:'Browser does not support PDF preview. <a href="{0}">Click to download</a>', loading:'Loading PDF preview…', hint:'If the PDF cannot be displayed, please check the file path' },
+    lang: { label:'中文' },
+    common: { cited:'cited' },
+    alert: {
+      autoFail:'C6 Auto-Fail: contradiction rate too high; V2 forced to score 1',
+      lowVerification:'Very low citation verification rate (C5 = {0}); possible fabricated citations',
+      correctorAdjust:'{0} adjusted by Corrector ≥ 2 points',
+      highDisagreement:'High disagreement between models on some dimensions (high_disagreement=true)',
+    },
+  }
+};
+
+function t(key, ...args) {
+  const keys = key.split('.');
+  let val = I18N[LANG];
+  for (const k of keys) {
+    if (val == null) return key;
+    val = val[k];
+  }
+  if (typeof val !== 'string') return key;
+  return val.replace(/\{(\d+)\}/g, (_, i) => args[i] != null ? args[i] : '');
+}
+
+function updateDomI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.getAttribute('data-i18n'));
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.getAttribute('data-i18n-html'));
+  });
+  document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
+}
+
+function switchLang(lang) {
+  localStorage.setItem('surveymae-lang', lang);
+  location.reload();
+}
+
 // ── Application state ────────────────────────────────────────────────────────
 
 const S = {
@@ -198,15 +407,15 @@ function initUpload() {
   btn.addEventListener('click', async () => {
     if (!selectedFile) return;
     btn.disabled = true;
-    btn.textContent = '上传中…';
+    btn.textContent = t('upload.uploading');
     try {
       const { eval_id } = await apiUpload(selectedFile);
       $('progress-filename').textContent = selectedFile.name;
       startEval(eval_id);
     } catch (e) {
-      alert('上传失败：' + e.message);
+      alert(t('upload.failPrefix') + e.message);
       btn.disabled = false;
-      btn.textContent = '开始评测';
+      btn.textContent = t('upload.start');
     }
   });
 
@@ -220,7 +429,7 @@ async function loadHistory() {
     list.innerHTML = '';
 
     if (!runs.length) {
-      list.innerHTML = '<div class="history-empty">暂无评测记录</div>';
+      list.innerHTML = '<div class="history-empty">' + t('history.empty') + '</div>';
       return;
     }
 
@@ -241,7 +450,7 @@ async function loadHistory() {
     });
   } catch (_) {
     const list = $('history-list');
-    if (list) list.innerHTML = '<div class="history-empty">加载历史记录失败</div>';
+    if (list) list.innerHTML = '<div class="history-empty">' + t('history.loadError') + '</div>';
   }
 }
 
@@ -278,7 +487,7 @@ async function poll(evalId, tryDirect) {
       setTimeout(() => switchToResults(), 400);
     } else if (status.status === 'error') {
       clearInterval(S.pollTimer);
-      showError(status.error || '评测过程出错');
+      showError(status.error || t('processing.errorPrefix'));
     }
   } catch (_) {}
 }
@@ -287,7 +496,7 @@ function showError(msg) {
   setPhase('processing');
   const hint = $('waiting-hint');
   hint.style.display = 'block';
-  hint.innerHTML = `<span style="color:var(--danger)">✗ 评测失败：${msg}</span>`;
+  hint.innerHTML = `<span style="color:var(--danger)">${t('processing.failPrefix')}${msg}</span>`;
 }
 
 // ── Steps rendering ───────────────────────────────────────────────────────────
@@ -309,7 +518,7 @@ function renderSteps(currentStep, completed) {
     const li = el('li', `step-item ${isDone ? 'done' : isActive ? 'active' : 'pending'}`);
     li.innerHTML = `<span class="step-icon">${icon}</span>
       <div class="step-body">
-        <div class="step-label">【${String(s).padStart(2,'0')}】${STEP_LABELS[s]}</div>
+        <div class="step-label">【${String(s).padStart(2,'0')}】${t('step.' + s)}</div>
       </div>`;
     list.appendChild(li);
   }
@@ -368,14 +577,14 @@ function showPartialValidation() {
   const vr = S.validation.reference_validations || [];
   const c5 = vr.length ? (vr.filter(r => r.is_valid).length / vr.length) : 0;
   hint.style.display = 'block';
-  hint.innerHTML = `已完成证据收集：<strong>${vr.length}</strong> 条引用，验证率 <strong>${pct(c5)}</strong>`;
+  hint.innerHTML = `${t('dims.evidenceSummary')}：<strong>${vr.length}</strong> ${t('evidence.items')}，${t('evidence.C5')} <strong>${pct(c5)}</strong>`;
 }
 
 function showPartialTemporal() {
   if (!S.analysis) return;
-  const t = S.analysis.temporal || {};
+  const td = S.analysis.temporal || {};
   const hint = $('waiting-hint');
-  hint.innerHTML += `<br>时序跨度 T1=${t.T1_year_span ?? '?'} 年，趋势对齐 T5=${t.T5_trend_alignment != null ? fmt3(t.T5_trend_alignment) : '计算中…'}`;
+  hint.innerHTML += `<br>${t('temporal.T1')}=${td.T1_year_span ?? '?'} ${t('keypapers.times')}，${t('temporal.T5')}=${td.T5_trend_alignment != null ? fmt3(td.T5_trend_alignment) : 'computing…'}`;
 }
 
 // ── Switch to results ─────────────────────────────────────────────────────────
@@ -440,12 +649,12 @@ function renderOverview() {
 
   // Summary text (auto-generated from scores)
   const dims = sum.dimension_scores || {};
-  const low  = Object.entries(dims).filter(([,d]) => d.final_score < 3).map(([k]) => DIMENSIONS[k]?.label || k);
-  const high = Object.entries(dims).filter(([,d]) => d.final_score >= 4).map(([k]) => DIMENSIONS[k]?.label || k);
+  const low  = Object.entries(dims).filter(([,d]) => d.final_score < 3).map(([k]) => t('dim.' + k));
+  const high = Object.entries(dims).filter(([,d]) => d.final_score >= 4).map(([k]) => t('dim.' + k));
   const parts = [];
-  if (high.length) parts.push(`<strong>Strengths：</strong>${high.join('、')}`);
-  if (low.length)  parts.push(`<strong>Limitations：</strong>${low.join('、')}`);
-  $('summary-text').innerHTML = parts.join('<br>') || '评测完成，见维度详情。';
+  if (high.length) parts.push(`<strong>${t('overview.strengths')}：</strong>${high.join(', ')}`);
+  if (low.length)  parts.push(`<strong>${t('overview.limitations')}：</strong>${low.join(', ')}`);
+  $('summary-text').innerHTML = parts.join('<br>') || t('overview.complete');
 
   // Key alerts
   const alerts = $('key-alerts');
@@ -457,22 +666,22 @@ function renderOverview() {
   };
 
   const c6 = S.c6;
-  if (c6?.auto_fail) addAlert('danger', 'C6 自动失败：引用矛盾率过高，V2 被强制评为 1 分');
+  if (c6?.auto_fail) addAlert('danger', t('alert.autoFail'));
 
   const metrics = sum.deterministic_metrics || {};
   if (metrics.C5 != null && metrics.C5 < 0.3)
-    addAlert('warn', `引用验证率极低 (C5 = ${pct(metrics.C5)})，可能存在大量虚构引用`);
+    addAlert('warn', t('alert.lowVerification', pct(metrics.C5)));
 
   const correctedDims = Object.entries(sum.corrected_scores || {}).filter(([,v]) => Math.abs((v.corrected||0) - (v.original||0)) >= 2);
-  if (correctedDims.length) addAlert('warn', `${correctedDims.map(([k])=>k).join('、')} 被 Corrector 校正幅度 ≥ 2 分`);
+  if (correctedDims.length) addAlert('warn', t('alert.correctorAdjust', correctedDims.map(([k])=>k).join(', ')));
 
   const highDisagree = Object.values(sum.dimension_scores || {}).some(d => d.variance?.high_disagreement);
-  if (highDisagree) addAlert('info', '部分维度模型间存在较大分歧（high_disagreement=true）');
+  if (highDisagree) addAlert('info', t('alert.highDisagreement'));
 }
 
 function renderRadar(sum) {
   const dims = sum.dimension_scores || {};
-  const indicators = DIM_ORDER.map(d => ({ name: DIMENSIONS[d].label, max: 5 }));
+  const indicators = DIM_ORDER.map(d => ({ name: t('dim.' + d), max: 5 }));
   const values = DIM_ORDER.map(d => dims[d]?.final_score ?? 0);
   const container = $('radar-chart');
   if (!S.radarChart) S.radarChart = echarts.init(container);
@@ -505,7 +714,7 @@ function renderRadar(sum) {
         itemStyle: { color: '#2C3E50' },
       }],
     }],
-  });
+  }, { notMerge: true });
   container.onclick = e => {
     // ECharts radar click → jump to card
     const idx = S.radarChart.convertFromPixel({ seriesIndex: 0 }, [e.offsetX, e.offsetY]);
@@ -522,6 +731,12 @@ function renderDimensionCards() {
     expert:   S.expert?.output?.agent_outputs?.expert,
     reader:   S.reader?.output?.agent_outputs?.reader,
   };
+
+  // Clear containers before re-rendering
+  Object.values(GROUP_CONTAINERS).forEach(id => {
+    const el = $(id);
+    if (el) el.innerHTML = '';
+  });
 
   DIM_ORDER.forEach(dimId => {
     const meta     = DIMENSIONS[dimId];
@@ -549,8 +764,8 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
   const titleDiv = el('div', 'dim-title');
   titleDiv.innerHTML = `
     <span class="dim-id">${dimId}</span>
-    <span class="dim-name">${meta.label}</span>
-    ${corrData ? '<span class="risk-badge corrected">已校正</span>' : `<span class="risk-badge ${risk}">${riskLabel(risk)}</span>`}
+    <span class="dim-name">${t('dim.' + dimId)}</span>
+    ${corrData ? `<span class="risk-badge corrected">${t('dims.corrected')}</span>` : `<span class="risk-badge ${risk}">${riskLabel(risk)}</span>`}
   `;
 
   const scoreDiv = el('div', 'dim-score-block');
@@ -577,7 +792,7 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
   const reasoning = subScore?.llm_reasoning;
   if (reasoning) {
     const rs = el('div', 'detail-section');
-    rs.innerHTML = `<h4>Agent 推理</h4><p>${escHtml(reasoning)}</p>`;
+    rs.innerHTML = `<h4>${t('dims.agentReasoning')}</h4><p>${escHtml(reasoning)}</p>`;
     detail.appendChild(rs);
   }
 
@@ -594,7 +809,7 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
       </div>
     `).join('');
     ts.innerHTML = `
-      <h4>证据摘要</h4>
+      <h4>${t('dims.evidenceSummary')}</h4>
       <div class="tool-evidence-lines">${lines}</div>
     `;
     detail.appendChild(ts);
@@ -605,7 +820,7 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
   const flagged = subScore?.flagged_items || [];
   if (flagged.length) {
     const fs = el('div', 'detail-section');
-    fs.innerHTML = `<h4>标记项目</h4><ul class="flagged-list">${flagged.map(f => `<li>${escHtml(String(f))}</li>`).join('')}</ul>`;
+    fs.innerHTML = `<h4>${t('dims.flaggedItems')}</h4><ul class="flagged-list">${flagged.map(f => `<li>${escHtml(String(f))}</li>`).join('')}</ul>`;
     detail.appendChild(fs);
   }
 
@@ -616,8 +831,8 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
     const models = (v.models_used || []).join(', ');
     const scores = (v.scores || []).join(' / ');
     cs.innerHTML = `<div class="corrector-box">
-      <strong>Corrector 校正</strong>：原始分 ${corrData.original_score} → 校正分 ${corrData.corrected_score}（std=${(v.std||0).toFixed(3)}）
-      <div class="model-scores">模型：${models}<br>各分：${scores}</div>
+      <strong>${t('dims.correctorAdj')}</strong>：${corrData.original_score} → ${corrData.corrected_score}（std=${(v.std||0).toFixed(3)}）
+      <div class="model-scores">${t('dims.model')}：${models}<br>${t('dims.subScores')}：${scores}</div>
     </div>`;
     detail.appendChild(cs);
   }
@@ -627,10 +842,10 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
     const cs = el('div', 'detail-section');
     const rate = S.c6.contradiction_rate;
     const fail = S.c6.auto_fail;
-    cs.innerHTML = `<h4>C6 引用-断言对齐</h4>
-      <p>矛盾率 <strong>${pct(rate)}</strong>（${S.c6.contradict}/${S.c6.total_pairs} 对）
+    cs.innerHTML = `<h4>${t('dims.c6Title')}</h4>
+      <p>${t('dims.contradictionRate')} <strong>${pct(rate)}</strong>（${S.c6.contradict}/${S.c6.total_pairs} ${t('dims.pairs')}）
       ${fail ? ' <span style="color:var(--danger);font-weight:700">AUTO-FAIL</span>' : ''}</p>
-      <a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-c6')">查看完整矛盾列表 →</a>`;
+      <a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-c6')">${t('dims.viewContradictions')}</a>`;
     detail.appendChild(cs);
   }
 
@@ -644,31 +859,31 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
       // New cluster-centric format
       const top3 = centers.slice(0, 3);
       const anchorCount = centers.filter(c => c.is_foundational_anchor).length;
-      ms.innerHTML = `<h4>聚类锚点分析（${anchorCount}/${centers.length} 聚类有锚点）</h4>` +
+      ms.innerHTML = `<h4>${t('dims.clusterAnchor')}（${t('dims.clustersWithAnchor', anchorCount, centers.length)}）</h4>` +
         top3.map(c => {
-          const label = c.is_foundational_anchor ? '[Anchor]' : '[No anchor]';
+          const label = c.is_foundational_anchor ? t('keypapers.anchor') : t('keypapers.noAnchor');
           const norm = c.citation_norm != null ? `| norm: ${c.citation_norm.toFixed(1)}` : '';
-          return `<div style="font-size:.82rem;padding:3px 0"><span class="pill" style="font-size:.7rem;margin-right:4px">${label}</span><strong>${escHtml(c.center_title||'(empty)')}</strong> (${c.center_year||'?'}, 被引 ${c.citation_count||0}${norm})</div>`;
+          return `<div style="font-size:.82rem;padding:3px 0"><span class="pill" style="font-size:.7rem;margin-right:4px">${label}</span><strong>${escHtml(c.center_title||'(empty)')}</strong> (${c.center_year||'?'}, ${t('common.cited')} ${c.citation_count||0}${norm})</div>`;
         }).join('') +
-        (centers.length > 3 ? `<div style="font-size:.78rem;padding:3px 0;color:var(--text-muted)">… 还有 ${centers.length - 3} 个聚类</div>` : '') +
-        `<a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">查看完整聚类分析 →</a>`;
+        (centers.length > 3 ? `<div style="font-size:.78rem;padding:3px 0;color:var(--text-muted)">${t('dims.moreClusters', centers.length - 3)}</div>` : '') +
+        `<a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">${t('dims.viewCluster')}</a>`;
     } else if (oldMissing.length > 0) {
       // Old-format fallback: missing papers from external search
       const top3 = oldMissing.slice(0, 3);
-      ms.innerHTML = `<h4>缺失核心文献（旧版数据，前${top3.length}篇）</h4>` +
-        top3.map(p => `<div style="font-size:.82rem;padding:3px 0"><strong>${escHtml(p.title||'')}</strong> (${p.year||'?'}, 被引 ${p.citation_count||'?'})</div>`).join('') +
-        `<a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">查看完整列表 →</a>`;
+      ms.innerHTML = `<h4>${t('dims.missingOld', top3.length)}</h4>` +
+        top3.map(p => `<div style="font-size:.82rem;padding:3px 0"><strong>${escHtml(p.title||'')}</strong> (${p.year||'?'}, ${t('common.cited')} ${p.citation_count||'?'})</div>`).join('') +
+        `<a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">${t('dims.viewList')}</a>`;
     } else {
-      ms.innerHTML = `<h4>聚类锚点分析</h4>
-        <div style="font-size:.82rem;padding:6px 0;color:var(--text-muted)">(!)引文图无有效聚类结构，G4 指标不可用，评分基于定性评估。</div>
-        <a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">查看详情 →</a>`;
+      ms.innerHTML = `<h4>${t('dims.noClusterTitle')}</h4>
+        <div style="font-size:.82rem;padding:6px 0;color:var(--text-muted)">${t('dims.noClusterMsg')}</div>
+        <a class="btn-outline" style="font-size:.78rem;padding:4px 10px;display:inline-block;margin-top:6px" onclick="event.stopPropagation();openPanel('panel-keypapers')">${t('dims.viewDetails')}</a>`;
     }
     detail.appendChild(ms);
   }
 
   // Raw toggle
   const rawBtn = el('button', 'raw-toggle-btn');
-  rawBtn.textContent = '查看原始数据 ▾';
+  rawBtn.textContent = t('dims.viewRaw');
   rawBtn.type = 'button';
   rawBtn.onclick = e => { e.stopPropagation(); toggleRaw(dimId); };
   detail.appendChild(rawBtn);
@@ -685,7 +900,7 @@ function buildDimCard(dimId, meta, dimScore, subScore, corrections) {
 }
 
 function riskLabel(r) {
-  return { low: '确定性', medium: 'LLM判断', high: 'LLM判断(高风险)', null: '—' }[r] || r || '—';
+  return { low: t('risk.deterministic'), medium: t('risk.llm'), high: t('risk.llmHigh'), null: '—' }[r] || r || '—';
 }
 
 function buildToolEvidenceLines(dimId, te) {
@@ -703,32 +918,32 @@ function buildToolEvidenceLines(dimId, te) {
 
   switch (dimId) {
     case 'V1':
-      pushIf('C5 验证率', te.C5 != null ? pct(te.C5) : null);
+      pushIf(t('evidence.C5'), te.C5 != null ? pct(te.C5) : null);
       break;
     case 'V2':
-      pushIf('C6 矛盾率', te.C6_contradiction_rate != null ? pct(te.C6_contradiction_rate) : null);
+      pushIf(t('evidence.C6_rate'), te.C6_contradiction_rate != null ? pct(te.C6_contradiction_rate) : null);
       break;
     case 'V4': {
       const cons = Array.isArray(te.c6_contradictions) ? te.c6_contradictions : [];
-      pushIf('C6 矛盾样本', `${cons.length} 条`);
+      pushIf(t('evidence.C6_samples'), `${cons.length} ${t('evidence.items')}`);
       if (cons.length) {
         const sample = cons[0];
         const preview = sample?.sentence || sample?.note || JSON.stringify(sample);
-        pushIf('示例', preview);
+        pushIf(t('evidence.example'), preview);
       }
       break;
     }
     case 'E1': {
-      pushIf('G4 聚类锚点覆盖率', te.G4 != null ? pct(te.G4) : null);
+      pushIf(t('evidence.G4'), te.G4 != null ? pct(te.G4) : null);
       // Show anchor cluster summary from keyPapers if available
       const kp = S.keyPapers;
       const centers = kp?.cluster_centers || [];
       if (centers.length > 0) {
         const anchorCount = centers.filter(c => c.is_foundational_anchor).length;
-        pushIf('锚点聚类 / 总聚类', `${anchorCount} / ${centers.length}`);
+        pushIf(t('evidence.anchorClusters'), `${anchorCount} / ${centers.length}`);
       } else if (kp?.missing_key_papers?.length > 0) {
         // Old-format fallback
-        pushIf('缺失文献（旧格式）', `${kp.missing_key_papers.length} 篇`);
+        pushIf(t('evidence.missingOld'), `${kp.missing_key_papers.length} ${t('evidence.papers')}`);
       }
       break;
     }
@@ -737,7 +952,7 @@ function buildToolEvidenceLines(dimId, te) {
       pushIf('S5 (NMI)', te.S5 != null ? numFmt(te.S5) : null);
       break;
     case 'R1':
-      pushIf('T5 趋势对齐', te.T5 != null ? numFmt(te.T5) : null);
+      pushIf('T5', te.T5 != null ? numFmt(te.T5) : null);
       break;
     case 'R2':
       pushIf('S3 (Gini)', te.S3 != null ? numFmt(te.S3) : null);
@@ -753,9 +968,9 @@ function buildToolEvidenceLines(dimId, te) {
       if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') {
         lines.push({ label: k, value: typeof v === 'number' ? numFmt(v) : String(v) });
       } else if (Array.isArray(v)) {
-        lines.push({ label: k, value: `${v.length} 项` });
+        lines.push({ label: k, value: `${v.length} ${t('evidence.fallbackItem')}` });
       } else if (typeof v === 'object') {
-        lines.push({ label: k, value: '对象' });
+        lines.push({ label: k, value: t('evidence.fallbackObj') });
       }
     });
   }
@@ -813,15 +1028,15 @@ function renderExtractionPanel() {
 
   body.innerHTML = `
     <div class="stat-row">
-      <div class="stat-box"><div class="stat-val">${refs.length}</div><div class="stat-key">参考文献</div></div>
-      <div class="stat-box"><div class="stat-val">${cits.length}</div><div class="stat-key">引用实例</div></div>
-      <div class="stat-box"><div class="stat-val">${sections.length}</div><div class="stat-key">章节</div></div>
+      <div class="stat-box"><div class="stat-val">${refs.length}</div><div class="stat-key">${t('extraction.refs')}</div></div>
+      <div class="stat-box"><div class="stat-val">${cits.length}</div><div class="stat-key">${t('extraction.citations')}</div></div>
+      <div class="stat-box"><div class="stat-val">${sections.length}</div><div class="stat-key">${t('extraction.sections')}</div></div>
     </div>
-    <h4 style="margin-top:16px;margin-bottom:6px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">章节列表</h4>
+    <h4 style="margin-top:16px;margin-bottom:6px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">${t('extraction.sectionList')}</h4>
     <div>${sections.map(s => `<span class="tag" style="margin:2px">${escHtml(s)}</span>`).join('')}</div>
-    <h4 style="margin-top:16px;margin-bottom:6px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">参考文献（前20）</h4>
+    <h4 style="margin-top:16px;margin-bottom:6px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">${t('extraction.refList')}</h4>
     <table class="metric-table">
-      <tr><th>编号</th><th>标题</th><th>作者</th><th>年份</th></tr>
+      <tr><th>${t('extraction.colNum')}</th><th>${t('extraction.colTitle')}</th><th>${t('extraction.colAuthor')}</th><th>${t('extraction.colYear')}</th></tr>
       ${refs.slice(0,20).map(r => `<tr>
         <td class="mono">[${r.reference_number}]</td>
         <td>${escHtml(r.title||'')}</td>
@@ -843,19 +1058,19 @@ function renderValidationPanel() {
 
   body.innerHTML = `
     <div class="stat-row">
-      <div class="stat-box"><div class="stat-val" style="color:var(--success)">${pass}</div><div class="stat-key">通过验证</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${fail}</div><div class="stat-key">未通过</div></div>
-      <div class="stat-box"><div class="stat-val">${vr.length}</div><div class="stat-key">总计</div></div>
-      <div class="stat-box"><div class="stat-val">${pct(c5)}</div><div class="stat-key">C5 验证率</div></div>
-      ${c3 != null ? `<div class="stat-box"><div class="stat-val">${pct(c3)}</div><div class="stat-key">C3 孤立引用率</div></div>` : ''}
+      <div class="stat-box"><div class="stat-val" style="color:var(--success)">${pass}</div><div class="stat-key">${t('validation.passed')}</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${fail}</div><div class="stat-key">${t('validation.failed')}</div></div>
+      <div class="stat-box"><div class="stat-val">${vr.length}</div><div class="stat-key">${t('validation.total')}</div></div>
+      <div class="stat-box"><div class="stat-val">${pct(c5)}</div><div class="stat-key">${t('validation.C5')}</div></div>
+      ${c3 != null ? `<div class="stat-box"><div class="stat-val">${pct(c3)}</div><div class="stat-key">${t('validation.C3')}</div></div>` : ''}
     </div>
     <table class="metric-table" style="margin-top:16px">
-      <tr><th>引用键</th><th>标题</th><th>年份</th><th>状态</th><th>置信度</th></tr>
+      <tr><th>${t('validation.colKey')}</th><th>${t('validation.colTitle')}</th><th>${t('validation.colYear')}</th><th>${t('validation.colStatus')}</th><th>${t('validation.colConf')}</th></tr>
       ${vr.slice(0,30).map(r => `<tr>
         <td class="mono">${r.key}</td>
         <td style="font-size:.78rem">${escHtml(r.comparison?.bib_title || '')}</td>
         <td>${r.comparison?.bib_year || ''}</td>
-        <td><span class="valid-badge ${r.is_valid ? 'pass' : 'fail'}">${r.is_valid ? '通过' : '失败'}</span></td>
+        <td><span class="valid-badge ${r.is_valid ? 'pass' : 'fail'}">${r.is_valid ? t('validation.pass') : t('validation.fail')}</span></td>
         <td class="mono">${(r.confidence||0).toFixed(2)}</td>
       </tr>`).join('')}
     </table>`;
@@ -869,15 +1084,15 @@ function renderC6Panel() {
 
   body.innerHTML = `
     <div class="stat-row">
-      <div class="stat-box"><div class="stat-val">${d.total_pairs}</div><div class="stat-key">总对数</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--success)">${d.support}</div><div class="stat-key">支持</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${d.contradict}</div><div class="stat-key">矛盾</div></div>
-      <div class="stat-box"><div class="stat-val">${d.insufficient}</div><div class="stat-key">信息不足</div></div>
-      <div class="stat-box"><div class="stat-val ${d.auto_fail ? 'fail' : ''}">${pct(d.contradiction_rate)}</div><div class="stat-key">矛盾率 ${d.auto_fail ? 'AUTO-FAIL' : ''}</div></div>
+      <div class="stat-box"><div class="stat-val">${d.total_pairs}</div><div class="stat-key">${t('c6.totalPairs')}</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:var(--success)">${d.support}</div><div class="stat-key">${t('c6.support')}</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${d.contradict}</div><div class="stat-key">${t('c6.contradict')}</div></div>
+      <div class="stat-box"><div class="stat-val">${d.insufficient}</div><div class="stat-key">${t('c6.insufficient')}</div></div>
+      <div class="stat-box"><div class="stat-val ${d.auto_fail ? 'fail' : ''}">${pct(d.contradiction_rate)}</div><div class="stat-key">${t('c6.rate')} ${d.auto_fail ? 'AUTO-FAIL' : ''}</div></div>
     </div>
-    ${d.missing_abstract_count ? `<p class="empty-msg" style="margin-top:8px">${d.missing_abstract_count} 对因缺少摘要而标记为 insufficient</p>` : ''}
-    ${cons.length === 0 ? '<p class="empty-msg" style="margin-top:12px">无矛盾案例。</p>' : `
-      <h4 style="margin:14px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">矛盾案例列表</h4>
+    ${d.missing_abstract_count ? `<p class="empty-msg" style="margin-top:8px">${t('c6.insufficientNote', d.missing_abstract_count)}</p>` : ''}
+    ${cons.length === 0 ? `<p class="empty-msg" style="margin-top:12px">${t('c6.noContradictions')}</p>` : `
+      <h4 style="margin:14px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">${t('c6.listTitle')}</h4>
       <div class="contradiction-list">
         ${cons.map(c => `<div class="contradiction-item">
           <div class="marker">${escHtml(c.citation||'')} → ${escHtml(c.llm_judgment||'')}</div>
@@ -890,28 +1105,28 @@ function renderC6Panel() {
 
 function renderTemporalPanel() {
   if (!S.analysis) return;
-  const t = S.analysis.temporal || {};
+  const td = S.analysis.temporal || {};
   const st = S.analysis.structural || {};
   const metrics = S.summary?.deterministic_metrics || {};
 
   // Metrics table
   $('temporal-metrics').innerHTML = `
     <div class="stat-row" style="margin-top:16px">
-      <div class="stat-box"><div class="stat-val">${t.T1_year_span ?? '?'}</div><div class="stat-key">T1 时间跨度（年）</div></div>
-      <div class="stat-box"><div class="stat-val">${t.T2_foundational_retrieval_gap != null ? t.T2_foundational_retrieval_gap+'年' : 'N/A'}</div><div class="stat-key">T2 基础文献缺口</div></div>
-      <div class="stat-box"><div class="stat-val">${t.T3_peak_year_ratio != null ? pct(t.T3_peak_year_ratio) : 'N/A'}</div><div class="stat-key">T3 近年引用比</div></div>
-      <div class="stat-box"><div class="stat-val">${t.T4_temporal_continuity != null ? t.T4_temporal_continuity+'年' : 'N/A'}</div><div class="stat-key">T4 最大连续空白</div></div>
-      <div class="stat-box"><div class="stat-val">${t.T5_trend_alignment != null ? fmt3(t.T5_trend_alignment) : 'N/A'}</div><div class="stat-key">T5 趋势对齐（r）</div></div>
+      <div class="stat-box"><div class="stat-val">${td.T1_year_span ?? '?'}</div><div class="stat-key">${t('temporal.T1')}</div></div>
+      <div class="stat-box"><div class="stat-val">${td.T2_foundational_retrieval_gap != null ? td.T2_foundational_retrieval_gap + ' ' + t('keypapers.times') : 'N/A'}</div><div class="stat-key">${t('temporal.T2')}</div></div>
+      <div class="stat-box"><div class="stat-val">${td.T3_peak_year_ratio != null ? pct(td.T3_peak_year_ratio) : 'N/A'}</div><div class="stat-key">${t('temporal.T3')}</div></div>
+      <div class="stat-box"><div class="stat-val">${td.T4_temporal_continuity != null ? td.T4_temporal_continuity + ' ' + t('keypapers.times') : 'N/A'}</div><div class="stat-key">${t('temporal.T4')}</div></div>
+      <div class="stat-box"><div class="stat-val">${td.T5_trend_alignment != null ? fmt3(td.T5_trend_alignment) : 'N/A'}</div><div class="stat-key">${t('temporal.T5')}</div></div>
     </div>
     <div class="stat-row" style="margin-top:8px">
-      <div class="stat-box"><div class="stat-val">${st.S1_section_count??'?'}</div><div class="stat-key">S1 章节数</div></div>
-      <div class="stat-box"><div class="stat-val">${st.S2_citation_density!=null?fmt1(st.S2_citation_density):'?'}</div><div class="stat-key">S2 引用密度</div></div>
-      <div class="stat-box"><div class="stat-val">${st.S3_citation_gini!=null?fmt3(st.S3_citation_gini):'?'}</div><div class="stat-key">S3 Gini 系数</div></div>
-      <div class="stat-box"><div class="stat-val">${st.S4_zero_citation_section_rate!=null?pct(st.S4_zero_citation_section_rate):'?'}</div><div class="stat-key">S4 零引用章节率</div></div>
+      <div class="stat-box"><div class="stat-val">${st.S1_section_count??'?'}</div><div class="stat-key">${t('temporal.S1')}</div></div>
+      <div class="stat-box"><div class="stat-val">${st.S2_citation_density!=null?fmt1(st.S2_citation_density):'?'}</div><div class="stat-key">${t('temporal.S2')}</div></div>
+      <div class="stat-box"><div class="stat-val">${st.S3_citation_gini!=null?fmt3(st.S3_citation_gini):'?'}</div><div class="stat-key">${t('temporal.S3')}</div></div>
+      <div class="stat-box"><div class="stat-val">${st.S4_zero_citation_section_rate!=null?pct(st.S4_zero_citation_section_rate):'?'}</div><div class="stat-key">${t('temporal.S4')}</div></div>
     </div>`;
 
   // Chart
-  renderTemporalChart(t, S.trendBaseline);
+  renderTemporalChart(td, S.trendBaseline);
 }
 
 function renderTemporalChart(temporal, trendBaseline) {
@@ -933,46 +1148,42 @@ function renderTemporalChart(temporal, trendBaseline) {
 
   const option = {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    legend: { data: ['综述引用分布', '领域发表趋势'], bottom: 4 },
+    legend: { data: [t('temporal.barName'), t('temporal.lineName')], bottom: 4 },
     xAxis: { type: 'category', data: [...new Set([...surveyYears, ...trendYears])].sort() },
     yAxis: [
-      { type: 'value', name: '引用数', nameTextStyle: { fontSize: 11 } },
-      { type: 'value', name: '归一化趋势', nameTextStyle: { fontSize: 11 }, axisLabel: { show: false } },
+      { type: 'value', name: t('temporal.y1'), nameTextStyle: { fontSize: 11 } },
+      { type: 'value', name: t('temporal.y2'), nameTextStyle: { fontSize: 11 }, axisLabel: { show: false } },
     ],
     series: [
-      { name: '综述引用分布', type: 'bar', data: surveyYears.map((y, i) => [y, surveyCounts[i]]),
+      { name: t('temporal.barName'), type: 'bar', data: surveyYears.map((y, i) => [y, surveyCounts[i]]),
         itemStyle: { color: '#4E8BAF' } },
-      { name: '领域发表趋势', type: 'line', yAxisIndex: 1,
+      { name: t('temporal.lineName'), type: 'line', yAxisIndex: 1,
         data: trendYears.map(y => [y, (trendData[y]||0) * scale]),
         lineStyle: { color: '#C0684A', width: 2 }, symbol: 'circle', symbolSize: 5,
         itemStyle: { color: '#C0684A' } },
     ],
   };
-  S.temporalChart.setOption(option);
+  S.temporalChart.setOption(option, { notMerge: true });
 }
 
 function renderGraphPanel() {
   if (!S.validation || !S.graphAnalysis) return;
 
-  // Metrics: render once (panel can be closed)
-  if (!S.rendered.has('graph-metrics')) {
-    S.rendered.add('graph-metrics');
-    const ga = S.graphAnalysis?.citation_graph_analysis || {};
-    const meta = ga.meta || {};
-    const dc = ga.summary?.density_connectivity || {};
-    const metrics = S.summary?.deterministic_metrics || {};
+  const ga = S.graphAnalysis?.citation_graph_analysis || {};
+  const meta = ga.meta || {};
+  const dc = ga.summary?.density_connectivity || {};
+  const metrics = S.summary?.deterministic_metrics || {};
 
-    $('graph-metrics').innerHTML = `
-      <div class="stat-row" style="margin-top:12px">
-        <div class="stat-box"><div class="stat-val">${meta.n_nodes??'?'}</div><div class="stat-key">节点数</div></div>
-        <div class="stat-box"><div class="stat-val">${meta.n_edges??'?'}</div><div class="stat-key">边数</div></div>
-        <div class="stat-box"><div class="stat-val">${fmt3(metrics.G1??dc.density_global)}</div><div class="stat-key">G1 密度</div></div>
-        <div class="stat-box"><div class="stat-val">${metrics.G2??dc.n_weak_components??'?'}</div><div class="stat-key">G2 连通分量</div></div>
-        <div class="stat-box"><div class="stat-val">${fmt3(metrics.G3??dc.lcc_frac)}</div><div class="stat-key">G3 最大分量比</div></div>
-        <div class="stat-box"><div class="stat-val">${pct(metrics.G4)}</div><div class="stat-key">G4 聚类锚点覆盖率</div></div>
-        <div class="stat-box"><div class="stat-val">${pct(metrics.G6)}</div><div class="stat-key">G6 孤立节点率</div></div>
-      </div>`;
-  }
+  $('graph-metrics').innerHTML = `
+    <div class="stat-row" style="margin-top:12px">
+      <div class="stat-box"><div class="stat-val">${meta.n_nodes??'?'}</div><div class="stat-key">${t('graph.nodes')}</div></div>
+      <div class="stat-box"><div class="stat-val">${meta.n_edges??'?'}</div><div class="stat-key">${t('graph.edges')}</div></div>
+      <div class="stat-box"><div class="stat-val">${fmt3(metrics.G1??dc.density_global)}</div><div class="stat-key">${t('graph.G1')}</div></div>
+      <div class="stat-box"><div class="stat-val">${metrics.G2??dc.n_weak_components??'?'}</div><div class="stat-key">${t('graph.G2')}</div></div>
+      <div class="stat-box"><div class="stat-val">${fmt3(metrics.G3??dc.lcc_frac)}</div><div class="stat-key">${t('graph.G3')}</div></div>
+      <div class="stat-box"><div class="stat-val">${pct(metrics.G4)}</div><div class="stat-key">${t('graph.G4')}</div></div>
+      <div class="stat-box"><div class="stat-val">${pct(metrics.G6)}</div><div class="stat-key">${t('graph.G6')}</div></div>
+    </div>`;
 
   // vis.js network: only init when panel is actually open (container has a size)
   if (document.getElementById('panel-graph')?.open) {
@@ -1112,7 +1323,7 @@ function renderCitationGraph() {
     const color = isolated ? '#CCCCCC' : cid != null ? CLUSTER_PALETTE[cid % 10] : '#2C3E50';
     const meta = r.comparison || r.metadata || {};
     const title = `<b>${escHtml(meta.bib_title || r.key)}</b><br>` +
-      `年份：${meta.bib_year||'?'}　验证：${r.is_valid?'✓':'✗'}`;
+      `${t('graph.tooltipYear')}：${meta.bib_year||'?'}　${t('graph.tooltipValid')}：${r.is_valid?'✓':'✗'}`;
     const node = { id: r.key, label: r.key, size: nodeSize(r.key), color, title, font: { size: 9 } };
     // No-edge case: arrange in a circle so nodes don't scatter
     if (!hasEdges) {
@@ -1139,7 +1350,7 @@ function renderCitationGraph() {
   }));
 
   if (typeof vis === 'undefined') {
-    container.innerHTML = '<p class="empty-msg" style="padding:20px">vis.js 库加载失败，请检查网络连接。</p>';
+    container.innerHTML = `<p class="empty-msg" style="padding:20px">${t('graph.visFail')}</p>`;
     return;
   }
 
@@ -1165,7 +1376,7 @@ function renderCitationGraph() {
 
   // Update node count badge
   const badge = $('graph-node-count');
-  if (badge) badge.textContent = `${nodes.length} 节点 · ${edgeData.length} 边`;
+  if (badge) badge.textContent = t('graph.nodeEdge', nodes.length, edgeData.length);
 
   // fit() after DOM has painted (container may not have final size yet)
   if (hasEdges) {
@@ -1186,9 +1397,9 @@ function renderKeyPapersPanel() {
   if (centers.length === 0) {
     body.innerHTML = `
       <div class="stat-row">
-        <div class="stat-box"><div class="stat-val" style="color:var(--text-muted)">N/A</div><div class="stat-key">G4 覆盖率</div></div>
+        <div class="stat-box"><div class="stat-val" style="color:var(--text-muted)">N/A</div><div class="stat-key">${t('keypapers.G4')}</div></div>
       </div>
-      <p class="empty-msg" style="margin-top:12px">引文图无有效共被引聚类结构，G4 指标不可用。<br>ExpertAgent 已基于定性评估对 E1 进行评分。</p>`;
+      <p class="empty-msg" style="margin-top:12px">${t('keypapers.noClusterMsg')}</p>`;
     return;
   }
 
@@ -1197,34 +1408,34 @@ function renderKeyPapersPanel() {
 
   body.innerHTML = `
     <div class="stat-row">
-      <div class="stat-box"><div class="stat-val">${pct(kp.coverage_rate)}</div><div class="stat-key">G4 聚类锚点覆盖率</div></div>
-      <div class="stat-box"><div class="stat-val">${anchors.length}</div><div class="stat-key">有锚点聚类</div></div>
-      <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${nonAnchors.length}</div><div class="stat-key">无锚点聚类</div></div>
-      <div class="stat-box"><div class="stat-val">≥${threshold}</div><div class="stat-key">引用量阈值</div></div>
+      <div class="stat-box"><div class="stat-val">${pct(kp.coverage_rate)}</div><div class="stat-key">${t('keypapers.G4Coverage')}</div></div>
+      <div class="stat-box"><div class="stat-val">${anchors.length}</div><div class="stat-key">${t('keypapers.anchorClusters')}</div></div>
+      <div class="stat-box"><div class="stat-val" style="color:var(--danger)">${nonAnchors.length}</div><div class="stat-key">${t('keypapers.noAnchorClusters')}</div></div>
+      <div class="stat-box"><div class="stat-val">≥${threshold}</div><div class="stat-key">${t('keypapers.threshold')}</div></div>
     </div>
-    <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px">锚点定义：聚类中心文献（最高 PageRank）引用量 ≥ ${threshold}，表示该子领域有一篇公认的高影响力论文。相关性由 ExpertAgent 综合判断。</p>
+    <p style="font-size:.78rem;color:var(--text-muted);margin-top:4px">${t('keypapers.anchorDef', threshold)}</p>
 
     ${nonAnchors.length > 0 ? `
-    <h4 style="margin:16px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">(!)缺少锚点的聚类（${nonAnchors.length} 个）</h4>
+    <h4 style="margin:16px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">${t('keypapers.missingTitle', nonAnchors.length)}</h4>
     <div class="paper-list">
       ${nonAnchors.map(c => `<div class="paper-item">
         <div class="paper-year">${c.center_year||'?'}</div>
         <div class="paper-info">
           <div class="paper-title">${escHtml(c.center_title||'(empty cluster)')}</div>
-          <div class="paper-meta">被引 ${c.citation_count} 次　|　citation_norm: ${(c.citation_norm||0).toFixed(2)}　|　聚类规模: ${c.cluster_size} 篇</div>
+          <div class="paper-meta">${t('common.cited')} ${c.citation_count} ${t('keypapers.times')}　|　citation_norm: ${(c.citation_norm||0).toFixed(2)}　|　${t('keypapers.clusterSize')}: ${c.cluster_size} ${t('keypapers.papersUnit')}</div>
         </div>
       </div>`).join('')}
-    </div>` : '<p class="empty-msg" style="margin-top:12px">所有聚类均有基础锚点文献。</p>'}
+    </div>` : '<p class="empty-msg" style="margin-top:12px">' + t('keypapers.allAnchored') + '</p>'}
 
-    <h4 style="margin:16px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">所有聚类中心文献（${centers.length} 个，按引用量降序）</h4>
+    <h4 style="margin:16px 0 8px;font-size:.82rem;color:var(--text-muted);text-transform:uppercase">${t('keypapers.allCenters', centers.length)}</h4>
     <div class="paper-list">
       ${[...centers].sort((a,b) => (b.citation_count||0) - (a.citation_count||0)).map(c => {
-        const icon = c.is_foundational_anchor ? '[Anchor]' : '[No anchor]';
+        const icon = c.is_foundational_anchor ? t('keypapers.anchor') : t('keypapers.noAnchor');
         return `<div class="paper-item">
           <div class="paper-year">${c.center_year||'?'}</div>
           <div class="paper-info">
             <div class="paper-title">${icon} ${escHtml(c.center_title||'(empty cluster)')}</div>
-            <div class="paper-meta">被引 ${c.citation_count||0} 次　|　citation_norm: ${(c.citation_norm||0).toFixed(2)}　|　PageRank: ${(c.pagerank_score||0).toFixed(4)}　|　聚类 ${c.cluster_id}（${c.cluster_size} 篇）</div>
+            <div class="paper-meta">${t('common.cited')} ${c.citation_count||0} ${t('keypapers.times')}　|　citation_norm: ${(c.citation_norm||0).toFixed(2)}　|　PageRank: ${(c.pagerank_score||0).toFixed(4)}　|　Cluster ${c.cluster_id}（${c.cluster_size} ${t('keypapers.papersUnit')}）</div>
           </div>
         </div>`;
       }).join('')}
@@ -1239,15 +1450,15 @@ function renderSysInfo() {
 
   body.innerHTML = `
     <table class="metric-table" style="margin-bottom:16px">
-      <tr><th>字段</th><th>值</th></tr>
+      <tr><th>${t('sysinfo.field')}</th><th>${t('sysinfo.value')}</th></tr>
       <tr><td>Run ID</td><td class="mono">${sum.run_id||'?'}</td></tr>
-      <tr><td>时间戳</td><td class="mono">${sum.timestamp||'?'}</td></tr>
-      <tr><td>PDF 来源</td><td class="mono">${sum.source||'?'}</td></tr>
-      <tr><td>Schema 版本</td><td class="mono">${sum.schema_version||'?'}</td></tr>
+      <tr><td>${t('sysinfo.timestamp')}</td><td class="mono">${sum.timestamp||'?'}</td></tr>
+      <tr><td>${t('sysinfo.pdfSource')}</td><td class="mono">${sum.source||'?'}</td></tr>
+      <tr><td>${t('sysinfo.schemaVer')}</td><td class="mono">${sum.schema_version||'?'}</td></tr>
     </table>
-    <h4 style="font-size:.82rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px">指标定义（metrics_index）</h4>
+    <h4 style="font-size:.82rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px">${t('sysinfo.metricsIndex')}</h4>
     <pre class="raw-json">${escHtml(JSON.stringify(run.metrics_index||{}, null, 2))}</pre>
-    <h4 style="font-size:.82rem;color:var(--text-muted);text-transform:uppercase;margin-top:16px;margin-bottom:8px">run_summary.json 原始数据</h4>
+    <h4 style="font-size:.82rem;color:var(--text-muted);text-transform:uppercase;margin-top:16px;margin-bottom:8px">${t('sysinfo.rawSummary')}</h4>
     <pre class="raw-json">${escHtml(JSON.stringify(sum, null, 2))}</pre>`;
 }
 
@@ -1295,8 +1506,8 @@ function renderPdfViewer() {
   if (!pdfUrl) {
     container.innerHTML = `
       <div class="pdf-placeholder">
-        <p>无法加载 PDF 预览</p>
-        <p class="pdf-hint">未找到 PDF 文件路径</p>
+        <p>${t('pdf.loadFail')}</p>
+        <p class="pdf-hint">${t('pdf.notFound')}</p>
       </div>`;
     return;
   }
@@ -1306,8 +1517,8 @@ function renderPdfViewer() {
     <object data="${pdfUrl}" type="application/pdf" width="100%" height="100%">
       <embed src="${pdfUrl}" type="application/pdf" width="100%" height="100%">
         <div class="pdf-placeholder">
-          <p>无法直接显示 PDF</p>
-          <p class="pdf-hint">浏览器不支持 PDF 预览，请<a href="${pdfUrl}" target="_blank">点击下载</a></p>
+          <p>${t('pdf.cannotDisplay')}</p>
+          <p class="pdf-hint">${t('pdf.downloadHint', pdfUrl)}</p>
         </div>
       </embed>
     </object>`;
@@ -1344,15 +1555,15 @@ function newEval() {
   $('upload-filename').textContent = '';
   const startBtn = $('start-btn');
   startBtn.disabled = true;
-  startBtn.textContent = '开始评测';
+  startBtn.textContent = t('upload.start');
 
   // Reset PDF viewer
   const pdfContainer = $('pdf-container');
   if (pdfContainer) {
     pdfContainer.innerHTML = `
       <div class="pdf-placeholder">
-        <p>PDF 预览加载中…</p>
-        <p class="pdf-hint">如果无法显示，请检查文件路径</p>
+        <p>${t('pdf.loading')}</p>
+        <p class="pdf-hint">${t('pdf.hint')}</p>
       </div>`;
   }
   const pdfFilename = $('pdf-filename');
@@ -1373,6 +1584,7 @@ function escHtml(s) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 function init() {
+  updateDomI18n();
   initUpload();
 
   // Handle direct /run/{id} URL (history view)
