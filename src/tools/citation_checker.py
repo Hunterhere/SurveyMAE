@@ -83,6 +83,11 @@ async def _run_batched_llm(
     completed = 0
     all_results: list[_R] = []
 
+    logger.info(
+        "%s batching: %d items → %d batches (batch_size=%d, concurrency=%d)",
+        log_label, len(items), total_batches, batch_size, max_concurrency,
+    )
+
     next_heartbeat = t_start + heartbeat_every_s
 
     while pending:
@@ -844,14 +849,14 @@ class CitationChecker:
         if not raw_entries:
             return await self._extract_references_via_arxiv_links(pdf_path)
 
-        # Filter out entries that are clearly not references (body text false matches).
-        # Cap LLM entries to verify_limit from search_engines.yaml — no point parsing
-        # more references than will be verified against external APIs.
+        # Load extraction cap from search_engines.yaml (verify_limit).
+        # This caps both arXiv API and LLM entries — no point extracting more
+        # references than will be verified against external APIs.
         try:
             from src.core.config import SearchEnginesConfig
-            _MAX_LLM_ENTRIES = SearchEnginesConfig.from_yaml().verify_limit
+            _MAX_ENTRIES = SearchEnginesConfig.from_yaml().verify_limit
         except Exception:
-            _MAX_LLM_ENTRIES = 100
+            _MAX_ENTRIES = 100
 
         # Classify entries: has arXiv ID → API; otherwise → LLM
         arxiv_indexed: list[tuple[int, str, str]] = []  # (idx, arxiv_id, raw)
@@ -864,19 +869,38 @@ class CitationChecker:
             elif len(raw) < 800 and self._looks_like_reference(raw):
                 llm_pending.append((idx, raw))
 
-        if len(llm_pending) > _MAX_LLM_ENTRIES:
+        # Apply unified cap: arXiv entries get priority, LLM fills remaining slots
+        arxiv_count = len(arxiv_indexed)
+        llm_count = len(llm_pending)
+        total_candidates = arxiv_count + llm_count
+
+        if arxiv_count > _MAX_ENTRIES:
             logger.warning(
-                "Too many reference candidates for LLM parsing (%d), "
-                "keeping first %d",
-                len(llm_pending),
-                _MAX_LLM_ENTRIES,
+                "Too many arXiv candidates (%d), keeping first %d",
+                arxiv_count, _MAX_ENTRIES,
             )
-            llm_pending = llm_pending[:_MAX_LLM_ENTRIES]
+            arxiv_indexed = arxiv_indexed[:_MAX_ENTRIES]
+
+        if llm_count > 0:
+            llm_slots = _MAX_ENTRIES - len(arxiv_indexed)
+            if llm_count > llm_slots:
+                logger.warning(
+                    "Too many reference candidates (total=%d, arXiv=%d, LLM=%d), "
+                    "keeping first %d LLM entries (verify_limit=%d)",
+                    total_candidates, arxiv_count, llm_count, llm_slots, _MAX_ENTRIES,
+                )
+                llm_pending = llm_pending[:llm_slots]
+
+        logger.info(
+            "Reference classification: arXiv=%d, LLM-pending=%d (raw_entries=%d)",
+            len(arxiv_indexed), len(llm_pending), len(raw_entries),
+        )
 
         entries: list[ReferenceEntry] = []
 
         # ── arXiv API batch ──────────────────────────────────────────
         if arxiv_indexed:
+            logger.info("Fetching %d arXiv entries (rate-limited, ~3s each)...", len(arxiv_indexed))
             fetcher = ArxivFetcher()
             for idx, arxiv_id, raw in arxiv_indexed:
                 try:
@@ -906,6 +930,7 @@ class CitationChecker:
                         source="arxiv",
                     )
                 )
+            logger.info("arXiv fetching complete: %d entries retrieved", len(entries))
 
         # ── LLM batch for remaining entries ─────────────────────────
         if llm_pending:
@@ -1026,6 +1051,7 @@ class CitationChecker:
             api_key=llm_cfg.api_key,
             base_url=llm_cfg.base_url,
             temperature=0.0,
+            request_timeout=120,
         )
 
         system_prompt = (
@@ -1502,6 +1528,7 @@ class CitationChecker:
                 api_key=llm_cfg.api_key,
                 base_url=llm_cfg.base_url,
                 temperature=llm_cfg.temperature,
+                request_timeout=120,
             )
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")

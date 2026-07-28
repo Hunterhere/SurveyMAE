@@ -9,8 +9,8 @@ Cluster-Centric approach (v2):
   2. For each cluster center, compute a citation_norm score:
        citation_norm = citation_count / CITATION_THRESHOLD
      where CITATION_THRESHOLD = 50 (fixed threshold, empirically chosen).
-     A cluster center with citation_norm >= 1.0 is a "foundational anchor".
-  3. G4 = fraction of clusters that have a foundational anchor.
+     A cluster center with citation_norm >= 1.0 is a "foundational center".
+  3. G4 = fraction of clusters that have a foundational center.
   4. Topic relevance judgment is deferred to ExpertAgent.E1 scoring phase.
      The ExpertAgent LLM receives the cluster_centers list and judges whether
      each center is genuinely a foundational paper for the survey's domain.
@@ -73,8 +73,8 @@ class FoundationalCoverageAnalyzer:
     Cluster-centric approach:
       - For each co-citation cluster, identify the center paper (highest PageRank).
       - Cross-reference its external citation count from ref_metadata_cache.
-      - A center with citation_count >= citation_threshold is a "foundational anchor".
-      - G4 = fraction of clusters that have at least one foundational anchor.
+      - A center with citation_count >= citation_threshold is a "foundational center".
+      - G4 = fraction of clusters that have at least one foundational center.
       - Topic relevance is deferred to ExpertAgent.E1 LLM scoring.
     """
 
@@ -86,7 +86,7 @@ class FoundationalCoverageAnalyzer:
 
         Args:
             citation_threshold: Minimum external citation count for a paper
-                to be considered a foundational anchor. Default 50.
+                to be considered a foundational center. Default 50.
         """
         self.citation_threshold = citation_threshold
 
@@ -183,21 +183,21 @@ class FoundationalCoverageAnalyzer:
                 "is_foundational_anchor": is_anchor,
             })
 
-        # Step 2: Classify into anchors and non-anchors
-        anchors = [c for c in cluster_centers if c["is_foundational_anchor"]]
-        non_anchors = [c for c in cluster_centers if not c["is_foundational_anchor"]]
-        coverage_rate = len(anchors) / len(cluster_centers) if cluster_centers else 0.0
+        # Step 2: Classify into centers and non-centers
+        centers = [c for c in cluster_centers if c["is_foundational_anchor"]]
+        non_centers = [c for c in cluster_centers if not c["is_foundational_anchor"]]
+        coverage_rate = len(centers) / len(cluster_centers) if cluster_centers else 0.0
 
         logger.info(
-            "G4 cluster-centric: %d/%d clusters have foundational anchors (rate=%.2f)",
-            len(anchors), len(cluster_centers), coverage_rate,
+            "G4 cluster-centric: %d/%d clusters have foundational centers (rate=%.2f)",
+            len(centers), len(cluster_centers), coverage_rate,
         )
 
         return FoundationalCoverageResult(
             coverage_rate=coverage_rate,
             cluster_centers=cluster_centers,
-            matched_papers=anchors,
-            missing_key_papers=non_anchors,
+            matched_papers=centers,
+            missing_key_papers=non_centers,
             suspicious_centrality=[],
             llm_involved=False,
             hallucination_risk="none",

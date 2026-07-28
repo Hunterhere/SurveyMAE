@@ -34,11 +34,11 @@ const RUBRICS = {
         2:'30–49% 支持，大量不匹配', 1:'<30% 支持或存在严重误引' },
   V4: { 5:'无矛盾检出', 4:'轻微不一致，容易解释', 3:'部分矛盾需澄清',
         2:'多处矛盾影响可信度', 1:'严重矛盾使综述失去可靠性' },
-  E1: { 5:'各子领域聚类均有高被引锚点文献，主题高度相关',
-        4:'≥80% 聚类有锚点文献，核心领域覆盖良好',
-        3:'≥60% 聚类有锚点文献，部分子领域可能缺失',
-        2:'<60% 聚类有锚点文献，核心领域缺乏基础文献',
-        1:'多数聚类缺乏锚点，或引文图过于稀疏无法形成有效子领域' },
+  E1: { 5:'各子领域聚类均有高被引中心文献，主题高度相关',
+        4:'≥80% 聚类有中心文献，核心领域覆盖良好',
+        3:'≥60% 聚类有中心文献，部分子领域可能缺失',
+        2:'<60% 聚类有中心文献，核心领域缺乏基础文献',
+        1:'多数聚类缺乏中心，或引文图过于稀疏无法形成有效子领域' },
   E2: { 5:'S5 (NMI) 高，分类与引用聚类高度吻合', 4:'良好对齐，少许偏差',
         3:'部分不对齐但尚可接受', 2:'显著不对齐', 1:'分类与引用结构相悖' },
   E3: { 5:'无技术错误', 4:'轻微技术不准确', 3:'部分错误但不影响理解',
@@ -90,7 +90,7 @@ const I18N = {
       V1: { 5:'C5 ≥ 0.95', 4:'C5 ≥ 0.85', 3:'C5 ≥ 0.70', 2:'C5 ≥ 0.50', 1:'C5 < 0.50' },
       V2: { 5:'≥90% 引用-断言对支持', 4:'70–89% 支持，少量局部支持', 3:'50–69% 支持', 2:'30–49% 支持，大量不匹配', 1:'<30% 支持或存在严重误引' },
       V4: { 5:'无矛盾检出', 4:'轻微不一致，容易解释', 3:'部分矛盾需澄清', 2:'多处矛盾影响可信度', 1:'严重矛盾使综述失去可靠性' },
-      E1: { 5:'各子领域聚类均有高被引锚点文献，主题高度相关', 4:'≥80% 聚类有锚点文献，核心领域覆盖良好', 3:'≥60% 聚类有锚点文献，部分子领域可能缺失', 2:'<60% 聚类有锚点文献，核心领域缺乏基础文献', 1:'多数聚类缺乏锚点，或引文图过于稀疏无法形成有效子领域' },
+      E1: { 5:'各子领域聚类均有高被引中心文献，主题高度相关', 4:'≥80% 聚类有中心文献，核心领域覆盖良好', 3:'≥60% 聚类有中心文献，部分子领域可能缺失', 2:'<60% 聚类有中心文献，核心领域缺乏基础文献', 1:'多数聚类缺乏中心，或引文图过于稀疏无法形成有效子领域' },
       E2: { 5:'S5 (NMI) 高，分类与引用聚类高度吻合', 4:'良好对齐，少许偏差', 3:'部分不对齐但尚可接受', 2:'显著不对齐', 1:'分类与引用结构相悖' },
       E3: { 5:'无技术错误', 4:'轻微技术不准确', 3:'部分错误但不影响理解', 2:'频繁技术错误', 1:'严重技术误解' },
       E4: { 5:'系统性比较，趋势清晰，详细分析局限', 4:'良好比较，有一定分析', 3:'有比较但主要是罗列', 2:'几乎只有罗列，分析极少', 1:'纯摘要，没有分析' },
@@ -119,21 +119,21 @@ const I18N = {
       agentReasoning:'Agent 推理', evidenceSummary:'证据摘要', flaggedItems:'标记项目',
       correctorAdj:'Corrector 校正', model:'模型', subScores:'各分',
       c6Title:'C6 引用-断言对齐', contradictionRate:'矛盾率', pairs:'对', viewContradictions:'查看完整矛盾列表 →',
-      clusterAnchor:'聚类锚点分析', clustersWithAnchor:'{0}/{1} 聚类有锚点', moreClusters:'… 还有 {0} 个聚类', viewCluster:'查看完整聚类分析 →',
+      clusterAnchor:'聚类中心分析', clustersWithAnchor:'{0}/{1} 聚类有中心', moreClusters:'… 还有 {0} 个聚类', viewCluster:'查看完整聚类分析 →',
       missingOld:'缺失核心文献（旧版数据，前{0}篇）', viewList:'查看完整列表 →',
-      noClusterTitle:'聚类锚点分析', noClusterMsg:'(!)引文图无有效聚类结构，G4 指标不可用，评分基于定性评估。', viewDetails:'查看详情 →',
+      noClusterTitle:'聚类中心分析', noClusterMsg:'(!)引文图无有效聚类结构，G4 指标不可用，评分基于定性评估。', viewDetails:'查看详情 →',
       viewRaw:'查看原始数据 ▾',
     },
     // Tool panels
     panel: {
       extraction:'C1 · PDF 解析结果', validation:'C2 · 引用验证', c6:'C3 · 引用-断言对齐（C6）',
-      temporal:'C4 · 时序分布分析', graph:'C6 · 引用网络图', keypapers:'G4 · 聚类锚点文献分析',
+      temporal:'C4 · 时序分布分析', graph:'C6 · 引用网络图', keypapers:'G4 · 聚类中心文献分析',
       sysinfo:'系统信息与原始数据',
     },
     // Tool evidence
     evidence: {
       C5:'C5 验证率', C6_rate:'C6 矛盾率', C6_samples:'C6 矛盾样本', items:'条', example:'示例',
-      G4:'G4 聚类锚点覆盖率', anchorClusters:'锚点聚类 / 总聚类', missingOld:'缺失文献（旧格式）', papers:'篇',
+      G4:'G4 聚类中心覆盖率', anchorClusters:'中心聚类 / 总聚类', missingOld:'缺失文献（旧格式）', papers:'篇',
       fallbackItem:'项', fallbackObj:'对象',
     },
     // Extraction panel
@@ -150,17 +150,17 @@ const I18N = {
     },
     // Graph panel
     graph: {
-      nodes:'节点数', edges:'边数', G1:'G1 密度', G2:'G2 连通分量', G3:'G3 最大分量比', G4:'G4 聚类锚点覆盖率', G6:'G6 孤立节点率',
+      nodes:'节点数', edges:'边数', G1:'G1 密度', G2:'G2 连通分量', G3:'G3 最大分量比', G4:'G4 聚类中心覆盖率', G6:'G6 孤立节点率',
       tooltipYear:'年份', tooltipValid:'验证', visFail:'vis.js 库加载失败，请检查网络连接。', nodeEdge:'{0} 节点 · {1} 边',
     },
     // Key papers panel
     keypapers: {
-      G4:'G4 覆盖率', G4Coverage:'G4 聚类锚点覆盖率', anchorClusters:'有锚点聚类', noAnchorClusters:'无锚点聚类', threshold:'引用量阈值',
+      G4:'G4 覆盖率', G4Coverage:'G4 聚类中心覆盖率', anchorClusters:'有中心聚类', noAnchorClusters:'无中心聚类', threshold:'引用量阈值',
       noClusterMsg:'引文图无有效共被引聚类结构，G4 指标不可用。<br>ExpertAgent 已基于定性评估对 E1 进行评分。',
-      anchorDef:'锚点定义：聚类中心文献（最高 PageRank）引用量 ≥ {0}，表示该子领域有一篇公认的高影响力论文。相关性由 ExpertAgent 综合判断。',
-      missingTitle:'(!)缺少锚点的聚类（{0} 个）', cited:'被引', times:'次', clusterSize:'聚类规模', papersUnit:'篇',
-      allAnchored:'所有聚类均有基础锚点文献。',
-      allCenters:'所有聚类中心文献（{0} 个，按引用量降序）', anchor:'[Anchor]', noAnchor:'[No anchor]',
+      anchorDef:'中心定义：聚类中心文献（最高 PageRank）引用量 ≥ {0}，表示该子领域有一篇公认的高影响力论文。相关性由 ExpertAgent 综合判断。',
+      missingTitle:'(!)缺少中心的聚类（{0} 个）', cited:'被引', times:'次', years:'年', clusterSize:'聚类规模', papersUnit:'篇',
+      allAnchored:'所有聚类均有基础中心文献。',
+      allCenters:'所有聚类中心文献（{0} 个，按引用量降序）', anchor:'[Center]', noAnchor:'[No center]',
     },
     // Sysinfo
     sysinfo: { field:'字段', value:'值', timestamp:'时间戳', pdfSource:'PDF 来源', schemaVer:'Schema 版本', metricsIndex:'指标定义（metrics_index）', rawSummary:'run_summary.json 原始数据' },
@@ -187,7 +187,7 @@ const I18N = {
       V1: { 5:'C5 ≥ 0.95', 4:'C5 ≥ 0.85', 3:'C5 ≥ 0.70', 2:'C5 ≥ 0.50', 1:'C5 < 0.50' },
       V2: { 5:'≥90% citation-claim pairs supported', 4:'70–89% supported, minor gaps', 3:'50–69% supported', 2:'30–49% supported, many mismatches', 1:'<30% supported or severe misrepresentation' },
       V4: { 5:'No contradictions detected', 4:'Minor inconsistencies, easily explained', 3:'Some contradictions need clarification', 2:'Multiple contradictions affect credibility', 1:'Severe contradictions undermine reliability' },
-      E1: { 5:'All subfield clusters have high-citation anchor papers, topics highly relevant', 4:'≥80% clusters have anchors, core areas well covered', 3:'≥60% clusters have anchors, some subfields may be missing', 2:'<60% clusters have anchors, core areas lack foundational papers', 1:'Most clusters lack anchors, or citation graph too sparse to form subfields' },
+      E1: { 5:'All subfield clusters have high-citation center papers, topics highly relevant', 4:'≥80% clusters have centers, core areas well covered', 3:'≥60% clusters have centers, some subfields may be missing', 2:'<60% clusters have centers, core areas lack foundational papers', 1:'Most clusters lack centers, or citation graph too sparse to form subfields' },
       E2: { 5:'S5 (NMI) high, taxonomy aligns strongly with citation clusters', 4:'Good alignment, minor deviations', 3:'Partial misalignment but acceptable', 2:'Significant misalignment', 1:'Taxonomy contradicts citation structure' },
       E3: { 5:'No technical errors', 4:'Minor technical inaccuracies', 3:'Some errors but not misleading', 2:'Frequent technical errors', 1:'Severe technical misunderstandings' },
       E4: { 5:'Systematic comparison, clear trends, detailed limitation analysis', 4:'Good comparison with some analysis', 3:'Some comparison but mostly listing', 2:'Mostly listing, minimal analysis', 1:'Pure summary, no analysis' },
@@ -209,19 +209,19 @@ const I18N = {
       agentReasoning:'Agent Reasoning', evidenceSummary:'Evidence Summary', flaggedItems:'Flagged Items',
       correctorAdj:'Corrector Adjustment', model:'Models', subScores:'Sub-scores',
       c6Title:'C6 Citation-Claim Alignment', contradictionRate:'Contradiction Rate', pairs:'pairs', viewContradictions:'View Full Contradiction List →',
-      clusterAnchor:'Cluster Anchor Analysis', clustersWithAnchor:'{0}/{1} clusters have anchors', moreClusters:'… {0} more clusters', viewCluster:'View Full Cluster Analysis →',
+      clusterAnchor:'Cluster Center Analysis', clustersWithAnchor:'{0}/{1} clusters have centers', moreClusters:'… {0} more clusters', viewCluster:'View Full Cluster Analysis →',
       missingOld:'Missing Core Papers (legacy data, top {0})', viewList:'View Full List →',
-      noClusterTitle:'Cluster Anchor Analysis', noClusterMsg:'(!)No valid co-citation cluster structure found. G4 metric unavailable; E1 scored by qualitative assessment.', viewDetails:'View Details →',
+      noClusterTitle:'Cluster Center Analysis', noClusterMsg:'(!)No valid co-citation cluster structure found. G4 metric unavailable; E1 scored by qualitative assessment.', viewDetails:'View Details →',
       viewRaw:'View Raw Data ▾',
     },
     panel: {
       extraction:'C1 · PDF Extraction Results', validation:'C2 · Citation Validation', c6:'C3 · Citation-Claim Alignment (C6)',
-      temporal:'C4 · Temporal Distribution Analysis', graph:'C6 · Citation Network Graph', keypapers:'G4 · Cluster-Anchor Literature Analysis',
+      temporal:'C4 · Temporal Distribution Analysis', graph:'C6 · Citation Network Graph', keypapers:'G4 · Cluster-Center Literature Analysis',
       sysinfo:'System Information & Raw Data',
     },
     evidence: {
       C5:'C5 Verification Rate', C6_rate:'C6 Contradiction Rate', C6_samples:'C6 Contradiction Samples', items:'items', example:'Example',
-      G4:'G4 Cluster-Anchor Coverage', anchorClusters:'Anchor Clusters / Total', missingOld:'Missing Papers (legacy)', papers:'papers',
+      G4:'G4 Cluster-Center Coverage', anchorClusters:'Center Clusters / Total', missingOld:'Missing Papers (legacy)', papers:'papers',
       fallbackItem:'items', fallbackObj:'object',
     },
     extraction: { refs:'References', citations:'Citation Instances', sections:'Sections', sectionList:'Section List', refList:'References (Top 20)', colNum:'#', colTitle:'Title', colAuthor:'Author', colYear:'Year' },
@@ -233,16 +233,16 @@ const I18N = {
       barName:'Survey Citation Distribution', lineName:'Field Publication Trend', y1:'Citation Count', y2:'Normalized Trend',
     },
     graph: {
-      nodes:'Nodes', edges:'Edges', G1:'G1 Density', G2:'G2 Components', G3:'G3 LCC Fraction', G4:'G4 Cluster-Anchor Coverage', G6:'G6 Isolate Rate',
+      nodes:'Nodes', edges:'Edges', G1:'G1 Density', G2:'G2 Components', G3:'G3 LCC Fraction', G4:'G4 Cluster-Center Coverage', G6:'G6 Isolate Rate',
       tooltipYear:'Year', tooltipValid:'Valid', visFail:'vis.js library failed to load. Please check your network connection.', nodeEdge:'{0} nodes · {1} edges',
     },
     keypapers: {
-      G4:'G4 Coverage', G4Coverage:'G4 Cluster-Anchor Coverage', anchorClusters:'Anchored Clusters', noAnchorClusters:'Unanchored Clusters', threshold:'Citation Threshold',
+      G4:'G4 Coverage', G4Coverage:'G4 Cluster-Center Coverage', anchorClusters:'Centered Clusters', noAnchorClusters:'Uncentered Clusters', threshold:'Citation Threshold',
       noClusterMsg:'No valid co-citation cluster structure found. G4 metric unavailable.<br>ExpertAgent scored E1 based on qualitative assessment.',
-      anchorDef:'Anchor definition: the highest-PageRank center paper in a cluster with ≥ {0} citations, indicating a recognized high-impact paper in that subfield. Relevance judged by ExpertAgent.',
-      missingTitle:'(!)Clusters Without Anchors ({0})', cited:'cited', times:'times', clusterSize:'cluster size', papersUnit:'papers',
-      allAnchored:'All clusters have foundational anchor papers.',
-      allCenters:'All Cluster Center Papers ({0}, sorted by citation count)', anchor:'[Anchor]', noAnchor:'[No anchor]',
+      anchorDef:'Center definition: the highest-PageRank center paper in a cluster with ≥ {0} citations, indicating a recognized high-impact paper in that subfield. Relevance judged by ExpertAgent.',
+      missingTitle:'(!)Clusters Without Centers ({0})', cited:'cited', times:'times', years:'years', clusterSize:'cluster size', papersUnit:'papers',
+      allAnchored:'All clusters have foundational center papers.',
+      allCenters:'All Cluster Center Papers ({0}, sorted by citation count)', anchor:'[Center]', noAnchor:'[No center]',
     },
     sysinfo: { field:'Field', value:'Value', timestamp:'Timestamp', pdfSource:'PDF Source', schemaVer:'Schema Version', metricsIndex:'Metrics Index', rawSummary:'run_summary.json Raw Data' },
     risk: { deterministic:'Deterministic', llm:'LLM Judgment', llmHigh:'LLM Judgment (High Risk)' },
@@ -935,7 +935,7 @@ function buildToolEvidenceLines(dimId, te) {
     }
     case 'E1': {
       pushIf(t('evidence.G4'), te.G4 != null ? pct(te.G4) : null);
-      // Show anchor cluster summary from keyPapers if available
+      // Show center cluster summary from keyPapers if available
       const kp = S.keyPapers;
       const centers = kp?.cluster_centers || [];
       if (centers.length > 0) {
@@ -1112,10 +1112,9 @@ function renderTemporalPanel() {
   // Metrics table
   $('temporal-metrics').innerHTML = `
     <div class="stat-row" style="margin-top:16px">
-      <div class="stat-box"><div class="stat-val">${td.T1_year_span ?? '?'}</div><div class="stat-key">${t('temporal.T1')}</div></div>
-      <div class="stat-box"><div class="stat-val">${td.T2_foundational_retrieval_gap != null ? td.T2_foundational_retrieval_gap + ' ' + t('keypapers.times') : 'N/A'}</div><div class="stat-key">${t('temporal.T2')}</div></div>
+      <div class="stat-box"><div class="stat-val">${td.T1_year_span ?? '?'} ${t('keypapers.years')}</div><div class="stat-key">${t('temporal.T1')}</div></div>
       <div class="stat-box"><div class="stat-val">${td.T3_peak_year_ratio != null ? pct(td.T3_peak_year_ratio) : 'N/A'}</div><div class="stat-key">${t('temporal.T3')}</div></div>
-      <div class="stat-box"><div class="stat-val">${td.T4_temporal_continuity != null ? td.T4_temporal_continuity + ' ' + t('keypapers.times') : 'N/A'}</div><div class="stat-key">${t('temporal.T4')}</div></div>
+      <div class="stat-box"><div class="stat-val">${td.T4_temporal_continuity != null ? td.T4_temporal_continuity + ' ' + t('keypapers.years') : 'N/A'}</div><div class="stat-key">${t('temporal.T4')}</div></div>
       <div class="stat-box"><div class="stat-val">${td.T5_trend_alignment != null ? fmt3(td.T5_trend_alignment) : 'N/A'}</div><div class="stat-key">${t('temporal.T5')}</div></div>
     </div>
     <div class="stat-row" style="margin-top:8px">

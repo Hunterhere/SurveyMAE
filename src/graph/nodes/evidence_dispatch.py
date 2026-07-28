@@ -281,12 +281,12 @@ EXPERT_RUBRIC_E1 = """Rate the core literature coverage (E1) dimension.
 
 You will receive cluster_centers data — each co-citation cluster's center paper
 (highest PageRank) with its citation_count, citation_norm (citation_count / 50),
-and whether it is flagged as a "foundational_anchor" (citation_norm >= 1.0).
+and whether it is flagged as a "foundational_center" (citation_norm >= 1.0).
 
 Your task:
 1. For each cluster center, judge whether the paper is genuinely TOPIC-RELEVANT
    to this survey's domain. A paper may have high citations but belong to a
-   different field — those should NOT count as foundational anchors.
+   different field — those should NOT count as foundational centers.
 2. After judging topic relevance, determine how many sub-fields (clusters) have
    proper foundational coverage.
 
@@ -295,16 +295,16 @@ Scoring:
   Score 1-5 based purely on qualitative assessment of whether the citation list
   appears comprehensive for a survey on this topic.
 - **If G4_valid is True:**
-  - 5: All or nearly all clusters have a topic-relevant foundational anchor
+  - 5: All or nearly all clusters have a topic-relevant foundational center
        (citation_norm >= 1.0 AND the paper is genuinely about this field).
        No major sub-field lacks foundational coverage.
-  - 4: Most clusters (>= 80%) have a topic-relevant foundational anchor.
-       Minor sub-fields may lack anchors but core areas are well-covered.
-  - 3: >= 60% of clusters have topic-relevant foundational anchors.
+  - 4: Most clusters (>= 80%) have a topic-relevant foundational center.
+       Minor sub-fields may lack centers but core areas are well-covered.
+  - 3: >= 60% of clusters have topic-relevant foundational centers.
        Some important sub-fields may be missing coverage.
-  - 2: < 60% of clusters have topic-relevant foundational anchors, or
+  - 2: < 60% of clusters have topic-relevant foundational centers, or
        core sub-fields clearly lack foundational works.
-  - 1: Most clusters lack a topic-relevant foundational anchor, or the
+  - 1: Most clusters lack a topic-relevant foundational center, or the
        citation graph is too sparse to form meaningful sub-fields."""
 
 EXPERT_RUBRIC_E2 = """Rate the method classification reasonableness (E2) dimension:
